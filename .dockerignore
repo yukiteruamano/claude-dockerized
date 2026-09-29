@@ -1,0 +1,34 @@
+# Git
+.git
+.gitignore
+
+# IDE
+.idea
+.vscode
+
+# Documentation (not needed in image)
+*.md
+LICENSE
+
+# Environment and config examples (not needed in image)
+.env
+examples/
+
+# Security layer sources and tests (installed on the host, not baked in)
+hooks/
+policies/
+tests/
+.github/
+
+# Shell scripts not used inside the container
+# Only entrypoint.sh is COPYed into the image
+bin/
+lib/
+completions/
+run-simple.sh
+install.sh
+
+# Docker
+.dockerignore
+.hadolint.yaml
+.shellcheckrc
