@@ -207,6 +207,10 @@ grep -Eq '^ARG CLAUDE_CODE_VERSION=2\.1\.284' "$dockerfile" ||
     fail "Dockerfile must pin ARG CLAUDE_CODE_VERSION=2.1.284"
 grep -q 'https://claude.ai/install.sh' "$dockerfile" ||
     fail "Dockerfile must use the native installer (claude.ai/install.sh)"
+# Image-provided CLIs must live outside the home bin dir: the generated home's
+# .local/bin is over-mounted at runtime and would shadow them (claude/uv).
+grep -q '/usr/local/bin' "$dockerfile" ||
+    fail "Dockerfile must move image CLIs to /usr/local/bin (home .local/bin is shadow-mounted)"
 if grep -qE 'npm (install|add).*(-g|@anthropic)|pnpm add -g.*@opencode' "$dockerfile"; then
     fail "Dockerfile must not install the agent via npm/pnpm"
 fi
