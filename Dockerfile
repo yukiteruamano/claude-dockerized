@@ -81,14 +81,17 @@ RUN curl -o- "https://raw.githubusercontent.com/nvm-sh/nvm/${NVM_VERSION}/instal
 # See: https://docs.astral.sh/uv/getting-started/installation/
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Add nvm, node, uv, ~/.composio and ~/.local/bin to PATH
+# Add nvm, node, ~/.composio and ~/.local/bin to PATH
 # Node.js is available via the NVM default symlink created above.
-# ~/.local/bin holds user-installed CLIs (uv tools, LSP servers, formatters).
+# ~/.local/bin holds user-installed CLIs (LSP servers, formatters from the
+# generated home, mounted read-write at runtime).
 # ~/.composio holds the Composio CLI and its login, mounted read-write from the
 # host via mount.composio in the wrapper config, so `composio` resolves on PATH.
+# /usr/local/bin holds the image-provided CLIs (see below); it is explicit here
+# so resolution never depends on the inherited base-image PATH.
 # NOTE: No npm/pnpm global install is used for Claude Code itself (no official
 # npm support); the native installer below is the only supported path.
-ENV PATH="$NVM_DIR/default:/home/coder/.composio:/home/coder/.local/bin:$PATH"
+ENV PATH="$NVM_DIR/default:/usr/local/bin:/home/coder/.composio:/home/coder/.local/bin:$PATH"
 
 # Install Claude Code natively with a pinned version (official installer).
 # See: https://code.claude.com/docs/en/setup#install-a-specific-version
@@ -99,6 +102,21 @@ ENV PATH="$NVM_DIR/default:/home/coder/.composio:/home/coder/.local/bin:$PATH"
 # ARG CLAUDE_CODE_VERSION pins the release; defaults to 2.1.284 for regular builds
 ARG CLAUDE_BUILD_TIME=0
 RUN curl -fsSL https://claude.ai/install.sh | bash -s "${CLAUDE_CODE_VERSION}" && claude --version
+
+# Move image-provided CLIs out of the shadowed home bin dir.
+# /home/coder/.local/bin is over-mounted at runtime with the generated home's
+# .local/bin (read-write, hosts the opt-in LSP/formatter binaries), which would
+# hide anything baked into the image there (claude, uv). /usr/local/bin is
+# root-owned, on PATH, and never mounted over.
+USER root
+RUN set -e; \
+    for b in /home/coder/.local/bin/*; do \
+        [ -e "$b" ] || continue; \
+        mv "$b" /usr/local/bin/; \
+    done; \
+    chown -R coder:coder /home/coder/.local/bin 2>/dev/null || true; \
+    command -v claude && command -v uv && claude --version
+USER coder
 
 # Create the writable home tree, owned by coder and group-writable (g+rwX) so
 # the wrapper can grant any host UID access with `--group-add coder` (a name
