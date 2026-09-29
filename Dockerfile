@@ -108,13 +108,20 @@ RUN curl -fsSL https://claude.ai/install.sh | bash -s "${CLAUDE_CODE_VERSION}" &
 # .local/bin (read-write, hosts the opt-in LSP/formatter binaries), which would
 # hide anything baked into the image there (claude, uv). /usr/local/bin is
 # root-owned, on PATH, and never mounted over.
+# The Claude installer lays down SYMLINKS into ~/.local/share/claude/versions/,
+# and that tree is itself shadow-mounted at runtime (sessions dir), which would
+# leave dangling links — so copy DEREFERENCED (-L), never move the links.
 USER root
 RUN set -e; \
     for b in /home/coder/.local/bin/*; do \
-        [ -e "$b" ] || continue; \
-        mv "$b" /usr/local/bin/; \
+        if [ ! -e "$b" ] && [ ! -L "$b" ]; then continue; fi; \
+        if [ -L "$b" ]; then echo "dereferencing $b -> $(readlink "$b")"; fi; \
+        cp -aL "$b" /usr/local/bin/; \
+        rm -rf "$b"; \
     done; \
     chown -R coder:coder /home/coder/.local/bin 2>/dev/null || true; \
+    ls -la /usr/local/bin/claude; \
+    test -f /usr/local/bin/claude && test ! -L /usr/local/bin/claude && test -x /usr/local/bin/claude; \
     command -v claude && command -v uv && claude --version
 USER coder
 

@@ -209,8 +209,14 @@ grep -q 'https://claude.ai/install.sh' "$dockerfile" ||
     fail "Dockerfile must use the native installer (claude.ai/install.sh)"
 # Image-provided CLIs must live outside the home bin dir: the generated home's
 # .local/bin is over-mounted at runtime and would shadow them (claude/uv).
+# They must be materialized as real files: the installer lays down symlinks
+# into ~/.local/share/claude/versions/, which is itself shadow-mounted.
 grep -q '/usr/local/bin' "$dockerfile" ||
     fail "Dockerfile must move image CLIs to /usr/local/bin (home .local/bin is shadow-mounted)"
+grep -q 'cp -aL' "$dockerfile" ||
+    fail "Dockerfile must dereference installer symlinks (their targets are shadow-mounted too)"
+grep -q 'test ! -L /usr/local/bin/claude' "$dockerfile" ||
+    fail "Dockerfile must assert the installed claude is a real file, not a link"
 if grep -qE 'npm (install|add).*(-g|@anthropic)|pnpm add -g.*@opencode' "$dockerfile"; then
     fail "Dockerfile must not install the agent via npm/pnpm"
 fi
