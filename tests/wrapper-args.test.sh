@@ -4,7 +4,7 @@
 # HOME/CONFIG_DIR and asserts the resulting files and docker flags.
 #
 # Usage: bash tests/wrapper-args.test.sh
-# shellcheck disable=SC2034  # globals below are consumed by sourced config-lib.sh functions
+# shellcheck disable=SC2034,SC2088  # globals feed sourced config-lib.sh; literal ~ appears in messages
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -186,10 +186,17 @@ for banned in "$HOME/.npmrc" "$HOME/.gitconfig"; do
     fi
 done
 
-# Nothing from the wrapper config or install dirs may be mounted.
-if grep -q 'claude-dockerized' <<<"$volumes"; then
-    fail "wrapper CONFIG_DIR must not be mounted into the container"
-fi
+# Nothing from the wrapper config dir may be mounted except the generated home
+# (CCODE_HOME lives inside CONFIG_DIR). Matching paths, not the project name,
+# keeps this independent of where TMPDIR points.
+while IFS= read -r vol; do
+    case "$vol" in
+    "$CCODE_HOME"/* | "$CCODE_HOME":*) ;;
+    "$CONFIG_DIR" | "$CONFIG_DIR":* | "$CONFIG_DIR"/*)
+        fail "wrapper CONFIG_DIR must not be mounted into the container ($vol)"
+        ;;
+    esac
+done <<<"$volumes"
 
 # No inline permission payloads and no legacy auto-update vars.
 if grep -qE 'OPENCODE_|OCODE_' <<<"$common"; then
@@ -329,9 +336,9 @@ if [ "$have_node" = true ]; then
     grep -qxF -- "type=bind,source=$ssh_sock,target=$ssh_sock" <<<"$ssh_mounts" ||
         fail "SSH agent socket must be mounted (--mount, not -v)"
     grep -qx -- "$HOME/.ssh/config:/home/coder/.ssh/config:ro" <<<"$ssh_mounts" ||
-        fail "~/.ssh/config must be mounted read-only" # shellcheck disable=SC2088
+        fail "~/.ssh/config must be mounted read-only"
     grep -qx -- "$HOME/.ssh/known_hosts:/home/coder/.ssh/known_hosts:ro" <<<"$ssh_mounts" ||
-        fail "~/.ssh/known_hosts must be mounted read-only" # shellcheck disable=SC2088
+        fail "~/.ssh/known_hosts must be mounted read-only"
     if grep -qE '(^|/)id_|\.ssh:/home/coder/\.ssh(:|$)' <<<"$ssh_mounts"; then
         fail "SSH private material must never be mounted"
     fi
