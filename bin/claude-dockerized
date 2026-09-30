@@ -860,10 +860,11 @@ Security Features:
     - Isolated environment: only access to mounted project directory
     - Persistent config: all Claude Code state lives on the host under
       ~/.config/claude-dockerized/home/ and survives restarts and image
-      rebuilds. Managed files (settings.json, hooks) are mounted READ-ONLY:
-      edit them on the host (or with 'config edit')
-    - Security layer: native PreToolUse hooks + permissions.deny + sandbox,
-      generated once on the host and delivered read-only; auto-updates are
+      rebuilds. The policy (/etc/claude-code/managed-settings.json) and the
+      hooks are mounted READ-ONLY (change them with 'config edit' + 'config
+      sync'); ~/.claude/settings.json stays writable for /model and /config
+    - Security layer: native PreToolUse hooks + managed permissions.deny,
+      generated on the host and delivered read-only; auto-updates are
       disabled (DISABLE_AUTOUPDATER=1) so the pinned version always runs
     - Remote flows allowed: git over SSH, remote MCP (http/sse), registries
       and APIs work in every policy mode; only destruction, exfiltration,
