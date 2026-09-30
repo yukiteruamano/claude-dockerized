@@ -374,6 +374,34 @@ lsp_bin_ok() {
     esac
 }
 
+# Repair a uv-created link that points at the throwaway container's absolute
+# mount path (/opt/lsp-bin/...): uv links the executable with an absolute
+# target, which dangles on the host where that path does not exist. When the
+# real binary is present under $bindir, rewrite the link relative so the
+# shared-home tree stays host-portable (the container installs, the home
+# persists). Returns 0 when nothing needed doing or the repair succeeded.
+# Usage: lsp_repair_uv_link <bindir>
+lsp_repair_uv_link() {
+    local bindir="${1:-}" link target resolved rest
+    [ -n "$bindir" ] || return 0
+    link="$bindir/.lsp/uv-bin/ruff"
+    [ -L "$link" ] || return 0
+    lsp_bin_ok "$link" && return 0
+    target=$(readlink "$link" 2>/dev/null) || return 0
+    case "$target" in
+    /opt/lsp-bin/*) ;;
+    *) return 0 ;;
+    esac
+    resolved="$bindir/${target#/opt/lsp-bin/}"
+    [ -x "$resolved" ] || return 0
+    rest="${resolved#"$bindir/.lsp/"}"
+    case "$rest" in
+    "$resolved") return 0 ;; # outside the .lsp tree: don't guess
+    *) ln -sfn "../$rest" "$link" 2>/dev/null || return 0 ;;
+    esac
+    lsp_bin_ok "$link"
+}
+
 # Expected version-stamp for the current LSP/formatter request (pins + server
 # list + flags). Compared against $bindir/.lsp-versions so a pin bump
 # reinstalls once and an installed set stays silent afterwards.
@@ -404,6 +432,9 @@ ensure_lsp_formatters() {
     [ -n "${_LSP_FORMATTERS_DONE:-}" ] && return 0
     local bindir="$CCODE_HOME/.local/bin"
     mkdir -p "$bindir" 2>/dev/null || return 0
+    # Heal a container-absolute uv link from a previous install before
+    # deciding what is missing: a repaired tree skips docker entirely.
+    lsp_repair_uv_link "$bindir" || true
 
     local -a npm_pkgs=() npm_bins=()
     local want_ruff=false entry
@@ -501,6 +532,7 @@ fi
     # (stale .lsp tree, partial uv/npm install) must retry next run, not stay
     # silent with a "success" log.
     local verify_fail=false b
+    lsp_repair_uv_link "$bindir" || true
     for b in "${npm_bins[@]}"; do
         lsp_bin_ok "$bindir/$b" || { config_warning "LSP binary missing after install: $b (retry on next run)"; verify_fail=true; }
     done

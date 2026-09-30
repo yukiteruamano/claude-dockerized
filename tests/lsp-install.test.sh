@@ -88,6 +88,27 @@ ensure_lsp_formatters >/dev/null 2>&1
 check "non-executable file triggers reinstall" install_run
 for b in typescript-language-server pyright-langserver ruff; do : >"$CCODE_HOME/.local/bin/$b"; chmod +x "$CCODE_HOME/.local/bin/$b"; done
 
+# A container-absolute uv link is healed on the host without docker: uv leaves
+# .lsp/uv-bin/ruff -> /opt/lsp-bin/.lsp/uv-tools/ruff/bin/ruff, which dangles
+# on the host even though the real binary persisted in the shared home.
+rm -rf "$CCODE_HOME/.local/bin/.lsp"
+mkdir -p "$CCODE_HOME/.local/bin/.lsp/uv-tools/ruff/bin" "$CCODE_HOME/.local/bin/.lsp/uv-bin"
+: >"$CCODE_HOME/.local/bin/.lsp/uv-tools/ruff/bin/ruff"
+chmod +x "$CCODE_HOME/.local/bin/.lsp/uv-tools/ruff/bin/ruff"
+ln -sfn /opt/lsp-bin/.lsp/uv-tools/ruff/bin/ruff "$CCODE_HOME/.local/bin/.lsp/uv-bin/ruff"
+ln -sfn .lsp/uv-bin/ruff "$CCODE_HOME/.local/bin/ruff"
+reset_calls
+ensure_lsp_formatters >/dev/null 2>&1
+check_not "container-absolute uv link heals without a container" install_run
+check "healed ruff resolves on the host" lsp_bin_ok "$CCODE_HOME/.local/bin/ruff"
+
+# Same absolute link but the real binary never persisted: still reinstalls.
+rm -f "$CCODE_HOME/.local/bin/.lsp/uv-tools/ruff/bin/ruff"
+reset_calls
+ensure_lsp_formatters >/dev/null 2>&1
+check "unhealable uv link triggers reinstall" install_run
+for b in typescript-language-server pyright-langserver ruff; do : >"$CCODE_HOME/.local/bin/$b"; chmod +x "$CCODE_HOME/.local/bin/$b"; done
+
 # Second call in the same process is a no-op (check_config + run_claude used
 # to spawn two throwaway containers per `run`).
 reset_calls
