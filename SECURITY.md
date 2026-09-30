@@ -20,14 +20,14 @@ policy mode.
 |---------|-----|
 | Non-root execution | Image has no `sudo` (no binary, no sudoers); the wrapper starts the container with `--user <host uid>:<host gid>` and `--cap-drop=ALL`, so no root process runs at any point and `entrypoint.sh` performs no privilege changes |
 | Project-only writes | Only the project directory and the generated home are mounted; a file hook denies edits whose absolute path is outside the project (resolving symlinks via `realpath`, so a link inside the project cannot be used to escape). Only the project and `/tmp/claude` are writable |
-| Managed settings | `settings.json` is generated on the host (permissions `deny`/`ask`, `sandbox`, `disableBypassPermissionsMode: disable`, `DISABLE_AUTOUPDATER: 1`) and mounted **read-only** as a single file; a session cannot relax its own rules. `disableAllHooks` is detected by `doctor`/`sync --check` |
+| Managed policy | `config/managed-settings.json` is rendered on the host (permissions `deny`/`ask`, guard hooks, `allowManagedHooksOnly`, `disableBypassPermissionsMode: disable`, `DISABLE_AUTOUPDATER: 1`; `allowManagedPermissionRulesOnly` in `strict`) and mounted **read-only** as `/etc/claude-code/managed-settings.json`, the highest-precedence settings source, so neither `~/.claude/settings.json` nor a project `.claude/settings*.json` can override it. `sync --check` compares it byte-for-byte with a fresh render; `doctor` checks it is read-only |
 | Native hooks | Versioned `PreToolUse` hooks (`hooks/claude-guard-*.sh`, exit 2 blocks) evaluate the vendored policy sets in `strict`, `balanced` (default) or `none` modes, plus mode-independent backstops. Remote flows (git SSH, `https` registries/MCP) are allowed in all modes; only destruction, exfiltration, secrets and Docker escapes are blocked |
-| No auto-updates | `env.DISABLE_AUTOUPDATER=1` is always set in the managed settings (verified by `claude doctor`); upgrades happen only through `claude-dockerized update` (image rebuild with a pinned `CLAUDE_CODE_VERSION`) |
+| No auto-updates | `env.DISABLE_AUTOUPDATER=1` is always set in the managed policy (verified by `claude doctor`); upgrades happen only through `claude-dockerized update` (image rebuild with a pinned `CLAUDE_CODE_VERSION`) |
 | Secret reads | Managed `permissions.deny` rules plus the hooks refuse reads of `.env` (except `.env.example`), `*.pem`, `*.key`, `auth.json`, `credentials*`, `~/.npmrc`, `~/.mcp-auth/`, `~/.ssh/`, SSH keys (`id_rsa`, `id_eddsa`, `id_ecdsa`, `id_dsa`) and `private-keys-v1.d/` — both via file tools and from shell commands |
 | GnuPG agent forwarding (opt-in) | `setting.gpg_agent_support=true` mirrors only the public keyring (`pubring.kbx` / `public-keys.d`) and forwards the host `gpg-agent` socket (preferring the restricted `S.gpg-agent.extra`), mounted at a dedicated path and exposed through a symlink in the mirrored keyring; the host agent is started on demand unless `setting.gpg_autostart_agent=false` (after a `gpg-connect-agent` liveness probe); the mirrored config keeps `use-keyboxd` and sets `no-autostart`, and the container starts keyboxd at boot; the full-control main socket is only used with `setting.gpg_allow_main_socket=true`; `private-keys-v1.d/` is never copied or mounted, and a custom mount of `~/.gnupg` is refused |
 | SSH agent forwarding (opt-in) | `setting.ssh_agent_support=true` forwards only the host `SSH_AUTH_SOCK` and mounts `~/.ssh/config`/`known_hosts` read-only; private keys (`id_*`, `*.pem`, `*.key`) are never mounted, and a custom mount of `~/.ssh` is refused |
 | Dangerous commands | Deny rules + hook backstops for `sudo`, `rm -rf /`, `mkfs`, `dd of=/dev/…`, `shutdown`/`reboot`; `git push` requires approval |
-| Self-protection | Managed files are mounted **read-only** (fine-grained mounts, never `~/.claude` as a whole); the hooks and policies are mirrored into the generated home on the host by the wrapper, so a session cannot relax its own rules or add a persistent hook/MCP server. Credentials (`.credentials.json`, `0600`) live in a read-write mount |
+| Self-protection | The policy directory, the guard hooks and `CLAUDE.md` are mounted **read-only**; the hooks and policies are mirrored into the generated home on the host by the wrapper. User and project hooks are ignored (`allowManagedHooksOnly`), and the generated `~/.claude` (user settings, credentials `0600`, plugins, memory) is read-write so `/model` and `/config` persist. The host `~/.claude` is never mounted. MCP servers (`~/.claude.json`) and plugins stay writable — see Known limitations |
 | Policy patterns | The vendored policy pattern sets, evaluated by `hooks/guard-eval.js` with the same first-match semantics upstream uses (see `policies/README.md`) |
 | LSP/formatters (opt-in) | `setting.lsp`/`setting.formatters` install binaries into the generated home (`~/.local/bin`) and generate `.lsp.json`; nothing is installed system-wide, so the image stays slim and rebuilds keep working |
 
@@ -77,8 +77,9 @@ policy mode.
   the built-in backstops. Remote flows are explicitly allowed in all modes.
 - **Project mount is read-write and shares the host filesystem.** The agent can
   modify (or delete) anything inside the mounted project directory.
-- **Managed files are read-only.** `settings.json`, hooks and `CLAUDE.md` in
-  the generated home are read-only mounts, so in-session changes to them do not
+- **Managed files are read-only.** The policy (`/etc/claude-code`), hooks and
+  `CLAUDE.md` are read-only mounts (user preferences in `~/.claude/settings.json`
+  are writable), so in-session changes to them do not
   persist; `claude mcp add/remove` and `claude plugin install/update/remove` do
   not work from the container — use the host (`config claude path` shows
   where). Auth/MCP-OAuth (`login`/`logout`) live in read-write mounts, so they
@@ -98,7 +99,7 @@ policy mode.
   command could still reach data that is not mounted at all. The bare `*key`
   heuristic also blocks unrelated names ending in "key" (e.g. `monkey`
   is explicitly allowed; `mykey` is treated as a key file).
-- **Inline secrets in managed settings abort the run.** Credentials in settings
+- **Inline secrets in Claude settings abort the run.** Credentials in settings
   must use environment-variable substitution or `apiKeyHelper`; literal
   `apiKey`/`token`/`secret`/`password` values are rejected by the wrapper and
   reported by `doctor`. Keep the values in `setting.env_file` (never mounted,
