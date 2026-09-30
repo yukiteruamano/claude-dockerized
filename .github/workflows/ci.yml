@@ -71,7 +71,7 @@ jobs:
       - name: JS syntax
         run: |
           node --check hooks/guard-eval.js
-          node --check lib/merge-settings.js
+          node --check lib/migrate-settings.js
           for f in tests/*.mjs tests/lib/*.mjs; do node --check "$f"; done
 
       - name: All suites (guard, corpus, wrapper, mounts, config, update, CLI)
