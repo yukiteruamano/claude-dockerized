@@ -35,7 +35,8 @@
   they reach docker [T-07].
 - **Nothing executable or secret in a read-write mount** without a
   detection or strict-mode story (`lib/integrity-lib.sh`,
-  `setting.hardening`) [T-01, T-02, T-05].
+  `setting.hardening`) [T-01, T-05]; read-write binds come only from the
+  generated home and the project, never a host CLI or token dir [T-02].
 - **Defaults do not change behavior silently.** New hardening is opt-in (a
   setting) plus detection by default; say so in the commit.
 - **`set -e` traps:** a function must not end with `[ … ] && cmd`; a

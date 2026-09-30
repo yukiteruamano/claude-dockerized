@@ -85,7 +85,7 @@
 # Runtime hardening profile (opt-in; default off keeps today's behavior).
 #   standard = init process + pids limit (fork bombs) + private IPC
 #   strict   = standard + read-only root filesystem (tmpfs for /tmp and caches),
-#              read-only plugins/skills/agents/commands/~/.local/bin/.composio
+#              read-only plugins/skills/agents/commands/~/.local/bin
 #              and project .git hooks/config, bridge network unless
 #              setting.network is set. Install plugins/LSP from the host.
 #
@@ -93,7 +93,7 @@
 
 # Session integrity check (default on): fingerprints the persistent paths a
 # session could plant code in (project .git hooks/config and Claude settings,
-# ~/.local/bin, plugins, skills, agents, commands, MCP servers, ~/.composio)
+# ~/.local/bin, plugins, skills, agents, commands, MCP servers)
 # and reports every change after the session; log: audit/sessions.jsonl.
 #
 # setting.integrity_check=true
@@ -140,7 +140,6 @@
 # Common examples:
 #   mount.gitconfig=~/.gitconfig:/home/coder/.gitconfig
 #   mount.gitignore_global=~/.config/git/gitignore_global:/home/coder/.config/git/gitignore_global
-#   mount.composio=~/.composio:/home/coder/.composio:rw
 
 # ============================================
 # Secrets (env file only)
