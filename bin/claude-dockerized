@@ -751,8 +751,8 @@ show_config() {
         sync_security_layer "${1:-}"
         ;;
     claude)
-        # The managed Claude config is mounted read-only in the container;
-        # edit the wrapper-managed sources here on the host.
+        # User preferences (read-write in the container) can be edited here;
+        # the managed policy is regenerated from the wrapper config.
         local cc_sub="${1:-path}"
         local cc_config="$CCODE_HOME/.claude/settings.json"
         case "$cc_sub" in
@@ -760,12 +760,18 @@ show_config() {
             echo "$cc_config"
             ;;
         edit)
-            print_error "settings.json is wrapper-managed (template wins); edit the wrapper config instead: $0 config edit"
-            print_info "File: $cc_config"
-            exit 1
+            local editor
+            if ! editor=$(resolve_editor); then
+                print_error "No editor found (set \$EDITOR or install sensible-editor, vi or nano)"
+                exit 1
+            fi
+            "$editor" "$cc_config"
+            ;;
+        policy)
+            echo "$CCODE_HOME/etc/claude-code/managed-settings.json"
             ;;
         *)
-            print_error "Usage: $0 config claude [path|edit]"
+            print_error "Usage: $0 config claude [path|edit|policy]"
             exit 1
             ;;
         esac
@@ -814,7 +820,7 @@ Commands:
     update [--check|--yes|--no-build|--claude-version X]   Full upgrade: git pull + sync + image rebuild
     version             Show wrapper, guard and Claude Code versions
     config [show|edit|path|sync]      Wrapper config (INI)
-    config claude [path|edit]         Managed Claude settings (read-only in container)
+    config claude [path|edit|policy]  User Claude settings (writable) / managed policy path
     config credentials path           Credentials file path (values never printed)
     clean               Remove the Docker image
     help                Show this help message
