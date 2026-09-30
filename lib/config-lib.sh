@@ -135,8 +135,8 @@ SECURITY_POLICY="balanced"      # Security policy mode: strict | balanced | none
 MEMORY=""                       # Optional container memory limit (docker --memory), e.g. 4g
 CPUS=""                         # Optional container CPU limit (docker --cpus), e.g. 2
 ENV_FILE=""                     # Optional dotenv file with secrets (docker --env-file), must live under CONFIG_DIR
-CLAUDE_MODEL=""                 # Optional default model (passed as --model and settings.json model); empty = Claude default
-CLEANUP_DAYS="7"                # Local session-data retention (settings.json cleanupPeriodDays); empty = Claude default
+CLAUDE_MODEL=""                 # Optional default model (passed as --model); empty = Claude default / last /model choice
+CLEANUP_DAYS="7"                # Local session-data retention (managed cleanupPeriodDays); empty = Claude default
 LSP_ENABLED=false               # Enable native LSP support (binaries + .lsp.json live in CCODE_HOME)
 LSP_SERVERS="ts,python"         # CSV of language servers to configure when setting.lsp=true
 FORMATTERS_ENABLED=false        # Enable native formatters (binaries + enabledPlugins in CCODE_HOME)
@@ -223,10 +223,10 @@ ensure_claude_dirs() {
 }
 
 # Ensure the claude-dockerized directory and its generated security layer exist.
-# This directory is the host-side source of truth for the sandbox: its managed
-# settings.json template, CLAUDE.md rules, native hooks and policy data are
-# mirrored read-only into the generated home (never mounted as a whole, so a
-# session cannot reach or edit these sources).
+# This directory is the host-side source of truth for the sandbox: its
+# CLAUDE.md rules, native hooks and policy data are mirrored read-only into
+# the generated home, next to the rendered managed policy (never mounted as a
+# whole, so a session cannot reach or edit these sources).
 # Files are only created when missing — user edits are never overwritten.
 # Check whether a file parses as JSON. Tries node, then python3; without either
 # the check is skipped (return 2 = unknown, never a false failure).
@@ -662,8 +662,8 @@ EOF
         config_success "Created security rules at $CONFIG_DIR/CLAUDE.md"
     fi
 
-    # Mirror the security layer into the generated home using fine-grained
-    # mounts (option A): settings.json (ro), hooks-guard (ro) and CLAUDE.md.
+    # Mirror the security layer into the generated home: hooks-guard and
+    # CLAUDE.md (read-only overlays) and the managed policy (etc/claude-code).
     # These copies are wrapper-managed and overwritten on every run, so edit
     # the sources in "$CONFIG_DIR" instead.
     local claude_dir="$CCODE_HOME/.claude"
@@ -1541,9 +1541,9 @@ validate_claude_config() {
 # no-new-privileges neutralizes setuid binaries and cap-drop removes Linux
 # capabilities the non-root process never needs.
 # Security note: unlike the previous generation, no permission rules travel
-# inline — Claude Code has no inline-config equivalent. The managed
-# settings.json (with permissions, hooks, sandbox and DISABLE_AUTOUPDATER) is
-# delivered via fine-grained read-only mounts (see build_standard_volume_args),
+# inline — Claude Code has no inline-config equivalent. The managed policy
+# (permissions, hooks, DISABLE_AUTOUPDATER) is delivered read-only as
+# /etc/claude-code/managed-settings.json (see build_standard_volume_args),
 # and the hooks enforce the policy modes.
 # Usage: build_common_docker_args
 build_common_docker_args() {
