@@ -8,7 +8,7 @@ _claude_dockerized() {
     COMPREPLY=()
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
-    opts="run auth models exec mcp plugin stats debug doctor install upgrade build update version config clean help --help -h"
+    opts="run auth models exec mcp plugin stats debug doctor install upgrade build update rollback version config clean help --help -h"
 
     case "${prev}" in
         run)
@@ -41,7 +41,19 @@ _claude_dockerized() {
             return 0
             ;;
         upgrade|update)
-            mapfile -t COMPREPLY < <(compgen -W "--check --yes --no-build --claude-version" -- "${cur}")
+            mapfile -t COMPREPLY < <(compgen -W "--check --dry-run --yes --no-build --channel --claude-version --allow-unsigned --trust-key --help" -- "${cur}")
+            return 0
+            ;;
+        --channel)
+            mapfile -t COMPREPLY < <(compgen -W "tags branch" -- "${cur}")
+            return 0
+            ;;
+        --trust-key)
+            mapfile -t COMPREPLY < <(compgen -f -- "${cur}")
+            return 0
+            ;;
+        rollback)
+            mapfile -t COMPREPLY < <(compgen -W "--yes --help" -- "${cur}")
             return 0
             ;;
         install)
