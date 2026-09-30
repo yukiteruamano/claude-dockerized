@@ -1,11 +1,104 @@
 # Threat model — `claude-dockerized`
 
-> Catalog of threat ids referenced by the test suites (`tests/`) and the
-> Red / Blue / Yellow documents. Each id maps to at least one test or a
-> documented known gap (`known_gap` / `gap T-xx …`), which reports as XFAIL
-> until the fix lands and turns red afterwards until the marker is dropped.
-> Status legend: **gap** = reproduces today, **mitigated** = test green,
-> **accepted** = documented residual risk.
+> Part of the security documentation set: [SECURITY.md](../../SECURITY.md)
+> (index) · **THREAT-MODEL** (this file) · [RED](RED.md) (attack playbook) ·
+> [BLUE](BLUE.md) (controls, detection, response) · [YELLOW](YELLOW.md)
+> (secure development). Every threat id below is exercised by at least one
+> test (`tests/threat-matrix.test.sh` enforces it).
+
+## 1. Scope and assumptions
+
+`claude-dockerized` runs an autonomous coding agent (Claude Code) inside a
+Docker container on a developer workstation. The agent executes shell
+commands, edits files and fetches URLs, and it can be steered by untrusted
+content (prompt injection in a repo, an issue, a web page, an MCP tool
+result). **The agent is treated as untrusted code execution inside the
+container.**
+
+Assumptions:
+
+- The host OS, the Docker daemon and the user's account are trusted and
+  patched. Rootless Docker or userns-remap further reduce a daemon escape.
+- The container runtime enforces `--user`, `--cap-drop=ALL`,
+  `no-new-privileges` and the default seccomp/AppArmor profiles.
+- The user reviews what the agent changes in the project (it is read-write
+  by design).
+- Remote development flows (git over SSH, registries, remote MCP, APIs) must
+  keep working in every policy mode: the design blocks destruction,
+  exfiltration of secrets and escapes, not "talking to the network".
+
+Out of scope: a malicious host user, kernel/runtime 0-days (container escape
+through the kernel), a compromised Anthropic API, and data the user
+deliberately mounts or puts in the env file.
+
+## 2. Assets
+
+| Asset | Where | Why it matters |
+|-------|-------|----------------|
+| Host account and files | outside the container | code execution as the user = full compromise |
+| Provider credentials | `setting.env_file` → container env; `.credentials.json` | account takeover, billing |
+| Signing oracles | forwarded SSH / GnuPG agents (opt-in) | impersonation (signed commits, SSH auth) |
+| MCP OAuth tokens | `~/.mcp-auth` | access to connected services |
+| Security layer | managed policy, hooks, policies, wrapper code | disabling it removes every soft control |
+| Project source | the mounted project | integrity of the user's work, supply chain of their users |
+| Future sessions | generated home (`~/.local/bin`, plugins, skills, MCP config) | persistence across sessions and projects |
+
+## 3. Adversaries
+
+| Actor | Capability |
+|-------|------------|
+| A1 Prompt-injected agent | arbitrary commands and file edits inside the container, within the guard |
+| A2 Malicious dependency / tool | runs as the agent (npm/pip install scripts, a planted MCP server) |
+| A3 Compromised upstream | pushes code or tags to the wrapper repo, or to an image input (base image, installers) |
+| A4 Network attacker (MITM) | tampers with unauthenticated downloads |
+| A5 Other local user (multi-user host) | races predictable paths in shared `/tmp` |
+
+## 4. Trust boundaries
+
+```
+ upstream (A3) ──fetch──▶ [B4 update/build] ──▶ host: wrapper code, image
+                                                   │
+ host user ─────────────────────────────────── [B1 wrapper → docker run]
+                                                   │  --user uid:gid, cap-drop=ALL,
+                                                   │  no-new-privileges, managed ro mounts
+                                                   ▼
+                      ┌──────────── container (A1, A2) ────────────┐
+                      │ Claude Code ──tool call──▶ [B2 guard hooks] │
+                      │        │                                   │
+                      │        ▼ writes                            │
+                      │ project (rw) · generated home (rw/ro)       │
+                      └──────────────┬─────────────────────────────┘
+                                     ▼
+            [B3 persistence: host git runs .git hooks; next session runs
+             ~/.local/bin, plugins, MCP servers]
+```
+
+- **B1 host → container**: what the wrapper grants (user, capabilities,
+  mounts, env, network).
+- **B2 agent → tool**: what the guard lets a tool call do.
+- **B3 container → host / future**: what outlives the session and is later
+  executed by someone more trusted.
+- **B4 upstream → host**: what an update or a build brings in.
+
+## 5. STRIDE per boundary
+
+| Boundary | S | T | R | I | D | E |
+|----------|---|---|---|---|---|---|
+| B1 | — | project settings relax the policy (T-03) | — | env secrets (T-19), metadata IP (T-25) | fork bomb / memory (T-23) | root in container (T-28), docker socket (T-20), setuid (T-21), writable rootfs (T-22), bad mounts (T-07), wrapper as root (T-27) |
+| B2 | — | tamper with the guard's helpers (T-04) or policy data (T-11) | — | secret reads (T-10, T-26), allowlist shadowing (T-08), unrouted tools (T-09) | — | guard fail-open (T-11) |
+| B3 | — | host-executed git config/hooks (T-01), host CLI (T-02) | integrity log (BLUE) | — | — | persistence into later sessions (T-05) |
+| B4 | impostor release (T-12) | rewritten tags, unpinned inputs (T-24), CI actions (T-29), LSP installs (T-14) | release-verify workflow | — | bad update without rollback (T-13) | — |
+| Host-side wrapper | — | layer drift/tampering (T-15), merge keeps `disableAllHooks` (T-16), env file in a mounted dir (T-18) | — | — | — | shared temp race (T-17) |
+| Settings | false assurance from an inert sandbox (T-30) | — | — | — | — | — |
+
+Network exposure through `--network host` (T-06) spans B1 (information
+disclosure of loopback services) and is accepted by default.
+
+## 6. Threat matrix
+
+Status legend: **mitigated** (control in place, test green) · **detected**
+(reported, not prevented) · **accepted** (documented residual risk) ·
+**opt-in** (prevention available behind a setting).
 
 | Id | Threat | Status | Evidence (tests) |
 |----|--------|--------|------------------|
@@ -40,5 +133,21 @@
 | T-29 | CI supply chain: mutable action tags (cf. CVE-2026-33634) | mitigated | `.github/workflows/ci.yml` SHA pins |
 | T-30 | Inert `sandbox.enabled` gives false assurance (no bubblewrap in the image) | mitigated | tool-coverage `managed policy keeps the inert sandbox off` |
 
-Non-security contract gaps use `UX-xx` / `CFG-xx` labels in the same
-XFAIL mechanism (tracked in the CLI/UX phase).
+## 7. Residual risk (accepted)
+
+- **The guard is a heuristic, the container is the boundary.** Pattern
+  matching over command text cannot be complete (quoting, encoding,
+  interpreters). Everything the container can reach, a determined agent can
+  reach; the controls that do not depend on text matching are B1 (user,
+  capabilities, mounts) and B3 detection.
+- **The project is read-write.** The agent can change or delete anything in
+  it, including code that runs later on the host (tests, build scripts). Git
+  hooks/config are detected by default and read-only under
+  `setting.hardening=strict`; everything else needs human review.
+- **Provider credentials are visible to the session** (T-19): they configure
+  the CLI. Keep unrelated secrets out of the env file.
+- **Forwarded agents are signing oracles** while a session runs (opt-in).
+- **`--network host` by default** (T-06): loopback services on the host are
+  reachable. Use `setting.network=bridge` or `setting.hardening=strict`.
+- **First-use trust.** The release key and the Claude binary hash are
+  trusted on first use; verify the key fingerprint out of band.
