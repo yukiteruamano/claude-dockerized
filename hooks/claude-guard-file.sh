@@ -1,59 +1,156 @@
 #!/bin/bash
-# claude-guard-file.sh - Claude Code PreToolUse hook (matcher: Read|Edit|Write|Glob|Grep).
+# claude-guard-file.sh - Claude Code PreToolUse hook
+# (matcher: Read|Edit|MultiEdit|Write|NotebookEdit|Glob|Grep).
 #
 # Native security enforcement for claude-dockerized. Mounted read-only into the
-# container at /home/coder/.claude/hooks-guard/. Edit from the host at
-# ~/.config/claude-dockerized/hooks/ instead.
+# container at /home/coder/.claude/hooks-guard/. Edit the repo copy (hooks/)
+# and run `claude-dockerized config sync`: the installed copy under
+# ~/.config/claude-dockerized/hooks/ is verified byte for byte, and local
+# edits there are reported as drift and restored (with a .bak).
 #
 # Protocol: JSON via stdin, exit 2 + stderr blocks, exit 0 means no objection.
+# Any other exit is a non-blocking error for Claude Code (the tool still
+# runs), so every failure path here exits 2.
 #
-# CLAUDE_DOCKERIZED_GUARD_VERSION=1
+# CLAUDE_DOCKERIZED_GUARD_VERSION=2
 
 set -u
 
-INPUT="$(cat)"
+HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-extract_field() {
+# Trusted tool path (T-04): never the inherited PATH (see claude-guard-bash.sh).
+TRUSTED_PATH="/usr/local/lib/claude-dockerized/bin:/usr/bin:/bin"
+if [ -r "$HOOK_DIR/hook-path" ]; then
+    IFS= read -r TRUSTED_PATH <"$HOOK_DIR/hook-path" || true
+fi
+export PATH="$TRUSTED_PATH"
+
+deny_reason() {
+    printf 'Blocked by claude-dockerized security policy: %s\n' "$1" >&2
+    exit 2
+}
+
+# Policy mode: ./policy-mode wins over the env fallback; unknown → strict.
+POLICY_MODE="${CLAUDE_DOCKERIZED_POLICY:-balanced}"
+if [ -r "$HOOK_DIR/policy-mode" ]; then
+    IFS= read -r POLICY_MODE <"$HOOK_DIR/policy-mode" || true
+fi
+POLICY_MODE="$(printf '%s' "$POLICY_MODE" | tr '[:upper:]' '[:lower:]')"
+case "$POLICY_MODE" in
+strict | balanced | none) ;;
+off) POLICY_MODE="none" ;;
+*) POLICY_MODE="strict" ;;
+esac
+
+INPUT="$(cat)"
+[ -n "$INPUT" ] || deny_reason "empty hook payload"
+
+# Parse the payload into "key<TAB>value" lines:
+#   tool   <tool_name>
+#   write  1                       (the call writes: content/edits/new_source)
+#   read   <path-like field>       (checked against the secret deny list)
+#   target <path being written>    (checked against the write roots)
+# Grep's `pattern` is a content regex, not a path, so only Glob's is a target.
+# Values with control characters are refused by the parsers (exit 3).
+# shellcheck disable=SC2016 # jq program, not a shell expansion
+JQ_PROG='
+def s: if type == "string" then . else empty end;
+def clean: if test("[\u0000-\u001f]") then error("control character") else . end;
+if type != "object" then error("not an object") else . end
+| (.tool_name // "" | s) as $tool
+| (.tool_input // {}) as $ti
+| if ($ti | type) != "object" then error("tool_input") else . end
+| "tool\t\($tool | clean)",
+  (if ($ti.content | type) == "string" or ($ti.edits | type) == "array" or ($ti.new_source | type) == "string" then "write\t1" else empty end),
+  ([$ti.file_path, $ti.notebook_path, $ti.path, $ti.glob, (if $tool == "Glob" then $ti.pattern else empty end)][] | s | clean | "read\t\(.)"),
+  ([$ti.file_path, $ti.notebook_path][] | s | clean | "target\t\(.)")
+'
+PY_PROG='import json,sys
+def bad(): sys.exit(3)
+try:
+    d=json.load(sys.stdin)
+except Exception:
+    bad()
+if not isinstance(d,dict): bad()
+ti=d.get("tool_input") or {}
+if not isinstance(ti,dict): bad()
+tool=d.get("tool_name") if isinstance(d.get("tool_name"),str) else ""
+def clean(v):
+    if any(ord(c)<32 for c in v): bad()
+    return v
+out=["tool\t"+clean(tool)]
+if isinstance(ti.get("content"),str) or isinstance(ti.get("edits"),list) or isinstance(ti.get("new_source"),str):
+    out.append("write\t1")
+fields=["file_path","notebook_path","path","glob"]+(["pattern"] if tool=="Glob" else [])
+for f in fields:
+    if isinstance(ti.get(f),str): out.append("read\t"+clean(ti[f]))
+for f in ["file_path","notebook_path"]:
+    if isinstance(ti.get(f),str): out.append("target\t"+clean(ti[f]))
+print("\n".join(out))'
+NODE_PROG='let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
+const bad=()=>process.exit(3);let d;try{d=JSON.parse(s)}catch{bad()}
+if(!d||typeof d!=="object"||Array.isArray(d))bad();
+const ti=d.tool_input??{};if(typeof ti!=="object"||Array.isArray(ti))bad();
+const tool=typeof d.tool_name==="string"?d.tool_name:"";
+const clean=v=>{if(/[\u0000-\u001f]/.test(v))bad();return v};
+const out=["tool\t"+clean(tool)];
+if(typeof ti.content==="string"||Array.isArray(ti.edits)||typeof ti.new_source==="string")out.push("write\t1");
+for(const f of ["file_path","notebook_path","path","glob",...(tool==="Glob"?["pattern"]:[])])if(typeof ti[f]==="string")out.push("read\t"+clean(ti[f]));
+for(const f of ["file_path","notebook_path"])if(typeof ti[f]==="string")out.push("target\t"+clean(ti[f]));
+console.log(out.join("\n"))})'
+
+parse_payload() {
     if command -v jq >/dev/null 2>&1; then
-        jq -r '.tool_input.file_path // .tool_input.path // .tool_input.pattern // empty' 2>/dev/null <<<"$INPUT" && return 0
+        jq -r "$JQ_PROG" 2>/dev/null <<<"$INPUT" || return 3
+        return 0
     fi
     if command -v python3 >/dev/null 2>&1; then
-        python3 -c 'import json,sys
-try:
-    ti=json.load(sys.stdin).get("tool_input",{})
-    print(ti.get("file_path",ti.get("path",ti.get("pattern",""))))
-except Exception:
-    print("")' 2>/dev/null <<<"$INPUT" && return 0
+        python3 -c "$PY_PROG" 2>/dev/null <<<"$INPUT" || return 3
+        return 0
     fi
     if command -v node >/dev/null 2>&1; then
-        node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const ti=JSON.parse(s).tool_input||{};console.log(ti.file_path??ti.path??ti.pattern??"")}catch{console.log("")}})' 2>/dev/null <<<"$INPUT" && return 0
+        node -e "$NODE_PROG" 2>/dev/null <<<"$INPUT" || return 3
+        return 0
     fi
-    printf ''
+    return 4
 }
 
-extract_tool() {
-    if command -v jq >/dev/null 2>&1; then
-        jq -r '.tool_name // empty' 2>/dev/null <<<"$INPUT" && return 0
-    fi
-    printf ''
-}
+PARSED="$(parse_payload)"
+case $? in
+0) ;;
+4) deny_reason "no JSON parser (jq, python3 or node) on the trusted path" ;;
+*) deny_reason "unparseable hook payload" ;;
+esac
 
-TARGET="$(extract_field)"
-[ -z "$TARGET" ] && exit 0
-TOOL="$(extract_tool)"
+TOOL="" WRITES=false
+READS=() TARGETS=()
+while IFS=$'\t' read -r key value; do
+    case "$key" in
+    tool) TOOL="$value" ;;
+    write) WRITES=true ;;
+    read) [ -n "$value" ] && READS+=("$value") ;;
+    target) [ -n "$value" ] && TARGETS+=("$value") ;;
+    esac
+done <<<"$PARSED"
+
+case "$TOOL" in
+Edit | MultiEdit | Write | NotebookEdit) WRITES=true ;;
+esac
 
 deny_read() {
-    printf 'Blocked by claude-dockerized security policy: refusing to read %s\n' "$TARGET" >&2
+    printf 'Blocked by claude-dockerized security policy: refusing to read %s\n' "$1" >&2
     exit 2
 }
 
 deny_write() {
-    printf 'Blocked by claude-dockerized security policy: write outside project directory: %s\n' "$TARGET" >&2
+    printf 'Blocked by claude-dockerized security policy: write outside project directory: %s\n' "$1" >&2
     exit 2
 }
 
 # --- Secret reads (literal path + symlink-resolved target) ---
-DENY_RE='(^|/)\.env(\.([^e]|$)|$)|(^|/)\.env\..*|\.pem$|\.key$|(^|/)auth\.json$|(^|/)id_(rsa|dsa|ecdsa|ed25519|ed25519_sk|ecdsa_sk|eddsa)$|(^|/)\.ssh(/|$)''|(^|/)\.npmrc$|(^|/)\.mcp-auth(/|$)|(^|/)credentials(\.|$)|(^|/)private-keys-v1\.d(/|$)|(^|/)\.gitconfig$|(^|/)\.composio(/|$)'
+# Credential stores (T-10): OAuth store, git/pypi creds, netrc, docker/gh/kube/gcloud.
+# Case-insensitive: SERVER.KEY or .PEM exports are the same secrets.
+DENY_RE='(^|/)\.env(\.([^e]|$)|$)|(^|/)\.env\..*|\.pem$|\.key$|(^|/)auth\.json$|(^|/)id_(rsa|dsa|ecdsa|ed25519|ed25519_sk|ecdsa_sk|eddsa)$|(^|/)\.ssh(/|$)''|(^|/)\.npmrc$|(^|/)\.mcp-auth(/|$)|(^|/)\.?credentials(\.|$)|(^|/)private-keys-v1\.d(/|$)|(^|/)\.gitconfig$|(^|/)\.composio(/|$)|(^|/)\.(netrc|git-credentials|pypirc)$|(^|/)\.docker/config\.json$|(^|/)gh/hosts\.yml$|(^|/)\.kube/config$|(^|/)\.config/gcloud(/|$)'
 
 check_deny_read() {
     local p="$1"
@@ -66,7 +163,7 @@ check_deny_read() {
     *.pub) return 1 ;;
     *public-keys.d*|*authorized_keys*) return 1 ;;
     esac
-    printf '%s' "$p" | grep -Eq "$DENY_RE" && return 0
+    printf '%s' "$p" | grep -Eiq "$DENY_RE" && return 0
     # bare *key heuristic (mykey, deploy_key) — allow monkey-style words only
     # when they do not look like key files
     if printf '%s' "$p" | grep -Eq '(^|/)[[:alnum:]._-]*key$'; then
@@ -81,40 +178,25 @@ check_deny_read() {
     return 1
 }
 
-if check_deny_read "$TARGET"; then deny_read; fi
-if command -v realpath >/dev/null 2>&1; then
-    REAL="$(realpath -m "$TARGET" 2>/dev/null || true)"
-    # resolve symlink when it exists
-    if [ -e "$TARGET" ]; then
-        REAL2="$(realpath "$TARGET" 2>/dev/null || true)"
-        [ -n "$REAL2" ] && REAL="$REAL2"
+for target in "${READS[@]}"; do
+    check_deny_read "$target" && deny_read "$target"
+    if command -v realpath >/dev/null 2>&1; then
+        REAL="$(realpath -m "$target" 2>/dev/null || true)"
+        # resolve symlink when it exists
+        if [ -e "$target" ]; then
+            REAL2="$(realpath "$target" 2>/dev/null || true)"
+            [ -n "$REAL2" ] && REAL="$REAL2"
+        fi
+        if [ -n "${REAL:-}" ] && [ "$REAL" != "$target" ] && check_deny_read "$REAL"; then deny_read "$target"; fi
     fi
-    if [ -n "${REAL:-}" ] && [ "$REAL" != "$TARGET" ] && check_deny_read "$REAL"; then deny_read; fi
-fi
+done
 
-# --- Write confinement (Edit|Write only) ---
-case "$TOOL" in
-Edit|Write|edit|write) ;;
-*)
-    # When tool name is absent (older hook payloads), apply confinement to any
-    # target that looks like a write. The Bash hook handles commands; here we
-    # only confine when the payload carries file content or is explicitly a
-    # write-like tool. Fall back to confining absolute/relative paths that are
-    # not plain reads: check for tool_input.content presence.
-    HAS_CONTENT=false
-    if command -v jq >/dev/null 2>&1; then
-        jq -e '.tool_input.content // empty | type == "string"' >/dev/null 2>&1 <<<"$INPUT" && HAS_CONTENT=true
-    fi
-    # Heuristic from the test harness: the harness under tests/ passes the
-    # action via CLAUDE_DOCKERIZED_TEST_ACTION env.
-    if [ "${CLAUDE_DOCKERIZED_TEST_ACTION:-}" = "edit" ] || [ "${CLAUDE_DOCKERIZED_TEST_ACTION:-}" = "write" ]; then
-        HAS_CONTENT=true
-    fi
-    [ "$HAS_CONTENT" = true ] || exit 0
-    ;;
-esac
+# --- Write confinement (every tool that writes) ---
+[ "$WRITES" = true ] || exit 0
+[ "${#TARGETS[@]}" -gt 0 ] || deny_reason "write without a target path"
 
-# Roots: project dir(s) + approved scratch. Never "/" .
+# Roots: the project dir + approved scratch. Never "/". The hook's cwd is only
+# a fallback when Claude Code does not export CLAUDE_PROJECT_DIR.
 ROOTS=""
 add_root() {
     case "$1" in
@@ -124,7 +206,7 @@ add_root() {
 }
 add_root "${CLAUDE_PROJECT_DIR:-}"
 add_root "${CLAUDE_DOCKERIZED_PROJECT_DIR:-}"
-add_root "$PWD"
+[ -z "${CLAUDE_PROJECT_DIR:-}${CLAUDE_DOCKERIZED_PROJECT_DIR:-}" ] && add_root "$PWD"
 add_root "/tmp/claude"
 
 lexical() {
@@ -146,27 +228,6 @@ lexical() {
     printf '%s' "$out"
 }
 
-if [[ "$TARGET" == /* ]]; then
-    ABS="$(lexical "$TARGET")"
-else
-    BASE="${CLAUDE_PROJECT_DIR:-${CLAUDE_DOCKERIZED_PROJECT_DIR:-$PWD}}"
-    ABS="$(lexical "$BASE/$TARGET")"
-fi
-
-CANDIDATES="$ABS"
-if [ -e "$ABS" ] && command -v realpath >/dev/null 2>&1; then
-    R="$(realpath "$ABS" 2>/dev/null || true)"
-    [ -n "$R" ] && CANDIDATES="$CANDIDATES|$R"
-fi
-PARENT="${ABS%/*}"
-[ -z "$PARENT" ] && PARENT="/"
-if [ -e "$PARENT" ] && command -v realpath >/dev/null 2>&1; then
-    RP="$(realpath "$PARENT" 2>/dev/null || true)"
-    if [ -n "$RP" ]; then
-        CANDIDATES="$CANDIDATES|$RP/${ABS##*/}"
-    fi
-fi
-
 is_inside() {
     local c="$1" r
     local OLDIFS="$IFS"; IFS='|'
@@ -181,13 +242,42 @@ is_inside() {
     return 1
 }
 
-OLDIFS="$IFS"; IFS='|'
-for c in $CANDIDATES; do
-    if ! is_inside "$c"; then
-        IFS="$OLDIFS"
-        deny_write
+# Strict mode also protects files the host executes or that relax the policy
+# (T-01, T-03): git hooks/config and project Claude settings. In balanced mode
+# the wrapper's session integrity check reports changes to them instead.
+is_protected() {
+    case "$1" in
+    */.git/hooks/* | */.git/config | */.claude/settings.json | */.claude/settings.local.json) return 0 ;;
+    esac
+    return 1
+}
+
+BASE="${CLAUDE_PROJECT_DIR:-${CLAUDE_DOCKERIZED_PROJECT_DIR:-$PWD}}"
+for target in "${TARGETS[@]}"; do
+    if [[ "$target" == /* ]]; then
+        ABS="$(lexical "$target")"
+    else
+        ABS="$(lexical "$BASE/$target")"
     fi
+
+    CANDIDATES=("$ABS")
+    if [ -e "$ABS" ] && command -v realpath >/dev/null 2>&1; then
+        R="$(realpath "$ABS" 2>/dev/null || true)"
+        [ -n "$R" ] && CANDIDATES+=("$R")
+    fi
+    PARENT="${ABS%/*}"
+    [ -z "$PARENT" ] && PARENT="/"
+    if [ -e "$PARENT" ] && command -v realpath >/dev/null 2>&1; then
+        RP="$(realpath "$PARENT" 2>/dev/null || true)"
+        [ -n "$RP" ] && CANDIDATES+=("$RP/${ABS##*/}")
+    fi
+
+    for c in "${CANDIDATES[@]}"; do
+        is_inside "$c" || deny_write "$target"
+        if [ "$POLICY_MODE" = strict ] && is_protected "$c"; then
+            deny_reason "strict policy protects $target (git hooks/config, project Claude settings)"
+        fi
+    done
 done
-IFS="$OLDIFS"
 
 exit 0

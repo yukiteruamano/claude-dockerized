@@ -43,6 +43,7 @@ const MODES = ["strict", "balanced", "none"];
 const report = makeReporter("guard-bypass-corpus");
 
 const ids = new Set();
+const extraStages = [];
 for (const c of corpus.cases) {
   if (ids.has(c.id)) throw new Error(`duplicate corpus id: ${c.id}`);
   ids.add(c.id);
@@ -50,10 +51,18 @@ for (const c of corpus.cases) {
   const script = SCRIPTS[c.hook];
   if (!script) throw new Error(`case ${c.id}: unknown hook ${c.hook}`);
   const payload = substitute(c.payload);
+  // policy_mode_file: stage a ./policy-mode with this content (the wrapper's
+  // read-only mode pin) for this case only.
+  let caseStage = stage;
+  if (typeof c.policy_mode_file === "string") {
+    caseStage = stageHooks();
+    extraStages.push(caseStage);
+    writeFileSync(join(caseStage, "policy-mode"), c.policy_mode_file);
+  }
   for (const mode of MODES) {
     const want = typeof c.expect === "string" ? c.expect : c.expect[mode];
     const gap = typeof c.known_gap === "object" ? c.known_gap?.[mode] : c.known_gap;
-    const { verdict } = runHook(stage, script, {
+    const { verdict } = runHook(caseStage, script, {
       mode,
       payload,
       env: { CLAUDE_PROJECT_DIR: dirs.PROJECT, HOME: dirs.HOME, ...(c.env ?? {}) },
@@ -63,5 +72,5 @@ for (const c of corpus.cases) {
   }
 }
 
-cleanup(stage, root);
+cleanup(stage, root, ...extraStages);
 report.finish();

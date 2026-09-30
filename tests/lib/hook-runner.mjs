@@ -19,6 +19,7 @@ import {
   symlinkSync,
   existsSync,
   realpathSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, delimiter } from "node:path";
@@ -34,13 +35,17 @@ export const POLICY_FILES = [
 ];
 
 // Copy the hooks and policy data into a fresh temp dir. Returns its path.
-export function stageHooks() {
+// The hooks never trust the inherited PATH (T-04): they read their tool path
+// from ./hook-path (the image default otherwise), so the stage pins one —
+// the test host's PATH unless `hookPath` is given.
+export function stageHooks({ hookPath = process.env.PATH ?? "" } = {}) {
   const stage = mkdtempSync(join(tmpdir(), "claude-guard-"));
   mkdirSync(join(stage, "policies"), { recursive: true });
   for (const f of HOOK_FILES) copyFileSync(join(repo, "hooks", f), join(stage, f));
   for (const f of POLICY_FILES) {
     copyFileSync(join(repo, "policies", f), join(stage, "policies", f));
   }
+  writeFileSync(join(stage, "hook-path"), `${hookPath}\n`);
   return stage;
 }
 
