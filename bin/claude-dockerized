@@ -186,13 +186,13 @@ run_cli_command() {
         return 0
     fi
 
-    # Stop the per-session GnuPG relay when the container exits (also on error
-    # or Ctrl-C via the EXIT/INT/TERM trap).
-    trap 'stop_gpg_relay "$GPG_RELAY_SOCKET"' EXIT INT TERM
+    # Stop the per-session GnuPG relay when the container exits. Only EXIT is
+    # trapped while docker owns the TTY (see run_claude).
+    trap 'stop_gpg_relay "$GPG_RELAY_SOCKET"' EXIT
     "${docker_cmd[@]}"
+    trap - EXIT
     stop_gpg_relay "$GPG_RELAY_SOCKET"
     GPG_RELAY_SOCKET=""
-    trap - EXIT INT TERM
 }
 
 # Function to run Claude Code authentication
@@ -313,13 +313,16 @@ run_claude() {
         fi
     fi
 
-    # Stop the per-session GnuPG relay when the container exits.
-    trap 'stop_gpg_relay "$GPG_RELAY_SOCKET"' EXIT INT TERM
+    # Stop the per-session GnuPG relay when the container exits. Only EXIT is
+    # trapped while docker owns the TTY: trapping INT/TERM here would run the
+    # cleanup twice (trap + explicit call below) and could steal Ctrl-C from
+    # `docker run -it`, leaving the terminal looking hung on exit.
+    trap 'stop_gpg_relay "$GPG_RELAY_SOCKET"' EXIT
     local rc=0
     "${docker_cmd[@]}" || rc=$?
+    trap - EXIT
     stop_gpg_relay "$GPG_RELAY_SOCKET"
     GPG_RELAY_SOCKET=""
-    trap - EXIT INT TERM
 
     if [ -n "$snap_before" ]; then
         if snap_after=$(mktemp 2>/dev/null); then
@@ -329,7 +332,11 @@ run_claude() {
         rm -f "$snap_before" "$snap_after"
     fi
 
-    # Propagate Claude Code's own exit status (130 on Ctrl-C, etc.).
+    # Propagate Claude Code's own exit status (130 on Ctrl-C, etc.). Ctrl-C is
+    # not an error: exit quietly so the prompt returns clean.
+    if [ "$rc" -eq 130 ]; then
+        exit 130
+    fi
     if [ "$rc" -ne 0 ]; then
         print_error "Claude Code exited with status $rc"
         exit "$rc"

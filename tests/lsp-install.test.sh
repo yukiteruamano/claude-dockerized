@@ -43,7 +43,7 @@ export PATH="$STUB:$PATH"
 source "$REPO_DIR/lib/config-lib.sh"
 
 calls_of() { cat "$CALLS"/"$1".* 2>/dev/null; }
-reset_calls() { rm -f "$CALLS"/*; }
+reset_calls() { rm -f "$CALLS"/*; unset _LSP_FORMATTERS_DONE; }
 install_run() { calls_of docker | grep -qx run; }
 run_has() { calls_of docker | grep -qxF -- "$1"; }
 run_has_text() { calls_of docker | grep -qF -- "$1"; }
@@ -65,11 +65,38 @@ check "only the generated-home bin dir is writable" run_has "$CCODE_HOME/.local/
 check_not "host npm is never called" [ -n "$(calls_of npm)" ]
 check_not "host uv is never called" [ -n "$(calls_of uv)" ]
 
-# Already installed: nothing to do, no container.
-for b in typescript-language-server pyright-langserver ruff; do : >"$CCODE_HOME/.local/bin/$b"; done
+# Already installed: nothing to do, no container. Binaries must be executable
+# (a dangling symlink or a non-executable placeholder counts as missing).
+for b in typescript-language-server pyright-langserver ruff; do : >"$CCODE_HOME/.local/bin/$b"; chmod +x "$CCODE_HOME/.local/bin/$b"; done
 reset_calls
 ensure_lsp_formatters >/dev/null 2>&1
 check_not "nothing reinstalled when present" install_run
+
+# A dangling symlink is missing: it must reinstall (regression: `-e` treated
+# the stale link as present and looped installs every run).
+rm -f "$CCODE_HOME/.local/bin/ruff"
+ln -s .lsp/uv-bin/ruff "$CCODE_HOME/.local/bin/ruff"
+reset_calls
+ensure_lsp_formatters >/dev/null 2>&1
+check "dangling symlink triggers reinstall" install_run
+
+# A non-executable placeholder is missing too.
+rm -f "$CCODE_HOME/.local/bin/ruff"
+: >"$CCODE_HOME/.local/bin/ruff"
+reset_calls
+ensure_lsp_formatters >/dev/null 2>&1
+check "non-executable file triggers reinstall" install_run
+for b in typescript-language-server pyright-langserver ruff; do : >"$CCODE_HOME/.local/bin/$b"; chmod +x "$CCODE_HOME/.local/bin/$b"; done
+
+# Second call in the same process is a no-op (check_config + run_claude used
+# to spawn two throwaway containers per `run`).
+reset_calls
+ensure_lsp_formatters >/dev/null 2>&1
+ensure_lsp_formatters >/dev/null 2>&1
+check_not "second call in the same process spawns no container" install_run
+reset_calls
+ensure_lsp_formatters >/dev/null 2>&1
+check "stamp written when up to date" [ -f "$CCODE_HOME/.local/bin/.lsp-versions" ]
 
 # Formatters alone install their binaries (was: nothing without lsp=true).
 LSP_ENABLED=false
