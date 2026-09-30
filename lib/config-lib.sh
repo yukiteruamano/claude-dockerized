@@ -651,8 +651,10 @@ ensure_claude_dockerized_config() {
 # Security Rules — claude-dockerized
 
 Global rules for every session running inside the claude-dockerized container.
-They are enforced alongside the `permissions` rules in `settings.json` and the
-native `PreToolUse` hooks in `hooks-guard/`. Do not attempt to weaken or bypass them.
+They are enforced alongside the managed policy
+(`/etc/claude-code/managed-settings.json`: permissions, hooks, env; read-only,
+highest precedence) and the native `PreToolUse` hooks in `hooks-guard/`. Do not
+attempt to weaken or bypass them.
 
 ## Commands
 
@@ -667,7 +669,12 @@ native `PreToolUse` hooks in `hooks-guard/`. Do not attempt to weaken or bypass 
 - Never read or print secret files: `.env*` (except `.env.example`), `*.pem`,
   `*.key`, `auth.json`, SSH keys (`id_rsa`, `id_dsa`, `id_ecdsa`, `id_ed25519`,
   `id_*_sk`, `~/.ssh/`), `~/.npmrc`, `~/.mcp-auth/`, `~/.gnupg/private-keys-v1.d/`,
-  tokens or credentials of any kind.
+  credential stores (`.credentials.json`, `.git-credentials`, `.netrc`,
+  docker/gh/kube/gcloud configs), tokens or credentials of any kind.
+- Do not add git hooks, change `.git/config`, project `.claude/settings*.json`,
+  MCP servers, plugins, skills or files in `~/.local/bin` unless the user asked
+  for exactly that: they run on the host or in later sessions, and every
+  change is reported to the user after the session.
 - Only modify files inside the mounted project directory; touching anything
   outside it requires explicit user approval.
 
@@ -704,11 +711,10 @@ commit messages, heredocs and `grep` patterns. Keep that in mind:
 - Do not reference `/var/run/docker.sock` directly; Docker access is opt-in.
 - Do not set `disableAllHooks`: it would silence the security hooks and break
   the `config sync --check` contract.
-- The security policy lives in `/etc/claude-code/managed-settings.json`
-  (read-only, highest precedence). `~/.claude/settings.json` holds user
-  preferences: change them only through `/model`, `/config` or `/permissions`,
-  never by editing settings files directly.
-  MCP `add`/`remove` and plugin `install`/`update`/`remove` are host-only.
+- Never edit settings from inside the container: the managed policy and
+  `~/.claude/settings.json` are read-only mounts, and project settings cannot
+  override the managed policy. MCP `add`/`remove` and plugin
+  `install`/`update`/`remove` are host-only.
   `mcp login`/`logout`/`list` keep working (tokens live in a read-write dir).
 - Prefer small, single-purpose commands; the full string is inspected.
 - If a legitimate command is wrongly blocked, tell the user instead of finding
@@ -1092,7 +1098,7 @@ check_security_layer() {
 
     # Managed session rules must carry the current markers (sync regenerates
     # them with a backup when they predate the template).
-    if [ -f "$CONFIG_DIR/CLAUDE.md" ] && grep -q "Language Tooling" "$CONFIG_DIR/CLAUDE.md" 2>/dev/null && grep -q "## Tool Usage" "$CONFIG_DIR/CLAUDE.md" 2>/dev/null && grep -q "## Core Workflow" "$CONFIG_DIR/CLAUDE.md" 2>/dev/null && grep -q 'private-keys-v1.d' "$CONFIG_DIR/CLAUDE.md" 2>/dev/null && grep -q 'Manejo remoto' "$CONFIG_DIR/CLAUDE.md" 2>/dev/null && grep -q 'setting.env_file' "$CONFIG_DIR/CLAUDE.md" 2>/dev/null; then
+    if [ -f "$CONFIG_DIR/CLAUDE.md" ] && grep -q "Language Tooling" "$CONFIG_DIR/CLAUDE.md" 2>/dev/null && grep -q "## Tool Usage" "$CONFIG_DIR/CLAUDE.md" 2>/dev/null && grep -q "## Core Workflow" "$CONFIG_DIR/CLAUDE.md" 2>/dev/null && grep -q 'private-keys-v1.d' "$CONFIG_DIR/CLAUDE.md" 2>/dev/null && grep -q 'Manejo remoto' "$CONFIG_DIR/CLAUDE.md" 2>/dev/null && grep -q 'setting.env_file' "$CONFIG_DIR/CLAUDE.md" 2>/dev/null && grep -q 'managed-settings.json' "$CONFIG_DIR/CLAUDE.md" 2>/dev/null; then
         config_success "CLAUDE.md rules (in sync)"
     else
         config_warning "CLAUDE.md rules stale or missing"
