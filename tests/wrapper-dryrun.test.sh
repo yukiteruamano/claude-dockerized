@@ -196,14 +196,14 @@ check "root refusal explains why" has_text "Do not run this wrapper as root" "$O
 check_not "root starts no container" ran_container
 rm -f "$STUB/id"
 
-# --- UX contract gaps (fixed in Phase 5) -------------------------------------------
+# --- CLI contract (exit code, pass-through args, help) -------------------------------
 DOCKER_STUB_RUN_RC=130 wrapper run "$PROJECT"
 assert_eq "$RC" 130 "run propagates the container exit code (UX-01)"
 wrapper run "$PROJECT" -- --resume
-gap UX-02 "run passes extra args to claude" argv_has --resume
+check "UX-02 run passes extra args to claude" argv_has --resume
 wrapper help
-gap UX-03 "help names the command, not the install path" lacks_text "$REPO_DIR/bin" "$OUT"
+check "UX-03 help names the command, not the install path" lacks_text "$REPO_DIR/bin" "$OUT"
 wrapper run --help
-gap UX-04 "run --help prints usage" [ "$RC" = 0 ]
+check "UX-04 run --help prints usage" [ "$RC" = 0 ]
 
 t_summary

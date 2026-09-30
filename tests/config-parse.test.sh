@@ -66,7 +66,7 @@ last_line_parsed() {
     load_config >/dev/null 2>&1
     [ "$MEMORY" = 4g ]
 }
-gap CFG-01 "last line without a trailing newline is parsed" last_line_parsed
+check "CFG-01 last line without a trailing newline is parsed" last_line_parsed
 
 # --- policy modes flow into the container env ----------------------------------------
 policy_arg_for() {

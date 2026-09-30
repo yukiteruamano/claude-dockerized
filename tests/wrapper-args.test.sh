@@ -947,7 +947,7 @@ if command -v timeout >/dev/null 2>&1; then
 fi
 
 # Doctor inner script must stay syntactically valid.
-sed -n "/^DOCTOR_SCRIPT='\$/,/^'\$/p" "$REPO_DIR/bin/claude-dockerized" | sed '1d;$d' | bash -n ||
+bash -n "$REPO_DIR/lib/doctor-container.sh" ||
     fail "doctor inner script must pass bash -n"
 
 # `claude-dockerized install` flags: --help, unknown options, and fully non-interactive --yes.
