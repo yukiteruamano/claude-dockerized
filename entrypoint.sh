@@ -22,8 +22,18 @@ export USER=coder
 # Ensure user-installed CLIs are on PATH for Claude Code and every process it
 # spawns (e.g. composio, LSP servers and formatters installed under
 # ~/.local/bin in the generated home). Kept explicit here so it
-# holds even if the image PATH changes.
-export PATH="/home/coder/.local/bin:$PATH"
+# holds even if the image PATH changes. It goes LAST: the directory is
+# writable by the session and persists across runs, so it must never shadow
+# image binaries such as claude, node, git or jq (T-04).
+user_bin=/home/coder/.local/bin
+path_list=":$PATH:"
+while [[ "$path_list" == *":$user_bin:"* ]]; do
+    path_list="${path_list//:$user_bin:/:}"
+done
+path_list="${path_list#:}"
+path_list="${path_list%:}"
+# Never leave an empty entry: it would put the current directory on PATH.
+export PATH="${path_list:+$path_list:}$user_bin"
 
 # Source NVM to make Node.js available
 export NVM_DIR="/home/coder/.nvm"
