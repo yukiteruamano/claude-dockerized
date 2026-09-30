@@ -148,24 +148,28 @@ build_common_docker_args
 volumes="$(printf '%s\n' "${VOLUME_ARGS[@]}")"
 common="$(printf '%s\n' "${DOCKER_COMMON_ARGS[@]}")"
 
-# Managed settings.json must be mounted read-only as a single file (option A).
-grep -qx -- "$CCODE_HOME/.claude/settings.json:/home/coder/.claude/settings.json:ro" <<<"$volumes" ||
-    fail "managed settings.json must be mounted read-only (file mount)"
+# Managed policy dir must be mounted read-only at /etc/claude-code.
+grep -qx -- "$CCODE_HOME/etc/claude-code:/etc/claude-code:ro" <<<"$volumes" ||
+    fail "managed policy must be mounted read-only at /etc/claude-code"
 
-# Hooks-guard dir must be mounted read-only.
+# ~/.claude comes from the generated home read-write (a single-file bind
+# would make /model fail with EBUSY); the guard and rules overlay it ro.
+grep -qx -- "$CCODE_HOME/.claude:/home/coder/.claude:rw" <<<"$volumes" ||
+    fail "generated ~/.claude must be mounted read-write as a directory"
 grep -qx -- "$CCODE_HOME/.claude/hooks-guard:/home/coder/.claude/hooks-guard:ro" <<<"$volumes" ||
     fail "hooks-guard must be mounted read-only"
-
-# The whole ~/.claude dir must never be mounted (option A: fine-grained only).
-if grep -qE -- ":/home/coder/\.claude(:| |$)" <<<"$volumes"; then
-    fail "the whole ~/.claude dir must never be mounted (fine-grained mounts only)"
+grep -qx -- "$CCODE_HOME/.claude/CLAUDE.md:/home/coder/.claude/CLAUDE.md:ro" <<<"$volumes" ||
+    fail "CLAUDE.md must be mounted read-only"
+if grep -qE -- ":/home/coder/\.claude/settings\.json" <<<"$volumes"; then
+    fail "settings.json must not be a single-file bind (EBUSY on save)"
 fi
 
-# Credentials, plugins, state and binaries must be read-write.
-grep -qx -- "$CCODE_HOME/.claude/.credentials.json:/home/coder/.claude/.credentials.json:rw" <<<"$volumes" ||
-    fail ".credentials.json must be mounted read-write"
-grep -qx -- "$CCODE_HOME/.claude/plugins:/home/coder/.claude/plugins:rw" <<<"$volumes" ||
-    fail "plugins must be mounted read-write"
+# The host ~/.claude and the wrapper config dir are never mounted.
+if grep -qE -- "^$HOME/\.claude:" <<<"$volumes"; then
+    fail "the host ~/.claude must never be mounted"
+fi
+
+# MCP state and binaries must be read-write.
 grep -qx -- "$CCODE_HOME/.claude.json:/home/coder/.claude.json:rw" <<<"$volumes" ||
     fail ".claude.json must be mounted read-write"
 grep -qx -- "$CCODE_HOME/.local/bin:/home/coder/.local/bin:rw" <<<"$volumes" ||
