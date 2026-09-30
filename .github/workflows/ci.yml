@@ -65,7 +65,7 @@ jobs:
           bash -n hooks/claude-guard-bash.sh
           bash -n hooks/claude-guard-file.sh
           node --check hooks/guard-eval.js
-          node --check lib/merge-settings.js
+          node --check lib/migrate-settings.js
 
       - name: Policy regression tests
         run: node tests/claude-guard.test.mjs

@@ -54,7 +54,7 @@ bash -n lib/*.sh completions/*.sh hooks/*.sh            # Syntax-check lib + com
 shellcheck -x -S warning bin/* lib/*.sh install.sh completions/*.sh hooks/*.sh   # Lint (config in .shellcheckrc)
 cat Dockerfile | docker run --rm -i hadolint/hadolint:latest hadolint -   # Lint Dockerfile
 node --check hooks/guard-eval.js    # Syntax-check the policy evaluator
-node --check lib/merge-settings.js  # Syntax-check the settings merge helper
+node --check lib/migrate-settings.js  # Syntax-check the settings migration helper
 node tests/claude-guard.test.mjs    # Security-policy regression tests (Node 22+)
 bash tests/wrapper-args.test.sh     # Wrapper mount/env contract test (no Docker)
 

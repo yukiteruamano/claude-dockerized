@@ -30,7 +30,7 @@ cat lib/config-lib.sh | docker run --rm -i koalaman/shellcheck:stable -s bash -x
 cat Dockerfile | docker run --rm -i hadolint/hadolint:latest hadolint -
 
 # 4. Security policy regression tests (Node.js 22+) and wrapper contract test
-node --check hooks/guard-eval.js lib/merge-settings.js
+node --check hooks/guard-eval.js lib/migrate-settings.js
 node tests/claude-guard.test.mjs
 bash tests/wrapper-args.test.sh
 ```
