@@ -13,6 +13,8 @@ Run [Claude Code](https://code.claude.com/docs) (native binary, pinned version) 
 - [Configuration](#-configuration)
 - [Portability & Sharing](#-portability--sharing)
 - [Advanced Usage](#-advanced-usage)
+- [Updates, trust and rollback](#-updates-trust-and-rollback)
+- [Hardening profiles and session integrity](#️-hardening-profiles-and-session-integrity)
 - [Performance Optimizations](#-performance-optimizations)
 - [Testcontainers Support](#-testcontainers-support)
 - [Troubleshooting](#-troubleshooting)
@@ -44,15 +46,15 @@ Run [Claude Code](https://code.claude.com/docs) (native binary, pinned version) 
 ### First-Time Setup
 
 ```bash
-# Option A: one-liner (clones to ~/.local/share/claude-dockerized)
-curl -fsSL https://raw.githubusercontent.com/yukiteruamano/claude-dockerized/master/install.sh | bash
+# 1. Install. Recommended: download, inspect, then run
+curl -fsSLO https://raw.githubusercontent.com/yukiteruamano/claude-dockerized/master/install.sh
+less install.sh && bash install.sh
+#    (one-liner: curl -fsSL .../install.sh | bash; from a clone: ./install.sh)
+#    Non-interactive: ./install.sh --yes · only some steps: ./install.sh --only completions,aliases
+#    Pin a release: CCODE_REF=v1.2.0 bash install.sh
 
-# Option B: from a local clone
-./install.sh
-# Non-interactive (recommended defaults, ideal for automation):
-./install.sh --yes
-# Only some sections (config,completions,aliases,global,path,build):
-./install.sh --only completions,aliases
+# 2. Pin the release-signing key (enables verified updates; compare the fingerprint)
+claude-dockerized update --trust-key maintainer.asc
 
 # 3. Build the Docker image
 claude-dockerized build
@@ -97,8 +99,9 @@ claude-dockerized exec "Explain this repo"
 # Check version
 claude-dockerized version
 
-# Update Claude Code (pinned version rebuild)
+# Verified self-update: signed release, preview, confirm, sync, rebuild
 claude-dockerized update
+claude-dockerized rollback        # undo the last update if needed
 ```
 
 ### Global Installation
@@ -128,17 +131,19 @@ cd ~/my-project
 ccd run
 ```
 
-### Shell Completion (Optional)
+### Shell Completion (Automatic)
+
+`claude-dockerized install` wires the completions into your shell rc. To do it by hand:
 
 ```bash
-# Bash (add to ~/.bashrc for permanent installation)
+# Bash (add to ~/.bashrc)
 source /path/to/claude-dockerized/completions/bash.sh
 
-# Zsh (add to ~/.zshrc for permanent installation)
+# Zsh (add to ~/.zshrc, after compinit)
 source /path/to/claude-dockerized/completions/zsh.sh
 ```
 
-After installation, you'll get command completion (`run`, `build`, `update`, `auth`, `models`, `exec`, `mcp`, `plugin`, `stats`, `debug`, `doctor`, `config`, `clean`, `help`), subcommand completion, and directory completion for `run`.
+Every command, its subcommands and flags complete (including `update --channel`, `--trust-key` files, `install --only` steps and `config sync --check`); a CI test keeps the completions in sync with the commands.
 
 ## 📖 Usage
 
@@ -156,12 +161,13 @@ claude-dockerized plugin list    # Loaded plugins
 claude-dockerized stats          # Local session-storage statistics
 claude-dockerized debug paths    # Resolved generated-home paths
 claude-dockerized debug doctor   # Native claude doctor inside the container
-claude-dockerized doctor         # Diagnose install, guard, SSH/GPG, settings, LSP and env file
+claude-dockerized doctor [--json] # Host + container checks, summary, exit 1 on failure
 claude-dockerized install        # Install / repair PATH, config, completions, aliases
-claude-dockerized upgrade --check # Check for updates from GitHub
-claude-dockerized upgrade        # Full upgrade: git pull + sync + image rebuild
-claude-dockerized update         # Full upgrade: git pull + sync + image rebuild
-claude-dockerized version        # Show wrapper, guard and Claude Code versions
+claude-dockerized update --check # 0 up to date, 100 update available, 1 error
+claude-dockerized update         # Verified self-update (signed tag, preview, confirm, sync, rebuild)
+claude-dockerized rollback       # Undo the last update (checkout + previous image)
+claude-dockerized build [--pull] # Build the image (--no-cache, --pull)
+claude-dockerized version [--json] # Wrapper, guard, policy and Claude Code versions (no Docker needed)
 claude-dockerized config show    # Show parsed configuration
 claude-dockerized config edit    # Edit wrapper config in $EDITOR
 claude-dockerized config path    # Print wrapper config file path
@@ -169,8 +175,11 @@ claude-dockerized config sync [--check]  # Refresh security layer (hooks/policie
 claude-dockerized config claude path     # Print the user settings.json path (edit|policy also available)
 claude-dockerized config credentials path # Print credentials file path (values never printed)
 claude-dockerized clean          # Remove the Docker image
-claude-dockerized help           # Show help
+claude-dockerized help [COMMAND] # Overview, or one command's details (also: COMMAND --help)
 ```
+
+`run` passes everything after `--` to Claude Code: `claude-dockerized run . -- --resume`.
+Its exit status is Claude Code's own.
 
 ### Dry Run Mode
 
@@ -182,7 +191,7 @@ DRY_RUN=true claude-dockerized run /path/to/project
 
 This prints the full Docker command with all volume mounts, environment variables, and flags — one flag per line — useful for debugging configuration issues. Secrets travel via `--env-file` (only the file path is shown).
 
-Set `NO_COLOR=1` (or `TERM=dumb`) for plain output without ANSI colors.
+Output is plain when it is not a terminal; `--no-color`, `NO_COLOR=1` or `TERM=dumb` force plain output and `CLICOLOR_FORCE=1` forces color. Warnings and errors go to stderr.
 
 ### Alternative Runners
 
@@ -408,7 +417,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 ```
 
-Then rebuild: `claude-dockerized build` (or `claude-dockerized update --no-build` to skip the rebuild — no, rebuild is needed; use `build`).
+Then rebuild: `claude-dockerized build`.
 
 ### Pinned Claude Code version
 
@@ -418,9 +427,58 @@ ARG CLAUDE_CODE_VERSION=2.1.284
 ```
 
 ```bash
-# One-off rebuild with a different version (also busts the install cache)
+# Rebuild with a different version; the pin is kept for later `build`s and
+# the binary's sha256 is recorded on its first build (a later build of the
+# same version must produce the same bytes)
 claude-dockerized update --claude-version 2.1.300
 ```
+
+## 🔄 Updates, trust and rollback
+
+`claude-dockerized update` only applies code it can verify:
+
+1. fetches once from the pinned `origin` (a changed remote is refused);
+2. picks the newest `vX.Y.Z` tag that fast-forwards your checkout
+   (`--channel branch` follows signed upstream commits instead);
+3. verifies its signature against the keys **you** pinned in
+   `~/.config/claude-dockerized/trust` (`update --trust-key FILE`, confirmed
+   interactively against the fingerprint) — never keys shipped with the update;
+4. shows the commits and diffstat, flagging files that run on your host, in
+   the image or as the guard; asks before applying (`--yes` to skip,
+   `--dry-run` to stop here);
+5. fast-forwards, then the **new** code re-syncs the security layer and
+   rebuilds the image, keeping the previous one as `claude-dockerized:prev`.
+
+`claude-dockerized rollback` restores the previous checkout and image.
+Unsigned releases are refused; `--allow-unsigned` exists for emergencies and
+needs a typed interactive confirmation. Maintainers: see
+[.github/release-keys/README.md](.github/release-keys/README.md).
+
+| Command | Exit status |
+|---------|-------------|
+| `update --check` | 0 up to date · 100 update available · 1 error |
+| `update`, `rollback`, `build` | 0 success · 1 error |
+| `doctor` | 0 all checks pass · 1 any check failed |
+| `run`, `exec` | Claude Code's own exit status |
+
+## 🛡️ Hardening profiles and session integrity
+
+Defaults keep the runtime unchanged. Opt in with `setting.hardening`:
+
+| Profile | Adds |
+|---------|------|
+| `off` (default) | — |
+| `standard` | `--init`, `--pids-limit 4096`, private IPC |
+| `strict` | standard + read-only root filesystem (tmpfs for `/tmp` and caches), read-only plugins / skills / agents / commands / `~/.local/bin` / `.composio` and project `.git` hooks/config, bridge network unless `setting.network` is set |
+
+Image options: `setting.image_strip_setuid=true` (no setuid bits),
+`setting.image_docker_cli=false` (no Docker CLI; only useful with the socket).
+
+After every `run`, the wrapper compares fingerprints of the persistent paths a
+session could plant code in (project git hooks/config and Claude settings,
+`~/.local/bin`, plugins, skills, MCP servers, `.composio`) and lists every
+change; the log is `~/.config/claude-dockerized/audit/sessions.jsonl` and
+`doctor` shows the last entry. Disable with `setting.integrity_check=false`.
 
 ## 🐛 Troubleshooting
 
@@ -466,12 +524,16 @@ claude-dockerized build
 Claude Code never self-updates inside the container by design. To upgrade:
 
 ```bash
-# Full upgrade: git pull + sync + rebuild with the pinned version
+# Verified update (signed release) + sync + rebuild with the pinned version
 claude-dockerized update
 
 # Or rebuild with an explicit version
 claude-dockerized update --claude-version 2.1.300
 ```
+
+If `update` says the release is not signed by a trusted key, pin the
+maintainer key first (`update --trust-key FILE`). If an update broke
+something, `claude-dockerized rollback`.
 
 ### Login Lost / MCP needing re-auth
 
