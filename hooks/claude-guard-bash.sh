@@ -2,17 +2,21 @@
 # claude-guard-bash.sh - Claude Code PreToolUse hook (matcher: Bash).
 #
 # Native security enforcement for claude-dockerized. Mounted read-only into the
-# container at /home/coder/.claude/hooks-guard/. Edit from the host at
-# ~/.config/claude-dockerized/hooks/ instead.
+# container at /home/coder/.claude/hooks-guard/. Edit the repo copy (hooks/)
+# and run `claude-dockerized config sync`: the installed copy under
+# ~/.config/claude-dockerized/hooks/ is verified byte for byte, and local
+# edits there are reported as drift and restored (with a .bak).
 #
 # Protocol: Claude Code passes tool input as JSON via stdin. Exit 2 + stderr
 # blocks the action (feedback to Claude); exit 0 means no objection and the
-# normal permissions flow applies.
+# normal permissions flow applies. Any other exit is a non-blocking error for
+# Claude Code (the tool still runs), so every failure path here exits 2.
 #
-# CLAUDE_DOCKERIZED_GUARD_VERSION=1
+# CLAUDE_DOCKERIZED_GUARD_VERSION=2
 #
-# Policy modes (env CLAUDE_DOCKERIZED_POLICY, set by the wrapper from
-# `setting.security_policy`; default "balanced"):
+# Policy modes (./policy-mode, written by the wrapper next to this hook on the
+# read-only mount; CLAUDE_DOCKERIZED_POLICY is only a fallback because project
+# settings can inject env vars; default "balanced"; unknown values → strict):
 #   strict   — every vendored policy pattern is enforced as-is.
 #   balanced — cloud-tenant rules, admin_bypass rules and patterns that fire on
 #              ordinary local development are dropped (recommended).
@@ -29,29 +33,61 @@ set -u
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 POLICIES_DIR="$HOOK_DIR/policies"
 
-POLICY_MODE="$(printf '%s' "${CLAUDE_DOCKERIZED_POLICY:-balanced}" | tr '[:upper:]' '[:lower:]')"
-[ "$POLICY_MODE" = "off" ] && POLICY_MODE="none"
+# Trusted tool path (T-04): never the inherited PATH, whose first entry is the
+# session-writable ~/.local/bin. ./hook-path (read-only mount; tests stage their
+# own) may pin it; the default holds the image's root-owned binaries.
+TRUSTED_PATH="/usr/local/lib/claude-dockerized/bin:/usr/bin:/bin"
+if [ -r "$HOOK_DIR/hook-path" ]; then
+    IFS= read -r TRUSTED_PATH <"$HOOK_DIR/hook-path" || true
+fi
+export PATH="$TRUSTED_PATH"
+
+deny_reason() {
+    printf 'Blocked by claude-dockerized security policy: %s\n' "$1" >&2
+    exit 2
+}
+
+# Policy mode: ./policy-mode wins over the env fallback; unknown → strict.
+POLICY_MODE="${CLAUDE_DOCKERIZED_POLICY:-balanced}"
+if [ -r "$HOOK_DIR/policy-mode" ]; then
+    IFS= read -r POLICY_MODE <"$HOOK_DIR/policy-mode" || true
+fi
+POLICY_MODE="$(printf '%s' "$POLICY_MODE" | tr '[:upper:]' '[:lower:]')"
+case "$POLICY_MODE" in
+strict | balanced | none) ;;
+off) POLICY_MODE="none" ;;
+*) POLICY_MODE="strict" ;;
+esac
 
 INPUT="$(cat)"
+[ -n "$INPUT" ] || deny_reason "empty hook payload"
 
-# Extract .tool_input.command with jq, python3 or node (best effort).
+# Extract .tool_input.command with jq, python3 or node. A payload that does
+# not parse is refused (exit 3 from the parser); a missing command prints "".
 extract_command() {
     if command -v jq >/dev/null 2>&1; then
-        jq -r '.tool_input.command // empty' 2>/dev/null <<<"$INPUT" && return 0
+        jq -er 'if type == "object" then (.tool_input.command // "") else error("not an object") end' 2>/dev/null <<<"$INPUT" || return 3
+        return 0
     fi
     if command -v python3 >/dev/null 2>&1; then
         python3 -c 'import json,sys
 try:
-    print(json.load(sys.stdin).get("tool_input",{}).get("command",""))
+    d=json.load(sys.stdin)
+    assert isinstance(d,dict)
 except Exception:
-    print("")' 2>/dev/null <<<"$INPUT" && return 0
+    sys.exit(3)
+ti=d.get("tool_input") or {}
+print(ti.get("command","") if isinstance(ti,dict) else "")' 2>/dev/null <<<"$INPUT" || return 3
+        return 0
     fi
     if command -v node >/dev/null 2>&1; then
-        node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s).tool_input?.command??"")}catch{console.log("")}})' 2>/dev/null <<<"$INPUT" && return 0
+        node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{let d;try{d=JSON.parse(s)}catch{process.exit(3)}if(!d||typeof d!=="object")process.exit(3);console.log(d.tool_input?.command??"")})' 2>/dev/null <<<"$INPUT" || return 3
+        return 0
     fi
+    # No parser at all: match the raw payload (over-blocks, never under-blocks).
     printf '%s' "$INPUT"
 }
-CMD="$(extract_command)"
+CMD="$(extract_command)" || deny_reason "unparseable hook payload"
 [ -z "$CMD" ] && exit 0
 
 # Normalize shell word-separator obfuscation back to spaces before matching
@@ -69,59 +105,43 @@ deny_policy() {
     exit 2
 }
 
-# --- Allowlist (never applies to chained/multi-line commands) ---
-is_chained() {
-    case "$CMD" in
-    *';'*|*'&'*|*'|'*) return 0 ;;
-    esac
-    case "$CMD" in
-    *$'\n'*|*$'\r'*) return 0 ;;
-    esac
-    return 1
-}
-if ! is_chained; then
-    case "$CMD" in
-    *.env.example*) exit 0 ;;
-    esac
-    case "$CMD" in
-    *.pem.pub*|*.key.pub*) exit 0 ;;
-    esac
-fi
-
 # --- Vendored policy patterns (exact JS RegExp semantics via node) ---
-if [ "$POLICY_MODE" != "none" ] && command -v node >/dev/null 2>&1; then
-    if [ -f "$POLICIES_DIR/unsafe-tool-patterns.json" ] && [ -f "$POLICIES_DIR/prompt-injection-patterns.json" ]; then
-        export CGB_CMD="$CMD"
-        export CGB_POLICY_MODE="$POLICY_MODE"
-        export CGB_POLICIES_DIR="$POLICIES_DIR"
-        VENDORED_RESULT="$(node "$HOOK_DIR/guard-eval.js" 2>/dev/null)" || VENDORED_RESULT="pass"
-        case "$VENDORED_RESULT" in
-        allow) exit 0 ;;
-        deny\|*)
-            _rid="${VENDORED_RESULT#deny|}"
-            _rid="${_rid%%|*}"
-            _reason="${VENDORED_RESULT#deny|*|}"
-            # Remote-operation safeguard: in balanced/none the vendored set must
-            # never block plain remote flows (see remote-allow tests). The
-            # excluded-ID list above already drops the noisy rules; if a rule
-            # still fires on a plain `git clone ssh:` / registry curl / MCP
-            # https URL, let the built-in backstops decide instead.
-            if [ "$POLICY_MODE" != "strict" ]; then
-                case "$CMD" in
-                git\ clone\ git@*|git\ ls-remote\ git@*|git\ fetch\ git@*|git\ pull\ git@*|git\ push\ git@*)
-                    ;;
-                curl\ https://registry.npmjs.org*|curl\ -*https://registry.npmjs.org*|curl\ https://pypi.org*|curl\ https://files.pythonhosted.org*)
-                    ;;
-                curl\ https://*/mcp*|curl\ https://*mcp*|wget\ https://*/mcp*)
-                    ;;
-                *) deny_policy "$_rid" "$_reason" ;;
-                esac
-            else
-                deny_policy "$_rid" "$_reason"
-            fi
-            ;;
-        esac
-    fi
+# An allow match (templates, public keys) only skips the vendored deny rules;
+# the built-in backstops below always run (T-08).
+if [ "$POLICY_MODE" != "none" ]; then
+    command -v node >/dev/null 2>&1 || deny_reason "policy engine unavailable (node not found on the trusted path)"
+    export CGB_CMD="$CMD"
+    export CGB_POLICY_MODE="$POLICY_MODE"
+    export CGB_POLICIES_DIR="$POLICIES_DIR"
+    VENDORED_RESULT="$(node "$HOOK_DIR/guard-eval.js" 2>/dev/null)" || VENDORED_RESULT="error|policy engine crashed"
+    case "$VENDORED_RESULT" in
+    allow | pass) ;;
+    deny\|*)
+        _rid="${VENDORED_RESULT#deny|}"
+        _rid="${_rid%%|*}"
+        _reason="${VENDORED_RESULT#deny|*|}"
+        # Remote-operation safeguard: in balanced mode the vendored set must
+        # never block plain remote flows (see remote-allow tests). The
+        # excluded-ID list in guard-eval.js already drops the noisy rules; if a
+        # rule still fires on a plain `git clone ssh:` / registry curl / MCP
+        # https URL, let the built-in backstops decide instead.
+        if [ "$POLICY_MODE" != "strict" ]; then
+            case "$CMD" in
+            git\ clone\ git@*|git\ ls-remote\ git@*|git\ fetch\ git@*|git\ pull\ git@*|git\ push\ git@*)
+                ;;
+            curl\ https://registry.npmjs.org*|curl\ -*https://registry.npmjs.org*|curl\ https://pypi.org*|curl\ https://files.pythonhosted.org*)
+                ;;
+            curl\ https://*/mcp*|curl\ https://*mcp*|wget\ https://*/mcp*)
+                ;;
+            *) deny_policy "$_rid" "$_reason" ;;
+            esac
+        else
+            deny_policy "$_rid" "$_reason"
+        fi
+        ;;
+    error\|*) deny_reason "${VENDORED_RESULT#error|}" ;;
+    *) deny_reason "unexpected policy engine output" ;;
+    esac
 fi
 
 # --- Built-in backstops (mode-independent) ---
@@ -160,7 +180,10 @@ match '(^|[^[:alnum:]_])docker([^[:alnum:]_]|$)[^|;&]*--volume[[:space:]]+/:/' &
 match '(^|[^[:alnum:]_])docker([^[:alnum:]_]|$)[^|;&]*--mount[^|;&]*source[[:space:]]*=[[:space:]]*/([[:space:],]|$)' && deny
 # secret path references (any program)
 match '(^|[/[:space:]"'"'"'=:(])auth\.json([[:space:]"'"'"'/):;,]|$)' && deny
-match '(^|[/[:space:]"'"'"'=:(])credentials([[:space:]"'"'"'/.=:;,]|$)' && deny
+match '(^|[/[:space:]"'"'"'=:(.-])credentials([[:space:]"'"'"'/.=:;,]|$)' && deny
+# other credential stores (T-10): netrc, git/pypi creds, docker/gh/kube/gcloud
+match '(^|[/[:space:]"'"'"'=:(])\.(netrc|git-credentials|pypirc)([[:space:]"'"'"'/):;,]|$)' && deny
+match '\.docker/config\.json|(^|[/[:space:]"'"'"'=:(])gh/hosts\.yml|\.kube/config([^[:alnum:]_.-]|$)|\.config/gcloud([/[:space:]"'"'"'):;,]|$)' && deny
 match '(^|[/[:space:]"'"'"'=:(])\.npmrc([[:space:]"'"'"'/):;,]|$)' && deny
 match '(^|[/[:space:]"'"'"'=:(])\.mcp-auth([/[:space:]"'"'"'=:,;]|$)' && deny
 match '(^|[/[:space:]"'"'"'=:(])\.gitconfig([[:space:]"'"'"'/):;,]|$)' && deny
@@ -169,22 +192,17 @@ match '(^|[/[:space:]"'"'"'=:(])id_(rsa|dsa|ecdsa|ed25519|ed25519_sk|ecdsa_sk|ed
 # leak verb + secret token (.pem/.key/key-like/bare *key)
 LEAK='cat|tac|less|more|head|tail|grep|egrep|fgrep|rg|sed|awk|cut|strings|xxd|od|hexdump|base64|base32|cp|mv|install|scp|rsync|tar|zip|gzip|bzip2|xz|curl|wget|nc|ncat|socat|telnet|python[0-9.]*|node|deno|bun|perl|ruby|php|sort|nl|rev|tr|split|comm|join|paste|pr|fmt|expand|unexpand|fold|csplit|diff|cmp|xargs|dd'
 READV='cat|tac|less|more|head|tail|cp|mv|install|scp|rsync|tar|zip|gzip|bzip2|xz|base64|base32|xxd|od|hexdump|strings|dd|python[0-9.]*|node|deno|bun|perl|ruby|php'
-match "($LEAK)[^|;&]*\.pem([^[:alnum:]_.]|$)" && {
-    case "$T" in *.pub*) ;; *) deny ;; esac
-}
-match "($LEAK)[^|;&]*\.key([^[:alnum:]_.]|$)" && {
-    case "$T" in *.pub*) ;; *) deny ;; esac
-}
-match "($LEAK)[^|;&]*(_key|-key|_priv)([^[:alnum:]]|$)" && deny
-match "($READV)[^|;&]*[[:alnum:]._-]*key([^[:alnum:]]|$)" && {
-    case "$T" in *public-keys.d*|*authorized_keys*|*.pub*) ;; *) deny ;; esac
-}
-match '(^|[;&|][[:space:]]*)(source|\.)[[:space:]]+[^[:space:]"'"'"'|;&<>]*\.(pem|key)([^[:alnum:]_.]|$)' && {
-    case "$T" in *.pub*) ;; *) deny ;; esac
-}
-match '<[[:space:]]*[^[:space:]"'"'"'|;&]*\.(pem|key)([^[:alnum:]_.]|$)' && {
-    case "$T" in *.pub*) ;; *) deny ;; esac
-}
+# Public-key tokens (*.pub, public-keys.d/…, authorized_keys) are stripped per
+# token instead of exempting the whole command (T-08): `cp server.key x.pub`
+# still denies on server.key.
+P="$(printf '%s' "$T" | sed -E 's#[^[:space:]"'"'"'|;&<>]*(\.pub|public-keys\.d[^[:space:]"'"'"'|;&<>]*|authorized_keys)([[:space:]"'"'"'|;&<>]|$)#\2#g')"
+pmatch() { printf '%s' "$P" | grep -Eq "$1"; }
+pmatch "($LEAK)[^|;&]*\.pem([^[:alnum:]_.]|$)" && deny
+pmatch "($LEAK)[^|;&]*\.key([^[:alnum:]_.]|$)" && deny
+pmatch "($LEAK)[^|;&]*(_key|-key|_priv)([^[:alnum:]]|$)" && deny
+pmatch "($READV)[^|;&]*[[:alnum:]._-]*key([^[:alnum:]]|$)" && deny
+pmatch '(^|[;&|][[:space:]]*)(source|\.)[[:space:]]+[^[:space:]"'"'"'|;&<>]*\.(pem|key)([^[:alnum:]_.]|$)' && deny
+pmatch '<[[:space:]]*[^[:space:]"'"'"'|;&]*\.(pem|key)([^[:alnum:]_.]|$)' && deny
 # openssl reading a private key (generation stays allowed)
 match '(^|[^[:alnum:]_])openssl[[:space:]]+(rsa|pkey|ec|dsa|pkcs8|pkcs12|asn1parse)[^|;&]*(-inkey|-in|-text)([^[:alnum:]_]|$)' && deny
 # ssh-keygen -y -f (case-sensitive; -Y sign stays allowed)

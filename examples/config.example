@@ -82,6 +82,29 @@
 #
 # setting.security_policy=balanced
 
+# Runtime hardening profile (opt-in; default off keeps today's behavior).
+#   standard = init process + pids limit (fork bombs) + private IPC
+#   strict   = standard + read-only root filesystem (tmpfs for /tmp and caches),
+#              read-only plugins/skills/agents/commands/~/.local/bin/.composio
+#              and project .git hooks/config, bridge network unless
+#              setting.network is set. Install plugins/LSP from the host.
+#
+# setting.hardening=off
+
+# Session integrity check (default on): fingerprints the persistent paths a
+# session could plant code in (project .git hooks/config and Claude settings,
+# ~/.local/bin, plugins, skills, agents, commands, MCP servers, ~/.composio)
+# and reports every change after the session; log: audit/sessions.jsonl.
+#
+# setting.integrity_check=true
+
+# Image build options (used by `build` and `update`).
+#   image_strip_setuid = clear setuid/setgid bits in the image (defense in depth)
+#   image_docker_cli   = include the Docker CLI (only useful with docker_socket)
+#
+# setting.image_strip_setuid=false
+# setting.image_docker_cli=true
+
 # Optional container resource limits (docker --memory / --cpus). Empty = no limit.
 # setting.memory=4g
 # setting.cpus=2

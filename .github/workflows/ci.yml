@@ -1,71 +1,148 @@
 name: CI
 
+# Actions are pinned by full commit SHA (tag in the comment): a mutable tag can
+# be force-pushed to malicious code (e.g. the trivy-action tag hijack,
+# CVE-2026-33634). Dependabot keeps the pins current (.github/dependabot.yml).
+
 on:
   push:
+    branches: [master]
   pull_request:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   shell:
     name: Shell scripts
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Syntax check
         run: |
           bash -n bin/claude-dockerized install.sh run-simple.sh
-          for f in lib/*.sh completions/*.sh hooks/*.sh; do
+          for f in lib/*.sh completions/*.sh hooks/*.sh tests/*.sh tests/lib/*.sh tests/integration/*.sh; do
             bash -n "$f"
           done
 
       - name: ShellCheck
-        uses: ludeeus/action-shellcheck@2.0.0
+        uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # 2.0.0
         with:
           scandir: .
         env:
           SHELLCHECK_OPTS: -x -S warning
 
-      - name: Wrapper args test
-        run: bash tests/wrapper-args.test.sh
+  dockerfile:
+    name: Dockerfile
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - name: Config sync round-trip (ephemeral HOME, no Docker)
+      - name: Hadolint
+        uses: hadolint/hadolint-action@06be81baf89a55ffd0e24b8f04a4185738dd3387 # v3.5.0
+        with:
+          dockerfile: Dockerfile
+          config: .hadolint.yaml
+
+  tests:
+    name: Test suites (no Docker)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - name: JS syntax
+        run: |
+          node --check hooks/guard-eval.js
+          node --check lib/merge-settings.js
+          for f in tests/*.mjs tests/lib/*.mjs; do node --check "$f"; done
+
+      - name: All suites (guard, corpus, wrapper, mounts, config, update, CLI)
+        run: bash tests/run-all.sh --verbose
+
+      - name: Config sync round-trip (ephemeral HOME)
         run: |
           export HOME="$RUNNER_TEMP/fakehome"
           mkdir -p "$HOME"
           bash bin/claude-dockerized config sync
           bash bin/claude-dockerized config sync --check
 
-  dockerfile:
-    name: Dockerfile
+  hooks-minimal:
+    # The hooks' fallback parsers: no jq and no python3, only bash + node.
+    name: Guard without jq/python3
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    container: node:22-trixie-slim
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Hadolint
-        uses: hadolint/hadolint-action@v3.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          dockerfile: Dockerfile
-          config: .hadolint.yaml
+          persist-credentials: false
 
-  policy:
-    name: Security policy
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - name: Guard syntax
+      - name: Confirm the fallback environment
         run: |
-          bash -n hooks/claude-guard-bash.sh
-          bash -n hooks/claude-guard-file.sh
-          node --check hooks/guard-eval.js
-          node --check lib/migrate-settings.js
+          ! command -v jq
+          ! command -v python3
 
-      - name: Policy regression tests
-        run: node tests/claude-guard.test.mjs
+      - name: Guard suites
+        run: |
+          node tests/claude-guard.test.mjs
+          node tests/guard-failure-modes.test.mjs
+          node tests/guard-bypass-corpus.test.mjs
+
+  integration:
+    name: Container runtime (Docker)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [tests, dockerfile]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          tags: claude-dockerized:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Runtime security contract
+        run: bash tests/integration/container.test.sh
+
+      - name: Opt-in image options (no setuid bits, no Docker CLI)
+        run: |
+          docker build --build-arg STRIP_SETUID=1 --build-arg DOCKER_CLI=0 -t claude-dockerized:hardened .
+          test -z "$(docker run --rm --entrypoint bash claude-dockerized:hardened -c 'find / -xdev -perm /6000 -type f')"
+          ! docker run --rm --entrypoint bash claude-dockerized:hardened -c 'command -v docker'
+          docker run --rm --entrypoint bash claude-dockerized:hardened -c 'claude --version'
+
+      - name: Vulnerability scan (report only)
+        # v0.35.0+ are immutable releases (unaffected by CVE-2026-33634).
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        continue-on-error: true
+        with:
+          image-ref: claude-dockerized:latest
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "0"
