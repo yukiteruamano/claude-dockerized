@@ -22,17 +22,18 @@ for f in lib/*.sh completions/*.sh hooks/*.sh; do bash -n "$f"; done
 node --check hooks/guard-eval.js
 
 # 2. ShellCheck (any of these)
-shellcheck -x -S warning bin/* lib/*.sh install.sh run-simple.sh completions/*.sh hooks/*.sh
+shellcheck -x -S warning bin/* lib/*.sh install.sh run-simple.sh completions/*.sh hooks/*.sh tests/*.sh tests/lib/*.sh
 # …or without a local install:
+uvx --from shellcheck-py shellcheck -x -S warning bin/* lib/*.sh install.sh completions/*.sh hooks/*.sh tests/*.sh
 cat lib/config-lib.sh | docker run --rm -i koalaman/shellcheck:stable -s bash -x -S warning -
 
 # 3. Dockerfile
 cat Dockerfile | docker run --rm -i hadolint/hadolint:latest hadolint -
 
-# 4. Security policy regression tests (Node.js 22+) and wrapper contract test
-node --check hooks/guard-eval.js lib/migrate-settings.js
-node tests/claude-guard.test.mjs
-bash tests/wrapper-args.test.sh
+# 4. All test suites (Node.js 22+; no Docker needed)
+bash tests/run-all.sh             # guard, bypass corpus, wrapper, mounts, config, update, CLI
+bash tests/run-all.sh --verbose   # …and list every documented known gap
+bash tests/run-all.sh --integration  # + container runtime checks (needs Docker)
 ```
 
 ## Style
@@ -59,9 +60,17 @@ bash tests/wrapper-args.test.sh
   provenance). To change behavior for local use, prefer the policy mode
   (`strict` / `balanced` / `none`) or `policies/allow-patterns.json` over
   editing the vendored files.
-- Add a case to `tests/claude-guard.test.mjs` for every new deny/allow
-  behavior — both that the dangerous thing is blocked and that normal
-  development (including remote flows) is not.
+- Add a case for every new deny/allow behavior — both that the dangerous
+  thing is blocked and that normal development (including remote flows) is
+  not. Command/path idioms go in `tests/claude-guard.test.mjs`; bypass
+  attempts go in `tests/fixtures/guard-corpus.json` (data only, tagged with
+  the threat id they exercise).
+- **Known gaps.** A weakness that is documented but not fixed yet is recorded
+  as `known_gap` (corpus / `.mjs` suites) or `gap <threat> …` (Bash suites).
+  It is reported as XFAIL; when a fix makes it pass, the suite goes red until
+  the marker is removed, so a fix can never silently regress later.
+- A hook blocks only with **exit 2**; the tests treat any other non-zero exit
+  as a crash (Claude Code runs the tool anyway), never as a deny.
 
 ## Docs
 
