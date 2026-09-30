@@ -8,6 +8,11 @@ Shell script-based Docker wrapper for running [Claude Code](https://code.claude.
 - `bin/claude-dockerized` — Main wrapper, no extension (build, run, auth, models, exec, mcp, plugin, stats, debug, doctor, install, upgrade, update, config, clean commands). Reached via `<install>/bin` on PATH; nothing lives in `~/.local/bin`. `bin/` holds only this binary.
 - `install.sh` — Curl-able bootstrap: runs the local `bin/claude-dockerized install` when present, else clones to `~/.local/share/claude-dockerized` and runs it there (full setup in one shot, no second manual install)
 - `lib/config-lib.sh` — Shared library sourced by other scripts (config parsing, mount/env arg building, shared volume logic, interactive prompts, installs the security layer). **Not executable directly.**
+- `lib/ui-lib.sh` — Output helpers (`print_info`/`print_success` → stdout, `print_warning`/`print_error` → stderr; color only on a TTY, `NO_COLOR`/`--no-color`/`CLICOLOR_FORCE`, ASCII symbols outside UTF-8). Sourced by `config-lib.sh`. **Not executable directly.**
+- `lib/update-lib.sh` — Verified self-update: local trust store (`$CONFIG_DIR/trust`), signature verification, origin pin, target selection, preview, rollback state (`$CONFIG_DIR/state`). **Not executable directly.**
+- `lib/diag-lib.sh` — Docker preflight with remediation, host `doctor` checks (`--json`), `version`. **Not executable directly.**
+- `lib/help-lib.sh` — `help [COMMAND]` / `<command> --help` texts. **Not executable directly.**
+- `lib/doctor-container.sh` — Diagnostics run inside the container by `doctor` (passed as `bash -c`; never on the host)
 - `lib/integrity-lib.sh` — Session integrity check: fingerprints persistent paths (project git hooks/config and Claude settings, `~/.local/bin`, plugins, skills, MCP servers, `~/.composio`) before/after each run and logs changes to `$CONFIG_DIR/audit/sessions.jsonl`. Sourced by `config-lib.sh`. **Not executable directly.**
 - `lib/install-lib.sh` — Install wizard library sourced by the wrapper's `install` command (`--yes`, `--only config,completions,aliases,global[,path][,build]`). **Not executable directly.**
 - `Dockerfile` — Container image (Debian trixie-slim + Node.js/NVM + uv + Claude Code native binary v2.1.284, no sudo, no npm install)
@@ -37,16 +42,19 @@ Shell script-based Docker wrapper for running [Claude Code](https://code.claude.
 bin/claude-dockerized build             # Build Docker image (uses layer cache)
 bin/claude-dockerized run [DIR]         # Run Claude Code (default: current dir)
 bin/claude-dockerized auth              # Authenticate (claude auth login)
-bin/claude-dockerized upgrade --check   # Check for updates from GitHub (full upgrade: git pull + sync + rebuild)
-bin/claude-dockerized update [--check|--yes|--no-build|--claude-version X]  # Full upgrade: git pull + sync + image rebuild
+bin/claude-dockerized update --check     # 0 up to date, 100 update available, 1 error
+bin/claude-dockerized update [--dry-run|--yes|--no-build|--channel tags|branch|--claude-version X]  # Verified update: signed tag, preview, ff, sync, rebuild
+bin/claude-dockerized update --trust-key FILE  # Pin a release-signing key (interactive fingerprint confirmation)
+bin/claude-dockerized rollback [--yes]  # Undo the last update (checkout + :prev image)
 claude-dockerized models            # Show effective default model
 claude-dockerized exec MSG          # Non-interactive prompt (claude -p)
 claude-dockerized mcp [ARGS]        # Manage MCP servers (list|get|login|logout; add/remove are host-only)
 claude-dockerized plugin [ARGS]     # Manage plugins (list|check; install/update/remove are host-only)
 claude-dockerized stats             # Local session-storage statistics
 claude-dockerized debug [ARGS]      # Debug helpers (paths|doctor, default: paths)
-claude-dockerized doctor            # Diagnose install, guard, SSH/GPG, settings, LSP and env file
-claude-dockerized version           # Show wrapper, guard and Claude Code versions
+claude-dockerized doctor [--json]   # Host + container checks, summary, exit 1 on failure
+claude-dockerized version [--json]  # Wrapper, guard, policy, pinned/image Claude versions (no Docker needed)
+claude-dockerized help [COMMAND]    # Overview or one command's help (also: COMMAND --help)
 claude-dockerized config show       # Show parsed configuration
 claude-dockerized config edit       # Edit config in $EDITOR
 claude-dockerized config path       # Print config file path
@@ -125,21 +133,21 @@ source "$REPO_ROOT/lib/config-lib.sh"
 
 ### Color Output / Logging
 
+Use the helpers from `lib/ui-lib.sh` (sourced through `lib/config-lib.sh`);
+never hard-code ANSI escapes or `echo -e`:
+
 ```bash
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
-print_error()   { echo -e "${RED}✗${NC} $1"; }
-print_success() { echo -e "${GREEN}✓${NC} $1"; }
-print_warning() { echo -e "${YELLOW}⚠${NC} $1"; }
-print_info()    { echo -e "${BLUE}ℹ${NC} $1"; }
+print_info "..."     # stdout
+print_success "..."  # stdout
+print_warning "..."  # stderr
+print_error "..."    # stderr
 ```
 
-In `lib/config-lib.sh`, use fallback wrappers that delegate to caller's functions if defined:
-```bash
-config_info() {
-    if type print_info >/dev/null 2>&1; then print_info "$1"
-    else echo -e "${BLUE}ℹ${NC} $1"; fi
-}
-```
+`config_info`/`config_success`/`config_warning`/`config_error` are the same
+helpers under library names. Color is decided per stream (TTY only),
+`NO_COLOR`, `TERM=dumb` and `--no-color` disable it, `CLICOLOR_FORCE=1`
+forces it; symbols fall back to ASCII outside UTF-8 locales. Help texts
+always print `claude-dockerized`, never `$0`.
 
 ### Error Handling
 
