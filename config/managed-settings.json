@@ -36,7 +36,6 @@
       "Read(./**/private-keys-v1.d/**)",
       "Read(~/.claude/.credentials.json)",
       "Read(~/.mcp-auth/**)",
-      "Read(~/.composio/**)",
       "Read(~/.ssh/**)",
       "Read(~/.gnupg/private-keys-v1.d/**)",
       "Read(//proc/*/environ)",

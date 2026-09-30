@@ -358,7 +358,8 @@ run_install_main() {
         "$CCODE_HOME/.claude/skills" "$CCODE_HOME/.claude/agents" \
         "$CCODE_HOME/.claude/commands" "$CCODE_HOME/.local/bin" \
         "$CCODE_HOME/.local/share/claude" "$CCODE_HOME/.local/state/claude" \
-        "$CCODE_HOME/.cache/claude" "$HOME/.mcp-auth" 2>/dev/null || true
+        "$CCODE_HOME/.cache/claude" "$CCODE_HOME/.mcp-auth" 2>/dev/null || true
+    chmod 700 "$CCODE_HOME/.mcp-auth" 2>/dev/null || true
     if [ ! -f "$CCODE_HOME/.claude/.credentials.json" ]; then
         : >"$CCODE_HOME/.claude/.credentials.json" 2>/dev/null || true
         chmod 600 "$CCODE_HOME/.claude/.credentials.json" 2>/dev/null || true

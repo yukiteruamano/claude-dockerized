@@ -192,9 +192,15 @@ grep -qx -- "$CCODE_HOME/.claude.json:/home/coder/.claude.json:rw" <<<"$volumes"
 grep -qx -- "$CCODE_HOME/.local/bin:/home/coder/.local/bin:rw" <<<"$volumes" ||
     fail ".local/bin must be mounted read-write (LSP/formatters)"
 
-# MCP OAuth store must be read-write.
-grep -qx -- "$HOME/.mcp-auth:/home/coder/.mcp-auth:rw" <<<"$volumes" ||
-    fail ".mcp-auth must be mounted read-write"
+# MCP OAuth store (mcp-remote) comes from the generated home, read-write and
+# private; the host ~/.mcp-auth (created above on purpose) is never mounted.
+grep -qx -- "$CCODE_HOME/.mcp-auth:/home/coder/.mcp-auth:rw" <<<"$volumes" ||
+    fail ".mcp-auth must be mounted read-write from the generated home"
+if grep -qF -- "$HOME/.mcp-auth:" <<<"$volumes"; then
+    fail "the host ~/.mcp-auth must never be mounted"
+fi
+[ "$(stat -c '%a' "$CCODE_HOME/.mcp-auth")" = 700 ] ||
+    fail "the generated .mcp-auth must be 0700"
 
 # ~/.npmrc and ~/.gitconfig are NOT mounted (no secret mounts).
 for banned in "$HOME/.npmrc" "$HOME/.gitconfig"; do
