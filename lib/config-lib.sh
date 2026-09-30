@@ -449,10 +449,21 @@ atomic_install() {
     return 1
 }
 
-# Install LSP server binaries into the generated home (never system-wide, so
-# the host/container separation holds and rebuilds keep working offline when
-# already installed). Best-effort: never fails the run. Skipped entirely when
-# CLAUDE_DOCKERIZED_SKIP_LSP_INSTALL=1 (hermetic tests).
+# Pinned LSP/formatter releases (T-14). Bump deliberately, like any other pin.
+LSP_NPM_TS="typescript-language-server@6.0.1 typescript@7.0.2"
+LSP_NPM_PYRIGHT="pyright@1.1.414"
+FMT_NPM_PRETTIER="prettier@3.9.9"
+FMT_RUFF_VERSION="0.16.9"
+LSP_GOPLS_VERSION="v0.23.0"
+
+# Install LSP servers and formatters into the generated home (never
+# system-wide; persists across rebuilds). The npm and uv packages install
+# inside a throwaway container of the image (no capabilities, no new
+# privileges, npm --ignore-scripts), never on the host, from pinned versions
+# into ~/.local/bin/.lsp (the only generated-home path mounted, so the tools
+# resolve in-container). gopls/rust-analyzer need host toolchains: pinned
+# gopls, rustup's signed channel. Only missing tools are installed; failures
+# are reported, never fatal. Skipped with CLAUDE_DOCKERIZED_SKIP_LSP_INSTALL=1.
 # Usage: ensure_lsp_formatters
 ensure_lsp_formatters() {
     [ -n "${CLAUDE_DOCKERIZED_SKIP_LSP_INSTALL:-}" ] && return 0
@@ -460,50 +471,90 @@ ensure_lsp_formatters() {
     local bindir="$CCODE_HOME/.local/bin"
     mkdir -p "$bindir" 2>/dev/null || return 0
 
-    local IFS_save="$IFS"
-    IFS=','
-    # shellcheck disable=SC2162
-    for entry in $LSP_SERVERS; do
-        # shellcheck disable=SC2001
-        entry="$(printf '%s' "$entry" | sed 's/^ *//;s/ *$//')"
-        case "$entry" in
-        "" ) continue ;;
-        ts|typescript)
-            if [ ! -x "$bindir/typescript-language-server" ] && command -v npm >/dev/null 2>&1; then
-                npm --prefix "$CCODE_HOME/.local" install --no-audit --no-fund typescript-language-server 2>/dev/null || true
-            fi
-            ;;
-        python)
-            if [ ! -x "$bindir/pyright" ] && [ -x "$HOME/.local/bin/uv" ]; then
-                "$HOME/.local/bin/uv" tool install pyright 2>/dev/null || true
-            fi
-            if command -v uv >/dev/null 2>&1 && [ ! -x "$bindir/ruff" ]; then
-                uv tool install ruff 2>/dev/null || true
-            fi
-            ;;
-        go)
-            if [ ! -x "$bindir/gopls" ] && command -v go >/dev/null 2>&1; then
-                GOBIN="$bindir" go install golang.org/x/tools/gopls@latest 2>/dev/null || true
-            fi
-            ;;
-        rust)
-            if [ ! -x "$bindir/rust-analyzer" ] && command -v rustup >/dev/null 2>&1; then
-                rustup component add rust-analyzer 2>/dev/null || true
-            fi
-            ;;
-        *) config_warning "Unknown LSP server '$entry' (use go,ts,python,rust); skipping" ;;
-        esac
-    done
-    IFS="$IFS_save"
-
-    if [ "$FORMATTERS_ENABLED" = true ]; then
-        if command -v uv >/dev/null 2>&1 && [ ! -x "$bindir/ruff" ]; then
-            uv tool install ruff 2>/dev/null || true
-        fi
-        if [ ! -x "$bindir/prettier" ] && command -v npm >/dev/null 2>&1; then
-            npm --prefix "$CCODE_HOME/.local" install --no-audit --no-fund prettier 2>/dev/null || true
-        fi
+    local -a npm_pkgs=() npm_bins=()
+    local want_ruff=false entry
+    if [ "$LSP_ENABLED" = true ]; then
+        local IFS_save="$IFS"
+        IFS=','
+        for entry in $LSP_SERVERS; do
+            entry="$(printf '%s' "$entry" | sed 's/^ *//;s/ *$//')"
+            case "$entry" in
+            "") ;;
+            ts | typescript)
+                [ -e "$bindir/typescript-language-server" ] || {
+                    # shellcheck disable=SC2206 # intentional split of the pinned list
+                    npm_pkgs+=($LSP_NPM_TS)
+                    npm_bins+=(typescript-language-server tsserver)
+                }
+                ;;
+            python)
+                [ -e "$bindir/pyright-langserver" ] || {
+                    npm_pkgs+=("$LSP_NPM_PYRIGHT")
+                    npm_bins+=(pyright pyright-langserver)
+                }
+                [ -e "$bindir/ruff" ] || want_ruff=true
+                ;;
+            go)
+                if [ ! -e "$bindir/gopls" ] && command -v go >/dev/null 2>&1; then
+                    config_info "Installing gopls $LSP_GOPLS_VERSION with the host Go toolchain..."
+                    GOBIN="$bindir" go install "golang.org/x/tools/gopls@$LSP_GOPLS_VERSION" ||
+                        config_warning "gopls install failed (see above)"
+                fi
+                ;;
+            rust)
+                if [ ! -e "$bindir/rust-analyzer" ] && command -v rustup >/dev/null 2>&1; then
+                    rustup component add rust-analyzer && ln -sf "$(rustup which rust-analyzer)" "$bindir/rust-analyzer" ||
+                        config_warning "rust-analyzer install failed (see above)"
+                fi
+                ;;
+            *) config_warning "Unknown LSP server '$entry' (use go,ts,python,rust); skipping" ;;
+            esac
+        done
+        IFS="$IFS_save"
     fi
+    if [ "$FORMATTERS_ENABLED" = true ]; then
+        [ -e "$bindir/prettier" ] || {
+            npm_pkgs+=("$FMT_NPM_PRETTIER")
+            npm_bins+=(prettier)
+        }
+        [ -e "$bindir/ruff" ] || want_ruff=true
+    fi
+    [ "${#npm_pkgs[@]}" -gt 0 ] || [ "$want_ruff" = true ] || return 0
+
+    local image="${IMAGE_NAME:-claude-dockerized:latest}"
+    if ! command -v docker >/dev/null 2>&1 || ! docker image inspect "$image" >/dev/null 2>&1; then
+        config_warning "LSP/formatters pending: build the image first (claude-dockerized build), then run again."
+        return 0
+    fi
+
+    # Runs inside the image as the host user; the only writable mount is the
+    # generated home's .local/bin.
+    # shellcheck disable=SC2016 # expanded inside the container
+    local script='
+set -e
+dest=/opt/lsp-bin
+if [ -n "$NPM_PKGS" ]; then
+    # shellcheck disable=SC2086
+    npm install --prefix "$dest/.lsp/node" --no-audit --no-fund --ignore-scripts --no-save $NPM_PKGS
+    for b in $NPM_BINS; do ln -sfn ".lsp/node/node_modules/.bin/$b" "$dest/$b"; done
+fi
+if [ "$WANT_RUFF" = true ]; then
+    UV_TOOL_DIR="$dest/.lsp/uv-tools" UV_TOOL_BIN_DIR="$dest/.lsp/uv-bin" UV_CACHE_DIR=/tmp/uv-cache \
+        uv tool install --force "ruff==$RUFF_VERSION"
+    ln -sfn .lsp/uv-bin/ruff "$dest/ruff"
+fi
+'
+    config_info "Installing pinned LSP/formatters in a throwaway container: ${npm_pkgs[*]}$([ "$want_ruff" = true ] && printf ' ruff==%s' "$FMT_RUFF_VERSION")"
+    local out
+    if ! out=$(docker run --rm --user "$(id -u):$(id -g)" --cap-drop=ALL --security-opt no-new-privileges:true \
+        -e HOME=/tmp -e "NPM_PKGS=${npm_pkgs[*]}" -e "NPM_BINS=${npm_bins[*]}" \
+        -e "WANT_RUFF=$want_ruff" -e "RUFF_VERSION=$FMT_RUFF_VERSION" \
+        -v "$bindir:/opt/lsp-bin:rw" --entrypoint bash "$image" -c "$script" 2>&1); then
+        config_warning "LSP/formatter install failed:"
+        printf '%s\n' "$out" | tail -n 8 >&2
+        return 0
+    fi
+    config_success "LSP/formatters installed into $bindir"
 }
 
 # Write the .lsp.json for the configured servers (paths point at the generated
@@ -871,12 +922,10 @@ EOF
             fi
             rm -f "$managed_tmp"
         fi
-        ensure_user_settings "$claude_dir/settings.json"
-        # LSP config (regenerated when enabled so server paths stay correct).
-        if [ "$LSP_ENABLED" = true ]; then
-            write_lsp_json "$claude_dir/.lsp.json"
-            ensure_lsp_formatters
-        fi
+        # LSP config (regenerated when enabled so server paths stay correct);
+        # formatters alone also need their binaries.
+        [ "$LSP_ENABLED" = true ] && write_lsp_json "$claude_dir/.lsp.json"
+        ensure_lsp_formatters
     fi
 
     # Remove legacy artifacts from the previous generation (kept out of the
@@ -1179,11 +1228,11 @@ check_security_layer() {
         fi
     fi
 
-    # Global host integration (bin/ on PATH + rc lines); report-only here.
-    # Sync never edits rc files; `claude-dockerized install` repairs them.
-    if ! check_global_install; then
-        stale=true
-    fi
+    # Global host integration (bin/ on PATH + rc lines): informational only.
+    # It is shell convenience, not the security layer, so declining aliases
+    # or completions never reads as drift. `claude-dockerized install`
+    # repairs it; sync never edits rc files.
+    check_global_install || config_info "Shell integration is incomplete (see above); run 'claude-dockerized install' to repair it."
 
     if [ "$stale" = true ]; then
         return 1
