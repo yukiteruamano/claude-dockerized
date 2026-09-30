@@ -159,6 +159,8 @@ NC='\033[0m' # No Color
 
 # Source the shared config module
 source "$REPO_ROOT/lib/config-lib.sh"
+# shellcheck source=lib/update-lib.sh
+source "$REPO_ROOT/lib/update-lib.sh"
 
 # Bare `mktemp` honors TMPDIR, so merge temps land in a private dir without
 # touching every call site (see ensure_private_tmpdir).
@@ -206,6 +208,17 @@ image_build_args() {
     IMAGE_BUILD_ARGS=()
     [ "$IMAGE_STRIP_SETUID" = true ] && IMAGE_BUILD_ARGS+=(--build-arg STRIP_SETUID=1)
     [ "$IMAGE_DOCKER_CLI" = false ] && IMAGE_BUILD_ARGS+=(--build-arg DOCKER_CLI=0)
+    # A Claude Code version pinned with `update --claude-version` sticks, with
+    # the sha256 recorded on its first build (trust on first use).
+    local pinned sha_file
+    pinned=$(update_saved_claude_version)
+    if [ -n "$pinned" ] && [ -z "${_UP_CLAUDE_VERSION:-}" ]; then
+        IMAGE_BUILD_ARGS+=(--build-arg "CLAUDE_CODE_VERSION=$pinned")
+        sha_file=$(update_claude_sha_file "$pinned")
+        if [ -s "$sha_file" ]; then
+            IMAGE_BUILD_ARGS+=(--build-arg "CLAUDE_CODE_SHA256=$(head -n1 "$sha_file")")
+        fi
+    fi
     return 0
 }
 
@@ -431,110 +444,75 @@ run_claude() {
     fi
 }
 
-# Self-update helpers: `update` and `upgrade` both perform the full upgrade
-# (git pull from GitHub + security-layer sync + image rebuild). They differ
-# only in prompting defaults: `upgrade` asks before pulling when interactive,
-# `update` pulls without asking (preserves its historic one-shot behavior).
-# Both accept [--check] [--yes] [--no-build] [--claude-version X].
-# Usage: _git_pull_wrapper <yes:true|false> <check_only:true|false>
-_git_pull_wrapper() {
-    local yes="$1" check_only="$2"
-    if [ ! -d "$REPO_ROOT/.git" ]; then
-        print_error "Not a git checkout ($REPO_ROOT); reinstall with install.sh to enable self-update."
-        return 1
-    fi
-    if ! command -v git >/dev/null 2>&1; then
-        print_error "git is required for self-update."
-        return 1
-    fi
-    if ! git -C "$REPO_ROOT" rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1; then
-        print_error "No upstream tracking branch; set one with 'git branch --set-upstream-to=origin/<branch>'."
-        return 1
-    fi
-    git -C "$REPO_ROOT" fetch origin >/dev/null 2>&1 || {
-        print_error "Could not fetch from origin."
-        return 1
-    }
-    local local_rev remote_rev base
-    local_rev=$(git -C "$REPO_ROOT" rev-parse HEAD)
-    remote_rev=$(git -C "$REPO_ROOT" rev-parse '@{u}')
-    base=$(git -C "$REPO_ROOT" merge-base HEAD '@{u}')
-    if [ "$local_rev" = "$remote_rev" ]; then
-        print_success "Already up to date."
-        return 2
-    fi
-    if [ "$local_rev" != "$base" ]; then
-        print_error "Local checkout diverged from upstream; resolve manually with git (no --force pull attempted)."
-        git -C "$REPO_ROOT" status -sb | head -5
-        return 1
-    fi
-    local n
-    n=$(git -C "$REPO_ROOT" rev-list --count HEAD..'@{u}')
-    print_info "Update available: $n commit(s) behind upstream."
-    if [ "$check_only" = true ]; then
-        return 1
-    fi
-    if [ "$yes" != true ] && [ -t 0 ]; then
-        local ans
-        read -r -p "Pull $n commit(s)? (Y/n): " ans || ans=""
-        case "${ans:-y}" in
-        [Yy] | "") ;;
-        *)
-            print_info "Aborted."
-            return 1
-            ;;
-        esac
-    fi
-    git -C "$REPO_ROOT" pull --ff-only || {
-        print_error "Pull failed."
-        return 1
-    }
-    print_success "Code updated to latest version."
-    return 0
+# Self-update (`update`, with `upgrade` as an alias): verified, fast-forward
+# only, previewed, reversible. See lib/update-lib.sh for the trust model.
+#   update [--check] [--yes] [--dry-run] [--no-build] [--channel tags|branch]
+#          [--claude-version X.Y.Z] [--allow-unsigned] [--trust-key FILE]
+# --check exit codes: 0 up to date, 100 update available, 1 error.
+
+# Print the update usage. Usage: update_usage <command-name>
+update_usage() {
+    cat <<EOF
+Usage: claude-dockerized $1 [OPTIONS]
+
+Verified self-update: fetch, verify the release signature against your
+pinned keys, preview the changes, fast-forward, re-sync and rebuild.
+
+Options:
+  --check                  only report (exit 0 up to date, 100 update available, 1 error)
+  --dry-run                verify and preview the update, change nothing
+  --yes                    apply without the confirmation prompt
+  --no-build               update code + security layer, skip the image rebuild
+  --channel tags|branch    signed release tags (default) or signed upstream commits
+  --claude-version X.Y.Z   pin another Claude Code release (kept for later builds)
+  --allow-unsigned         accept unverified code (interactive confirmation required)
+  --trust-key FILE         pin a release-signing key (OpenPGP key or ssh allowed-signers)
+
+Rollback: claude-dockerized rollback [--yes]
+EOF
 }
 
-# Rebuild the image with cache-busting so the pinned Claude Code is installed.
-_rebuild_claude_image() {
-    print_info "Rebuilding image with pinned Claude Code..."
-    local version_args=()
-    if [ -n "${_UP_CLAUDE_VERSION:-}" ]; then
-        version_args+=(--build-arg "CLAUDE_CODE_VERSION=$_UP_CLAUDE_VERSION")
-        print_info "Requested Claude Code version: $_UP_CLAUDE_VERSION"
-    fi
-    image_build_args
-    docker build --build-arg "CLAUDE_BUILD_TIME=$(date +%s)" "${version_args[@]}" "${IMAGE_BUILD_ARGS[@]}" -t "$IMAGE_NAME" "$REPO_ROOT"
-    print_info "Updated Claude Code version:"
-    docker run --rm --entrypoint bash "$IMAGE_NAME" -c "claude --version" 2>/dev/null || true
-}
-
-# Parse self-update flags shared by `update` and `upgrade`.
-# Sets: _UP_CHECK, _UP_YES, _UP_NO_BUILD, _UP_CLAUDE_VERSION. Returns 0 on success/--help, 1 on bad usage.
+# Parse update flags into _UP_* globals.
+# Returns 0 to proceed, 3 when usage was printed (--help), 1 on bad usage.
 # Usage: _parse_self_update_flags <command-name> [flags...]
 _parse_self_update_flags() {
-    local cmd="$1"; shift
-    _UP_CHECK=false; _UP_YES=false; _UP_NO_BUILD=false; _UP_CLAUDE_VERSION=""
+    local cmd="$1"
+    shift
+    _UP_CHECK=false _UP_YES=false _UP_NO_BUILD=false _UP_DRY_RUN=false
+    _UP_ALLOW_UNSIGNED=false _UP_POST_PULL=false
+    _UP_CLAUDE_VERSION="" _UP_TRUST_KEY="" _UP_CHANNEL="tags"
     local arg
     while [ $# -gt 0 ]; do
-        arg="$1"; shift
+        arg="$1"
+        shift
         case "$arg" in
         --check) _UP_CHECK=true ;;
         --yes) _UP_YES=true ;;
         --no-build) _UP_NO_BUILD=true ;;
-        --claude-version)
-            [ -n "${1:-}" ] || { print_error "Missing value for --claude-version"; return 1; }
-            _UP_CLAUDE_VERSION="$1"; shift
+        --dry-run) _UP_DRY_RUN=true ;;
+        --allow-unsigned) _UP_ALLOW_UNSIGNED=true ;;
+        --post-pull) _UP_POST_PULL=true ;;
+        --channel | --claude-version | --trust-key)
+            [ -n "${1:-}" ] || {
+                print_error "Missing value for $arg"
+                return 1
+            }
+            case "$arg" in
+            --channel) _UP_CHANNEL="$1" ;;
+            --claude-version) _UP_CLAUDE_VERSION="$1" ;;
+            --trust-key) _UP_TRUST_KEY="$1" ;;
+            esac
+            shift
             ;;
+        --channel=*) _UP_CHANNEL="${arg#--channel=}" ;;
         --claude-version=*) _UP_CLAUDE_VERSION="${arg#--claude-version=}" ;;
+        --trust-key=*) _UP_TRUST_KEY="${arg#--trust-key=}" ;;
         --help | -h)
-            echo "Usage: $0 $cmd [--check] [--yes] [--no-build] [--claude-version X.Y.Z]"
-            echo "  --check    only report whether an update is available"
-            echo "  --yes      pull and rebuild without asking"
-            echo "  --no-build pull + sync only, skip the image rebuild"
-            echo "  --claude-version X.Y.Z  pin a different Claude Code version for the rebuild"
-            return 0
+            update_usage "$cmd"
+            return 3
             ;;
         *)
-            print_error "Unknown $cmd option: $arg (use --check|--yes|--no-build|--claude-version)"
+            print_error "Unknown $cmd option: $arg (see: claude-dockerized $cmd --help)"
             return 1
             ;;
         esac
@@ -543,62 +521,224 @@ _parse_self_update_flags() {
         print_error "Invalid --claude-version '$_UP_CLAUDE_VERSION' (use X.Y.Z)"
         return 1
     fi
+    case "$_UP_CHANNEL" in
+    tags | branch) ;;
+    *)
+        print_error "Invalid --channel '$_UP_CHANNEL' (use tags|branch)"
+        return 1
+        ;;
+    esac
     return 0
 }
 
-# Full upgrade: git pull + security-layer sync + image rebuild.
-# Usage: full_upgrade <command-name> [--check] [--yes] [--no-build] [--claude-version X]
-full_upgrade() {
-    local cmd="$1"; shift
-    _parse_self_update_flags "$cmd" "$@" || return $?
-    if [ "$_UP_CHECK" = true ]; then
-        _git_pull_wrapper true true
-        local check_rc=$?
-        if [ "$check_rc" -eq 2 ]; then
-            return 0
-        fi
+# Rebuild the image with the pinned Claude Code (cache-busted). The current
+# image is tagged :prev first so `rollback` can restore it; the binary's
+# sha256 is recorded per version/arch and enforced on later builds (TOFU).
+_rebuild_claude_image() {
+    local version="${_UP_CLAUDE_VERSION:-$(update_saved_claude_version)}"
+    local -a version_args=()
+    [ -n "$version" ] && print_info "Pinned Claude Code version: $version"
+    # A saved pin is passed by image_build_args; only an explicit
+    # --claude-version is added here.
+    if [ -n "${_UP_CLAUDE_VERSION:-}" ]; then
+        version_args+=(--build-arg "CLAUDE_CODE_VERSION=$version")
+        local sha_file
+        sha_file=$(update_claude_sha_file "$version")
+        [ -s "$sha_file" ] && version_args+=(--build-arg "CLAUDE_CODE_SHA256=$(head -n1 "$sha_file")")
+    fi
+    if docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
+        docker tag "$IMAGE_NAME" "${IMAGE_NAME%%:*}:prev" >/dev/null 2>&1 &&
+            print_info "Previous image kept as ${IMAGE_NAME%%:*}:prev (rollback)"
+    fi
+    image_build_args
+    print_info "Rebuilding image..."
+    if ! docker build --build-arg "CLAUDE_BUILD_TIME=$(date +%s)" "${version_args[@]}" "${IMAGE_BUILD_ARGS[@]}" -t "$IMAGE_NAME" "$REPO_ROOT"; then
+        print_error "Image rebuild failed; the previous image is unchanged."
+        print_info "Undo the code update with: claude-dockerized rollback"
         return 1
     fi
-    local pull_rc=0
-    # `update` never prompts (historic one-shot); `upgrade` prompts when tty.
-    if [ "$cmd" = "update" ]; then
-        _git_pull_wrapper true false; pull_rc=$?
-    else
-        _git_pull_wrapper "$_UP_YES" false; pull_rc=$?
-    fi
-    if [ "$pull_rc" -eq 1 ]; then
+    local installed_sha actual_version
+    actual_version=$(docker run --rm --entrypoint bash "$IMAGE_NAME" -c "claude --version" 2>/dev/null | cut -d' ' -f1)
+    print_info "Claude Code in the image: ${actual_version:-unknown}"
+    if [ -n "$version" ] && [ -n "$actual_version" ] && [ "$actual_version" != "$version" ]; then
+        print_error "The image runs Claude Code $actual_version, not the pinned $version."
         return 1
     fi
-    print_success "Refreshing security layer..."
+    installed_sha=$(docker run --rm --entrypoint sha256sum "$IMAGE_NAME" /usr/local/bin/claude 2>/dev/null | cut -d' ' -f1)
+    if [ -n "$version" ] && [ -n "$installed_sha" ]; then
+        local sha_file
+        sha_file=$(update_claude_sha_file "$version")
+        [ -s "$sha_file" ] || printf '%s\n' "$installed_sha" >"$sha_file"
+    fi
+    [ -n "$version" ] && update_save_claude_version "$version"
+    return 0
+}
+
+# Second half of an update, run by the NEW code after the fast-forward
+# (re-exec), so the refreshed security layer comes from the updated lib/.
+_update_post_pull() {
+    print_info "Refreshing security layer..."
     parse_config || true
     sync_security_layer || true
     if [ "$_UP_NO_BUILD" = true ]; then
-        print_info "Skipping image rebuild (--no-build)."
-        print_success "Upgrade complete (code + config synced, image untouched)."
+        print_success "Update complete (code + security layer; image untouched, --no-build)."
         return 0
     fi
     check_docker || return 1
-    if ! docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
-        print_info "Image not found, building fresh..."
-    else
-        print_info "Current Claude Code version:"
-        docker run --rm --entrypoint bash "$IMAGE_NAME" -c "claude --version" 2>/dev/null || true
-    fi
-    _rebuild_claude_image
-    print_success "Upgrade complete (code + config + image)."
+    _rebuild_claude_image || return 1
+    print_success "Update complete (code + security layer + image)."
 }
 
-# Self-update the wrapper checkout from GitHub (Doom-style `doom upgrade`).
-# `update` and `upgrade` both run the full upgrade (git pull + sync + rebuild).
-# Usage: upgrade_wrapper [--check] [--yes] [--no-build] [--claude-version X]
+# Full update. Usage: full_upgrade <command-name> [flags...]
+full_upgrade() {
+    local cmd="$1" rc=0
+    shift
+    _parse_self_update_flags "$cmd" "$@" || rc=$?
+    [ "$rc" -eq 3 ] && return 0
+    [ "$rc" -eq 0 ] || return "$rc"
+
+    if [ -n "$_UP_TRUST_KEY" ]; then
+        update_trust_key "$_UP_TRUST_KEY"
+        return $?
+    fi
+    [ "$_UP_POST_PULL" = true ] && {
+        _update_post_pull
+        return $?
+    }
+
+    if [ ! -d "$REPO_ROOT/.git" ] || ! command -v git >/dev/null 2>&1; then
+        print_error "Self-update needs git and a git checkout ($REPO_ROOT); reinstall with install.sh."
+        return 1
+    fi
+    update_check_origin || return 1
+    if [ "$_UP_CHANNEL" = branch ] && ! git -C "$REPO_ROOT" rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1; then
+        print_error "No upstream tracking branch; set one with 'git branch --set-upstream-to=origin/<branch>'."
+        return 1
+    fi
+
+    # One fetch: what is verified below is exactly what gets merged. A tag
+    # that was rewritten upstream makes the fetch fail (never clobbered).
+    local fetch_err
+    if ! fetch_err=$(git -C "$REPO_ROOT" fetch --tags origin 2>&1); then
+        print_error "Could not fetch from origin:"
+        printf '%s\n' "$fetch_err" | tail -n 5 >&2
+        case "$fetch_err" in
+        *clobber*) print_warning "A release tag was rewritten upstream: refusing to update. Report it to the maintainer." ;;
+        esac
+        return 1
+    fi
+
+    local target sel_rc=0
+    target=$(update_select_target "$_UP_CHANNEL") || sel_rc=$?
+    if [ "$sel_rc" -eq 2 ]; then
+        print_error "Local checkout diverged from upstream; resolve manually with git (no forced update)."
+        git -C "$REPO_ROOT" status -sb | head -5
+        return 1
+    fi
+    if [ -z "$target" ]; then
+        print_success "Already up to date ($(git -C "$REPO_ROOT" describe --tags --always 2>/dev/null))."
+        [ "$_UP_CHECK" = true ] && return 0
+        [ "$_UP_DRY_RUN" = true ] && return 0
+        if [ -n "$_UP_CLAUDE_VERSION" ] && [ "$_UP_NO_BUILD" != true ]; then
+            check_docker || return 1
+            _rebuild_claude_image
+            return $?
+        fi
+        parse_config || true
+        sync_security_layer >/dev/null 2>&1 || true
+        return 0
+    fi
+
+    local signer="" verified=true
+    signer=$(update_verify_ref "$target") || verified=false
+    if [ "$_UP_CHECK" = true ]; then
+        print_info "Update available: $target ($([ "$verified" = true ] && echo "signed by $signer" || echo "NOT verified by a trusted key"))."
+        return 100
+    fi
+    update_preview "$target"
+    if [ "$verified" = true ]; then
+        print_success "Signature verified: $signer"
+    else
+        print_error "$target is not signed by a trusted release key."
+        if ! update_has_trust; then
+            print_info "No release key is pinned yet. Obtain the maintainer's public key out of band, then:"
+            print_info "  claude-dockerized update --trust-key <key-file>"
+        fi
+        if [ "$_UP_ALLOW_UNSIGNED" != true ]; then
+            return 1
+        fi
+        if [ ! -t 0 ]; then
+            print_error "--allow-unsigned needs an interactive confirmation."
+            return 1
+        fi
+        local ans
+        print_warning "Unverified code runs on your host (bin/, lib/) and becomes the guard."
+        read -r -p "Apply UNVERIFIED code anyway? Type 'unverified' to confirm: " ans || ans=""
+        [ "$ans" = unverified ] || {
+            print_info "Aborted."
+            return 1
+        }
+    fi
+    [ "$_UP_DRY_RUN" = true ] && {
+        print_info "Dry run: nothing changed."
+        return 0
+    }
+    if [ "$_UP_YES" != true ]; then
+        if [ ! -t 0 ]; then
+            print_error "Confirmation required: run from a terminal or pass --yes."
+            return 1
+        fi
+        local ans
+        read -r -p "Apply this update? (y/N): " ans || ans=""
+        [[ "$ans" =~ ^[Yy]$ ]] || {
+            print_info "Aborted."
+            return 1
+        }
+    fi
+
+    update_record_rollback || return 1
+    local commit
+    commit=$(git -C "$REPO_ROOT" rev-parse "$target^{commit}") || return 1
+    if ! git -C "$REPO_ROOT" merge --quiet --ff-only "$commit"; then
+        print_error "Fast-forward failed; nothing was changed."
+        return 1
+    fi
+    print_success "Code updated to $target ($commit)."
+
+    # Continue with the NEW code (sync + rebuild).
+    local -a post=(--post-pull)
+    [ "$_UP_NO_BUILD" = true ] && post+=(--no-build)
+    [ -n "$_UP_CLAUDE_VERSION" ] && post+=(--claude-version "$_UP_CLAUDE_VERSION")
+    exec "$REPO_ROOT/bin/claude-dockerized" update "${post[@]}"
+}
+
+# `upgrade` is an alias of `update` (kept for muscle memory).
 upgrade_wrapper() {
     full_upgrade upgrade "$@"
 }
 
-# Function to update Claude Code (full upgrade: git pull + sync + rebuild).
-# Usage: update_claude [--check] [--yes] [--no-build] [--claude-version X]
 update_claude() {
     full_upgrade update "$@"
+}
+
+# Undo the last update (code checkout + image tag), then re-sync with the
+# restored code. Usage: rollback_update [--yes]
+rollback_update() {
+    local yes=false
+    case "${1:-}" in
+    --yes) yes=true ;;
+    -h | --help)
+        echo "Usage: claude-dockerized rollback [--yes]  (restore the checkout and image from before the last update)"
+        return 0
+        ;;
+    "") ;;
+    *)
+        print_error "Unknown rollback option: $1"
+        return 1
+        ;;
+    esac
+    update_rollback "$yes" || return 1
+    exec "$REPO_ROOT/bin/claude-dockerized" config sync
 }
 
 # Function to report the effective model configuration (local-only).
@@ -849,9 +989,11 @@ Commands:
     debug [ARGS]        Debugging helpers (paths|doctor, default: paths)
     doctor              Diagnose install, guard, SSH/GPG, settings, LSP and env file
     install [OPTS]      First-time install / repair PATH, config, completions, aliases
-    upgrade [--check|--yes|--no-build|--claude-version X]  Full upgrade: git pull + sync + image rebuild
     build               Build the Docker image
-    update [--check|--yes|--no-build|--claude-version X]   Full upgrade: git pull + sync + image rebuild
+    update [OPTS]       Verified self-update: signed release, preview, sync, rebuild
+                        (--check|--dry-run|--yes|--no-build|--channel|--trust-key; see update --help)
+    upgrade [OPTS]      Alias of update
+    rollback [--yes]    Undo the last update (checkout + previous image)
     version             Show wrapper, guard and Claude Code versions
     config [show|edit|path|sync]      Wrapper config (INI)
     config claude [path|edit]         Managed Claude settings (read-only in container)
@@ -982,6 +1124,9 @@ main() {
         ;;
     upgrade)
         upgrade_wrapper "$@"
+        ;;
+    rollback)
+        rollback_update "$@"
         ;;
     uninstall)
         print_info "To uninstall: remove the 'claude-dockerized/bin' PATH line from ~/.bashrc/~/.zshrc,"
