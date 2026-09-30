@@ -79,24 +79,42 @@ grep -q 'Security Rules' "$CLAUDE_DIR/CLAUDE.md" ||
 [ "$(cat "$CONFIG_DIR/hooks/policies/VERSION")" = "$(cat "$REPO_DIR/policies/VERSION")" ] ||
     fail "policy VERSION marker does not match the repo"
 
-# Managed settings.json: auto-updates off, bypass disabled, hooks wired.
-[ -f "$CLAUDE_DIR/settings.json" ] ||
-    fail "managed settings.json was not generated"
-grep -q 'DISABLE_AUTOUPDATER' "$CLAUDE_DIR/settings.json" ||
-    fail "managed settings.json must disable auto-updates"
-grep -q 'disableBypassPermissionsMode' "$CLAUDE_DIR/settings.json" ||
-    fail "managed settings.json must disable bypass-permissions mode"
-grep -q 'claude-guard-bash.sh' "$CLAUDE_DIR/settings.json" ||
-    fail "managed settings.json must wire the bash guard hook"
-grep -q 'claude-guard-file.sh' "$CLAUDE_DIR/settings.json" ||
-    fail "managed settings.json must wire the file guard hook"
-grep -q 'Read(./.env)' "$CLAUDE_DIR/settings.json" ||
-    fail "managed settings.json must deny .env reads"
+# Managed policy: auto-updates off, bypass disabled, hooks wired, managed
+# hooks only, and never a null model (the schema rejects it).
+MANAGED="$CCODE_HOME/etc/claude-code/managed-settings.json"
+[ -f "$MANAGED" ] ||
+    fail "managed-settings.json was not generated"
+grep -q 'DISABLE_AUTOUPDATER' "$MANAGED" ||
+    fail "managed policy must disable auto-updates"
+grep -q 'disableBypassPermissionsMode' "$MANAGED" ||
+    fail "managed policy must disable bypass-permissions mode"
+grep -q 'claude-guard-bash.sh' "$MANAGED" ||
+    fail "managed policy must wire the bash guard hook"
+grep -q 'claude-guard-file.sh' "$MANAGED" ||
+    fail "managed policy must wire the file guard hook"
+grep -q '"allowManagedHooksOnly": true' "$MANAGED" ||
+    fail "managed policy must allow managed hooks only"
+grep -q 'Read(./.env)' "$MANAGED" ||
+    fail "managed policy must deny .env reads"
+grep -q 'Read(~/.claude/.credentials.json)' "$MANAGED" ||
+    fail "managed policy must deny reading the OAuth credentials"
+if grep -q '"model"' "$MANAGED"; then
+    fail "managed policy must not carry a model key"
+fi
 
-# GnuPG private keys must be denied by the managed settings and listed as
+# User settings: seeded from the repo defaults, writable, policy-free.
+[ -f "$CLAUDE_DIR/settings.json" ] ||
+    fail "user settings.json was not seeded"
+cmp -s "$REPO_DIR/config/user-settings.default.json" "$CLAUDE_DIR/settings.json" ||
+    fail "user settings.json must be seeded from config/user-settings.default.json"
+if grep -qE 'claude-guard|DISABLE_AUTOUPDATER|"model"' "$CLAUDE_DIR/settings.json"; then
+    fail "user settings.json must not carry policy or model keys"
+fi
+
+# GnuPG private keys must be denied by the managed policy and listed as
 # secrets in the managed rules (defense in depth even though they are never mounted).
-grep -q 'private-keys-v1.d' "$CLAUDE_DIR/settings.json" ||
-    fail "GnuPG private keys must be denied in the managed settings"
+grep -q 'private-keys-v1.d' "$MANAGED" ||
+    fail "GnuPG private keys must be denied in the managed policy"
 grep -q 'private-keys-v1.d' "$CLAUDE_DIR/CLAUDE.md" ||
     fail "GnuPG private keys must be listed as secrets in the managed rules"
 
