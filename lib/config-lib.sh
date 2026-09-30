@@ -1586,18 +1586,20 @@ build_common_docker_args() {
     DOCKER_COMMON_ARGS+=(-e "CLAUDE_DOCKERIZED_POLICY=$SECURITY_POLICY")
 
     # Claude Code self-update is disabled via env.DISABLE_AUTOUPDATER=1 in the
-    # managed settings.json (see write_claude_settings_template); the wrapper
-    # `update` command (image rebuild) is the only supported upgrade path.
+    # managed policy (see write_managed_settings); the wrapper `update`
+    # command (image rebuild) is the only supported upgrade path.
     # The default model travels as a CLI flag (see bin/claude-dockerized), not
     # as an env var, so user sessions can still switch with /model.
-    if [ ! -f "$CCODE_HOME/.claude/settings.json" ]; then
-        config_warning "Managed settings.json not found (run 'claude-dockerized install')"
+    if [ ! -f "$CCODE_HOME/etc/claude-code/managed-settings.json" ]; then
+        config_warning "Managed policy not found (run 'claude-dockerized config sync')"
     fi
 }
 
-# Build standard volume mount arguments for Claude Code directories (option A:
-# fine-grained mounts — never ~/.claude as a whole, so managed files stay
-# read-only while user state stays read-write).
+# Build standard volume mount arguments for Claude Code directories. The
+# policy is a read-only /etc/claude-code (managed settings, highest
+# precedence); ~/.claude comes from the generated home read-write (user
+# settings, credentials, plugins, memory) with the guard hooks and CLAUDE.md
+# overlaid read-only. The host ~/.claude and $CONFIG_DIR are never mounted.
 # Populates VOLUME_ARGS and CONTAINER_WORKDIR
 # The project is mounted at a path derived from the host path (with $HOME stripped)
 # so that sessions stay portable across machines/users.
