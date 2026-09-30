@@ -22,7 +22,7 @@
   never skip the remaining checks. Exemptions are per token, never for the
   whole command [T-08].
 - **Every file-touching tool and field.** A new tool or input field goes
-  into the matcher (`write_claude_managed_settings`) and the parsers, with
+  into the matcher (`config/managed-settings.json`) and the parsers, with
   corpus cases [T-09].
 - **Bump `CLAUDE_DOCKERIZED_GUARD_VERSION`** when behavior changes, so
   installs refresh (content is verified byte for byte anyway [T-15]).

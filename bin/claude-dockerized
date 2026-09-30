@@ -728,8 +728,8 @@ run_debug() {
     paths)
         parse_config || true
         echo "Generated home: $CCODE_HOME"
-        echo "Managed policy: $CCODE_HOME/.claude/managed-settings.json (-> /etc/claude-code/managed-settings.json, ro)"
-        echo "User settings: $CCODE_HOME/.claude/settings.json (ro)"
+        echo "Managed policy: $CCODE_HOME/etc/claude-code/managed-settings.json (-> /etc/claude-code, ro)"
+        echo "User settings: $CCODE_HOME/.claude/settings.json (writable)"
         echo "Guard hooks: $CCODE_HOME/.claude/hooks-guard/"
         echo "Credentials: $CCODE_HOME/.claude/.credentials.json"
         echo "MCP state: $CCODE_HOME/.claude.json"
@@ -858,12 +858,18 @@ show_config() {
             echo "$cc_config"
             ;;
         edit)
-            print_error "settings.json is wrapper-managed (template wins); edit the wrapper config instead: claude-dockerized config edit"
-            print_info "File: $cc_config"
-            exit 1
+            local editor
+            if ! editor=$(resolve_editor); then
+                print_error "No editor found (set \$EDITOR or install sensible-editor, vi or nano)"
+                exit 1
+            fi
+            "$editor" "$cc_config"
+            ;;
+        policy)
+            echo "$CCODE_HOME/etc/claude-code/managed-settings.json"
             ;;
         *)
-            print_error "Usage: claude-dockerized config claude [path|edit]"
+            print_error "Usage: claude-dockerized config claude [path|edit|policy]"
             exit 1
             ;;
         esac

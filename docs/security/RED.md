@@ -78,8 +78,8 @@ Result on the current code is in the matrix of THREAT-MODEL.md.
   parsers, corrupting or emptying the policy data, an unknown mode: any
   non-2 exit used to let the tool run. *Tests:* `guard-failure-modes`,
   CI job without jq/python3.
-- **T-16 — Smuggle `disableAllHooks` through a settings merge.** *Tests:*
-  `merge-settings`, `wrapper-args`.
+- **T-16 — Smuggle `disableAllHooks` into the user settings.** *Tests:*
+  `migrate-settings`, `wrapper-args`.
 - **T-30 — Rely on a sandbox that is not there.** `sandbox.enabled` without
   bubblewrap silently ran unsandboxed. *Tests:* `guard-tool-coverage`.
 

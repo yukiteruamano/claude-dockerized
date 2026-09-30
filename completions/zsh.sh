@@ -61,14 +61,14 @@ _claude_dockerized() {
                             'edit:Edit wrapper config file in $EDITOR'
                             'path:Print wrapper config file path'
                             'sync:Refresh security layer from repo (--check for drift only)'
-                            'claude:Managed Claude settings path'
+                            'claude:User Claude settings (path|edit) / managed policy path'
                             'credentials:Credentials file path (path only)'
                         )
                         _describe -t config_cmds 'config subcommand' config_cmds
                     else
                         case $words[2] in
                             sync) _values 'sync flag' --check ;;
-                            claude) _values 'claude subcommand' path ;;
+                            claude) _values 'claude subcommand' path edit policy ;;
                             credentials) _values 'credentials subcommand' path ;;
                         esac
                     fi
