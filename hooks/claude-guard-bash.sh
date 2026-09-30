@@ -12,7 +12,7 @@
 # normal permissions flow applies. Any other exit is a non-blocking error for
 # Claude Code (the tool still runs), so every failure path here exits 2.
 #
-# CLAUDE_DOCKERIZED_GUARD_VERSION=2
+# CLAUDE_DOCKERIZED_GUARD_VERSION=3
 #
 # Policy modes (./policy-mode, written by the wrapper next to this hook on the
 # read-only mount; CLAUDE_DOCKERIZED_POLICY is only a fallback because project
@@ -187,7 +187,6 @@ match '\.docker/config\.json|(^|[/[:space:]"'"'"'=:(])gh/hosts\.yml|\.kube/confi
 match '(^|[/[:space:]"'"'"'=:(])\.npmrc([[:space:]"'"'"'/):;,]|$)' && deny
 match '(^|[/[:space:]"'"'"'=:(])\.mcp-auth([/[:space:]"'"'"'=:,;]|$)' && deny
 match '(^|[/[:space:]"'"'"'=:(])\.gitconfig([[:space:]"'"'"'/):;,]|$)' && deny
-match '(^|[/[:space:]"'"'"'=:(])\.composio([/[:space:]"'"'"'=:,;]|$)' && deny
 match '(^|[/[:space:]"'"'"'=:(])id_(rsa|dsa|ecdsa|ed25519|ed25519_sk|ecdsa_sk|eddsa)([[:space:]"'"'"'/):;,:\-]|$)' && deny
 # leak verb + secret token (.pem/.key/key-like/bare *key)
 LEAK='cat|tac|less|more|head|tail|grep|egrep|fgrep|rg|sed|awk|cut|strings|xxd|od|hexdump|base64|base32|cp|mv|install|scp|rsync|tar|zip|gzip|bzip2|xz|curl|wget|nc|ncat|socat|telnet|python[0-9.]*|node|deno|bun|perl|ruby|php|sort|nl|rev|tr|split|comm|join|paste|pr|fmt|expand|unexpand|fold|csplit|diff|cmp|xargs|dd'

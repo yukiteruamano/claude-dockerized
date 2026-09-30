@@ -12,7 +12,7 @@
 # Any other exit is a non-blocking error for Claude Code (the tool still
 # runs), so every failure path here exits 2.
 #
-# CLAUDE_DOCKERIZED_GUARD_VERSION=2
+# CLAUDE_DOCKERIZED_GUARD_VERSION=3
 
 set -u
 
@@ -150,7 +150,7 @@ deny_write() {
 # --- Secret reads (literal path + symlink-resolved target) ---
 # Credential stores (T-10): OAuth store, git/pypi creds, netrc, docker/gh/kube/gcloud.
 # Case-insensitive: SERVER.KEY or .PEM exports are the same secrets.
-DENY_RE='(^|/)\.env(\.([^e]|$)|$)|(^|/)\.env\..*|\.pem$|\.key$|(^|/)auth\.json$|(^|/)id_(rsa|dsa|ecdsa|ed25519|ed25519_sk|ecdsa_sk|eddsa)$|(^|/)\.ssh(/|$)''|(^|/)\.npmrc$|(^|/)\.mcp-auth(/|$)|(^|/)\.?credentials(\.|$)|(^|/)private-keys-v1\.d(/|$)|(^|/)\.gitconfig$|(^|/)\.composio(/|$)|(^|/)\.(netrc|git-credentials|pypirc)$|(^|/)\.docker/config\.json$|(^|/)gh/hosts\.yml$|(^|/)\.kube/config$|(^|/)\.config/gcloud(/|$)'
+DENY_RE='(^|/)\.env(\.([^e]|$)|$)|(^|/)\.env\..*|\.pem$|\.key$|(^|/)auth\.json$|(^|/)id_(rsa|dsa|ecdsa|ed25519|ed25519_sk|ecdsa_sk|eddsa)$|(^|/)\.ssh(/|$)''|(^|/)\.npmrc$|(^|/)\.mcp-auth(/|$)|(^|/)\.?credentials(\.|$)|(^|/)private-keys-v1\.d(/|$)|(^|/)\.gitconfig$|(^|/)\.(netrc|git-credentials|pypirc)$|(^|/)\.docker/config\.json$|(^|/)gh/hosts\.yml$|(^|/)\.kube/config$|(^|/)\.config/gcloud(/|$)'
 
 check_deny_read() {
     local p="$1"

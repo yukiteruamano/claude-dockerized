@@ -115,8 +115,9 @@ Result on the current code is in the matrix of THREAT-MODEL.md.
   `core.hooksPath` / filter entry to the project's `.git`, which the host's
   git (or the shell prompt) runs later. *Tests:* `integrity` (reported),
   `hardening` (read-only overlays in strict), corpus `write-git-hook` (strict).
-- **T-02 — Replace a host CLI** kept in a read-write mount (`~/.composio`).
-  *Tests:* `integrity`, `hardening`.
+- **T-02 — Replace a host CLI** kept in a read-write mount of a host
+  directory. No such directory is mounted any more; read-write binds come
+  only from the generated home and the project. *Tests:* `hardening`.
 - **T-05 — Persist into every later session:** add an MCP stdio server, a
   plugin, skill, agent or command in the generated home. *Tests:* `integrity`,
   `hardening`.

@@ -252,8 +252,8 @@ for (const mode of ["balanced", "strict", "none", "off"]) {
   assert(mode, "read", join(PROJECT, "deploy_key"), readEval(join(PROJECT, "deploy_key")), "deny");
   assert(mode, "read", "/home/coder/.gitconfig", readEval("/home/coder/.gitconfig"), "deny");
   assert(
-    mode, "read", "/home/coder/.composio/user_data.json",
-    readEval("/home/coder/.composio/user_data.json"), "deny",
+    mode, "read", "/home/coder/.mcp-auth/tokens.json",
+    readEval("/home/coder/.mcp-auth/tokens.json"), "deny",
   );
   assert(mode, "read", join(PROJECT, ".env.example"), readEval(join(PROJECT, ".env.example")), "allow");
   assert(mode, "read", join(PROJECT, "src/a.ts"), readEval(join(PROJECT, "src/a.ts")), "allow");

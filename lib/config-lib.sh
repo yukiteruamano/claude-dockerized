@@ -210,8 +210,10 @@ ensure_claude_dirs() {
         : >"$CCODE_HOME/.claude/.credentials.json" 2>/dev/null || true
         chmod 600 "$CCODE_HOME/.claude/.credentials.json" 2>/dev/null || true
     fi
-    # MCP OAuth store (`mcp-remote` servers) — mounted read-write so tokens persist
-    mkdir -p "$HOME/.mcp-auth" 2>/dev/null || true
+    # MCP OAuth store for `mcp-remote` servers (0700, tokens are credentials).
+    # Lives in the generated home: the host ~/.mcp-auth is never shared.
+    mkdir -p "$CCODE_HOME/.mcp-auth" 2>/dev/null || true
+    chmod 700 "$CCODE_HOME/.mcp-auth" 2>/dev/null || true
     # claude-dockerized directory + generated security layer
     ensure_claude_dockerized_config
 }
@@ -1876,16 +1878,12 @@ build_standard_volume_args() {
         fi
     done
 
-    # MCP authentication directory (optional) — read-write so OAuth for
-    # `mcp-remote`-based MCP servers persists across sessions.
-    if [ -d "$HOME/.mcp-auth" ]; then
-        VOLUME_ARGS+=(-v "$HOME/.mcp-auth:/home/coder/.mcp-auth:rw")
-    fi
-
-    # Composio CLI state (optional custom mount lives in user config; the dir
-    # itself is only wired here when present so `composio` resolves on PATH).
-    if [ -d "$HOME/.composio" ]; then
-        VOLUME_ARGS+=(-v "$HOME/.composio:/home/coder/.composio:$persist")
+    # MCP OAuth store for `mcp-remote`-based servers (generated home, always
+    # read-write: tokens, not code, so strict keeps it writable; without it
+    # the tokens die with the container, or cannot be written on a read-only
+    # rootfs). Native Claude MCP OAuth lives in .credentials.json instead.
+    if [ -d "$chome/.mcp-auth" ]; then
+        VOLUME_ARGS+=(-v "$chome/.mcp-auth:/home/coder/.mcp-auth:rw")
     fi
 
     # Agent-compatible skills directory (optional, read-only).
