@@ -121,6 +121,10 @@ grep -q 'Verify by execution' "$CLAUDE_DIR/CLAUDE.md" ||
     fail "Core Workflow must require verification by execution"
 grep -q 'Manejo remoto' "$CLAUDE_DIR/CLAUDE.md" ||
     fail "remote-handling section must be present in the managed rules"
+grep -q '/etc/claude-code/managed-settings.json' "$CLAUDE_DIR/CLAUDE.md" ||
+    fail "managed rules must point at the managed policy"
+grep -q 'reported to the user after the session' "$CLAUDE_DIR/CLAUDE.md" ||
+    fail "managed rules must explain the session integrity report"
 grep -q 'ruff check' "$CLAUDE_DIR/CLAUDE.md" ||
     fail "Python rules must require ruff"
 grep -q 'tsc --noEmit' "$CLAUDE_DIR/CLAUDE.md" ||
