@@ -16,12 +16,15 @@ source "$SCRIPT_DIR/lib/assert.sh"
 
 BIN="$REPO_DIR/bin/claude-dockerized"
 
-# Commands dispatched by main(): the case labels between `case "$command"` and
-# its esac, minus the help aliases and the catch-all.
+# Commands dispatched by main(): the labels of its LAST `case "$command" in`
+# block (the dispatcher; an earlier one only routes --help), minus the help
+# aliases and the catch-all.
 dispatched="$(
-    awk '/^main\(\) \{/ {in_main=1} in_main && /case "\$command" in/ {in_case=1; next}
-         in_case && /^    esac/ {exit}
-         in_case && /^    [a-z|* -]+\)$/ {print}' "$BIN" |
+    awk '/^main\(\) \{/ {in_main=1}
+         in_main && /case "\$command" in/ {in_case=1; delete labels; n=0; next}
+         in_case && /^    esac/ {in_case=0; next}
+         in_case && /^    [a-z|* -]+\)$/ {labels[n++]=$0}
+         in_main && /^\}/ {for (i = 0; i < n; i++) print labels[i]; exit}' "$BIN" |
         tr -d ' )' | tr '|' '\n' | grep -vE '^(\*|--help|-h)$' | sort -u
 )"
 check "main() dispatches commands" [ -n "$dispatched" ]
@@ -35,12 +38,6 @@ in_list() { grep -qxF -- "$1" <<<"$2"; }
 
 while IFS= read -r cmd; do
     [ -n "$cmd" ] || continue
-    if [ "$cmd" = uninstall ]; then
-        gap UX-08 "'$cmd' documented in help" in_help "$cmd"
-        gap UX-08 "'$cmd' in bash completion" in_list "$cmd" "$bash_opts"
-        gap UX-08 "'$cmd' in zsh completion" in_list "$cmd" "$zsh_cmds"
-        continue
-    fi
     check "'$cmd' documented in help" in_help "$cmd"
     check "'$cmd' in bash completion" in_list "$cmd" "$bash_opts"
     check "'$cmd' in zsh completion" in_list "$cmd" "$zsh_cmds"
@@ -59,5 +56,14 @@ done <<<"$zsh_cmds"
 # Both completion scripts parse.
 check "bash completion syntax" bash -n "$REPO_DIR/completions/bash.sh"
 check "zsh completion parses (bash -n, as in CI)" bash -n "$REPO_DIR/completions/zsh.sh"
+check "zsh completion guards compdef (no error before compinit)" grep -q 'functions\[compdef\]' "$REPO_DIR/completions/zsh.sh"
+
+# Every dispatched command has its own help page.
+while IFS= read -r cmd; do
+    [ -n "$cmd" ] || continue
+    has_command_help() { NO_COLOR=1 bash "$BIN" help "$1" >/dev/null 2>&1; }
+    check "'$cmd' has a help page" has_command_help "$cmd"
+done <<<"$dispatched"
+check_not "help never prints the install path" has_text "$REPO_DIR/bin" "$help_text"
 
 t_summary
