@@ -7,6 +7,9 @@
 # asserted: rootless flags, read-only managed mounts, no socket unless opted
 # in, host-only refusals and the default (unhardened) runtime profile.
 #
+# Threats: T-20 (docker socket off by default), T-27 (root refused), T-28
+# (rootless flags on every entry point) - see docs/security/THREAT-MODEL.md.
+#
 # Usage: bash tests/wrapper-dryrun.test.sh
 # shellcheck disable=SC2088,SC2317  # literal ~ is config text; helpers run via check/gap
 
