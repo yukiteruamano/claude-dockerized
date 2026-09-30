@@ -1606,42 +1606,28 @@ build_standard_volume_args() {
     local chome="$CCODE_HOME"
     ensure_claude_dirs
 
-    # Managed settings.json (read-only). Edit on the host via
-    # `claude-dockerized config claude edit`.
-    if [ -f "$chome/.claude/settings.json" ]; then
-        VOLUME_ARGS+=(-v "$chome/.claude/settings.json:/home/coder/.claude/settings.json:ro")
+    # Managed policy (read-only directory, so no drop-in can be added).
+    if [ -f "$chome/etc/claude-code/managed-settings.json" ]; then
+        VOLUME_ARGS+=(-v "$chome/etc/claude-code:/etc/claude-code:ro")
     else
-        config_warning "Managed settings.json not found at $chome/.claude/settings.json"
+        config_warning "Managed policy not found at $chome/etc/claude-code/managed-settings.json"
     fi
 
-    # Security hooks (read-only).
+    # Claude state (read-write directory: a single-file bind would make every
+    # settings save fail with EBUSY). Credentials stay 0600.
+    chmod 600 "$chome/.claude/.credentials.json" 2>/dev/null || true
+    VOLUME_ARGS+=(-v "$chome/.claude:/home/coder/.claude:rw")
+
+    # Security hooks (read-only overlay).
     if [ -d "$chome/.claude/hooks-guard" ]; then
         VOLUME_ARGS+=(-v "$chome/.claude/hooks-guard:/home/coder/.claude/hooks-guard:ro")
     else
         config_warning "Security hooks not found at $chome/.claude/hooks-guard"
     fi
 
-    # Managed session rules (read-only).
+    # Managed session rules (read-only overlay).
     if [ -f "$chome/.claude/CLAUDE.md" ]; then
         VOLUME_ARGS+=(-v "$chome/.claude/CLAUDE.md:/home/coder/.claude/CLAUDE.md:ro")
-    fi
-
-    # Credentials (read-write, 0600) — auth persists across restarts/rebuilds.
-    if [ -f "$chome/.claude/.credentials.json" ]; then
-        chmod 600 "$chome/.claude/.credentials.json" 2>/dev/null || true
-        VOLUME_ARGS+=(-v "$chome/.claude/.credentials.json:/home/coder/.claude/.credentials.json:rw")
-    fi
-
-    # User plugins / skills / agents / commands (read-write).
-    for d in plugins skills agents commands; do
-        if [ -d "$chome/.claude/$d" ]; then
-            VOLUME_ARGS+=(-v "$chome/.claude/$d:/home/coder/.claude/$d:rw")
-        fi
-    done
-
-    # LSP config (read-write; regenerated when setting.lsp=true).
-    if [ -f "$chome/.claude/.lsp.json" ]; then
-        VOLUME_ARGS+=(-v "$chome/.claude/.lsp.json:/home/coder/.claude/.lsp.json:rw")
     fi
 
     # MCP user-scope state (read-write).
