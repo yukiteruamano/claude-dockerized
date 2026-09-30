@@ -118,6 +118,35 @@ other="$(docker run --rm --user 4242:4242 --group-add coder --cap-drop=ALL \
 check "arbitrary UID runs non-root" has_line 4242 "$other"
 check "arbitrary UID can write the home tree" has_line home_ok "$other"
 
+# Opt-in strict profile: read-only rootfs, writable tmpfs where tools write,
+# read-only git hooks/config overlays; Claude itself still starts.
+mkdir -p "$PROJECT/.git/hooks"
+: >"$PROJECT/.git/config"
+printf 'setting.hardening=strict\n' >"$CONFIG_FILE"
+parse_config >/dev/null 2>&1 || true
+build_common_docker_args >/dev/null
+build_standard_volume_args "$PROJECT" false >/dev/null
+strict="$(run_in '
+mktemp -p /usr >/dev/null 2>&1 && echo "rootfs_writable=yes"
+touch /tmp/claude-probe 2>/dev/null && echo "tmp_ok=yes"
+touch /home/coder/.cache/probe 2>/dev/null && echo "cache_ok=yes"
+touch /home/coder/.claude/probe 2>/dev/null && echo "claude_dir_ok=yes"
+touch /work/proj/.git/hooks/probe 2>/dev/null && echo "git_hooks_writable=yes"
+touch /work/proj/probe 2>/dev/null && echo "project_ok=yes"
+touch /home/coder/.local/bin/probe 2>/dev/null && echo "user_bin_writable=yes"
+claude --version >/dev/null 2>&1 && echo "claude_ok=yes"
+' 2>&1)"
+sval() { sed -n "s/^$1=//p" <<<"$strict" | head -n1; }
+assert_eq "$(sval rootfs_writable)" "" "strict: root filesystem is read-only"
+assert_eq "$(sval tmp_ok)" yes "strict: /tmp is writable"
+assert_eq "$(sval cache_ok)" yes "strict: ~/.cache is writable"
+assert_eq "$(sval claude_dir_ok)" yes "strict: ~/.claude session state is writable"
+assert_eq "$(sval git_hooks_writable)" "" "strict: project .git/hooks is read-only"
+assert_eq "$(sval project_ok)" yes "strict: the project stays writable"
+assert_eq "$(sval user_bin_writable)" "" "strict: ~/.local/bin is read-only"
+assert_eq "$(sval claude_ok)" yes "strict: claude starts"
+rm -f "$CONFIG_FILE"
+
 # Guard suites inside the image (its bash, jq, python3 and node).
 for suite in claude-guard guard-failure-modes guard-bypass-corpus guard-eval; do
     out="$(docker run --rm --user "$(id -u):$(id -g)" --cap-drop=ALL \

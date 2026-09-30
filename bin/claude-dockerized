@@ -115,6 +115,9 @@ if [ -f "$sc" ] && grep -oE "\"(apiKey|api_key|token|secret|password|authorizati
 else
     note "inline secrets: none"
 fi
+echo "== runtime hardening =="
+note "profile: ${CLAUDE_DOCKERIZED_HARDENING:-off} (setting.hardening: off|standard|strict)"
+if probe=$(mktemp -p /usr 2>/dev/null); then unlink "$probe"; note "root filesystem: writable"; else note "root filesystem: read-only"; fi
 echo "== model =="
 if [ -n "${CLAUDE_DOCKERIZED_MODEL:-}" ]; then
     note "model: ${CLAUDE_DOCKERIZED_MODEL} (wrapper default; /model still works)"
@@ -196,12 +199,23 @@ check_not_root() {
     fi
 }
 
+# Image build options from the wrapper config (opt-in; defaults build the
+# historic image). Sets IMAGE_BUILD_ARGS. Usage: image_build_args
+image_build_args() {
+    parse_config || true
+    IMAGE_BUILD_ARGS=()
+    [ "$IMAGE_STRIP_SETUID" = true ] && IMAGE_BUILD_ARGS+=(--build-arg STRIP_SETUID=1)
+    [ "$IMAGE_DOCKER_CLI" = false ] && IMAGE_BUILD_ARGS+=(--build-arg DOCKER_CLI=0)
+    return 0
+}
+
 # Function to build the Docker image
 build_image() {
     print_info "Building Claude Code Docker image..."
+    image_build_args
     # Regular build uses Docker layer cache normally.
     # Only the 'update' command passes CLAUDE_BUILD_TIME to bust the cache.
-    docker build -t "$IMAGE_NAME" "$REPO_ROOT"
+    docker build "${IMAGE_BUILD_ARGS[@]}" -t "$IMAGE_NAME" "$REPO_ROOT"
     print_success "Docker image built successfully"
 }
 
@@ -383,18 +397,38 @@ run_claude() {
         return 0
     fi
 
+    # Fingerprint the persistent paths the session could plant code in
+    # (setting.integrity_check, default on); compared after the session.
+    local snap_before="" snap_after=""
+    if [ "$INTEGRITY_CHECK" = true ]; then
+        if snap_before=$(mktemp 2>/dev/null); then
+            integrity_snapshot "$project_dir" "$snap_before"
+        else
+            snap_before=""
+        fi
+    fi
+
     # Stop the per-session GnuPG relay when the container exits.
     trap 'stop_gpg_relay "$GPG_RELAY_SOCKET"' EXIT INT TERM
-    if ! "${docker_cmd[@]}"; then
-        stop_gpg_relay "$GPG_RELAY_SOCKET"
-        GPG_RELAY_SOCKET=""
-        trap - EXIT INT TERM
-        print_error "Claude Code exited with an error"
-        exit 1
-    fi
+    local rc=0
+    "${docker_cmd[@]}" || rc=$?
     stop_gpg_relay "$GPG_RELAY_SOCKET"
     GPG_RELAY_SOCKET=""
     trap - EXIT INT TERM
+
+    if [ -n "$snap_before" ]; then
+        if snap_after=$(mktemp 2>/dev/null); then
+            integrity_snapshot "$project_dir" "$snap_after"
+            integrity_report "$project_dir" "$snap_before" "$snap_after" || true
+        fi
+        rm -f "$snap_before" "$snap_after"
+    fi
+
+    # Propagate Claude Code's own exit status (130 on Ctrl-C, etc.).
+    if [ "$rc" -ne 0 ]; then
+        print_error "Claude Code exited with status $rc"
+        exit "$rc"
+    fi
 }
 
 # Self-update helpers: `update` and `upgrade` both perform the full upgrade
@@ -467,7 +501,8 @@ _rebuild_claude_image() {
         version_args+=(--build-arg "CLAUDE_CODE_VERSION=$_UP_CLAUDE_VERSION")
         print_info "Requested Claude Code version: $_UP_CLAUDE_VERSION"
     fi
-    docker build --build-arg "CLAUDE_BUILD_TIME=$(date +%s)" "${version_args[@]}" -t "$IMAGE_NAME" "$REPO_ROOT"
+    image_build_args
+    docker build --build-arg "CLAUDE_BUILD_TIME=$(date +%s)" "${version_args[@]}" "${IMAGE_BUILD_ARGS[@]}" -t "$IMAGE_NAME" "$REPO_ROOT"
     print_info "Updated Claude Code version:"
     docker run --rm --entrypoint bash "$IMAGE_NAME" -c "claude --version" 2>/dev/null || true
 }
@@ -672,6 +707,20 @@ run_debug() {
 # Diagnose the security layer, SSH and GnuPG forwarding inside the container.
 # Project-independent: doctor needs no project mount (like auth).
 run_doctor() {
+    parse_config || true
+    echo "== session integrity (host) =="
+    if [ "$INTEGRITY_CHECK" != true ]; then
+        echo "integrity check: disabled (setting.integrity_check=false)"
+    else
+        local last
+        last=$(integrity_last_report)
+        if [ -n "$last" ]; then
+            echo "last reported change: $last"
+            echo "full log: $CONFIG_DIR/audit/sessions.jsonl"
+        else
+            echo "no persistent-path changes recorded"
+        fi
+    fi
     run_cli_command doctor "" false bash -c "$DOCTOR_SCRIPT"
 }
 

@@ -114,6 +114,10 @@ ensure_private_tmpdir() {
     export TMPDIR=/tmp
 }
 
+# Session integrity check (fingerprint + report of persistent paths).
+# shellcheck source=lib/integrity-lib.sh
+source "$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/integrity-lib.sh"
+
 # Resolve an editor: $EDITOR first, then common fallbacks.
 # Prints the editor command name, or nothing when none is available.
 # Usage: editor=$(resolve_editor)
@@ -153,6 +157,11 @@ GPG_RELAY_SOCKET=""             # Active relay socket for the current session
 DOCKER_SOCKET=false             # Boolean flag: mount the host Docker socket (opt-in, root-equivalent)
 NETWORK="host"                  # Container network: host (default, simple) | bridge (more isolated)
 SECURITY_POLICY="balanced"      # Security policy mode: strict | balanced | none ("off" accepted as alias for none)
+HARDENING="off"                 # Runtime hardening profile: off (default, unchanged) | standard | strict (opt-in)
+INTEGRITY_CHECK=true            # Fingerprint persistent paths before/after each session and report changes
+IMAGE_STRIP_SETUID=false        # Build the image without setuid/setgid bits (opt-in)
+IMAGE_DOCKER_CLI=true           # Build the image with the Docker CLI (needed only with docker_socket)
+NETWORK_EXPLICIT=false          # setting.network was set in the config (strict keeps an explicit choice)
 MEMORY=""                       # Optional container memory limit (docker --memory), e.g. 4g
 CPUS=""                         # Optional container CPU limit (docker --cpus), e.g. 2
 ENV_FILE=""                     # Optional dotenv file with secrets (docker --env-file), must live under CONFIG_DIR
@@ -1717,6 +1726,41 @@ validate_claude_config() {
 }
 
 # Build common Docker run arguments shared by run_claude and run_auth
+# Append the flags of the opt-in hardening profile to DOCKER_COMMON_ARGS.
+#   standard: an init process (reaps zombies), a pids limit against fork
+#             bombs (T-23) and a private IPC namespace.
+#   strict:   standard + read-only root filesystem with per-user tmpfs for
+#             the paths tools write to (T-22), and bridge networking unless
+#             setting.network was set explicitly (T-06). The read-only
+#             persistent mounts of strict live in build_standard_volume_args.
+# Usage: append_hardening_args
+append_hardening_args() {
+    case "$HARDENING" in
+    standard | strict) ;;
+    *) return 0 ;;
+    esac
+    DOCKER_COMMON_ARGS+=(--init --pids-limit 4096 --ipc private)
+    [ "$HARDENING" = strict ] || return 0
+
+    local owner d
+    owner="uid=$(id -u),gid=$(id -g),mode=0700"
+    DOCKER_COMMON_ARGS+=(--read-only --tmpfs "/tmp:rw,nosuid,nodev,mode=1777")
+    for d in /home/coder/.claude /home/coder/.cache /home/coder/.config /home/coder/.npm \
+        /home/coder/.local/share /home/coder/.local/state; do
+        DOCKER_COMMON_ARGS+=(--tmpfs "$d:rw,nosuid,nodev,$owner")
+    done
+    if [ "$NETWORK_EXPLICIT" != true ] && [ "$NETWORK" = host ]; then
+        NETWORK=bridge
+        local i
+        for i in "${!DOCKER_COMMON_ARGS[@]}"; do
+            if [ "${DOCKER_COMMON_ARGS[$i]}" = --network ]; then
+                DOCKER_COMMON_ARGS[i + 1]=bridge
+            fi
+        done
+        DOCKER_COMMON_ARGS+=(--add-host "host.docker.internal:host-gateway")
+    fi
+}
+
 # Populates DOCKER_COMMON_ARGS array
 # The container runs as the host user directly (no root): --user starts the
 # process with the host UID/GID, so entrypoint.sh needs no privilege dropping or
@@ -1757,6 +1801,10 @@ build_common_docker_args() {
     [ -n "$MEMORY" ] && DOCKER_COMMON_ARGS+=(--memory "$MEMORY")
     [ -n "$CPUS" ] && DOCKER_COMMON_ARGS+=(--cpus "$CPUS")
 
+    # Opt-in runtime hardening profile (setting.hardening; default off keeps
+    # the historic runtime unchanged). See docs/security/BLUE.md.
+    append_hardening_args
+
     # Pass terminal identification variables so applications inside the container
     # can detect the host terminal and use its capabilities correctly.
     # Required for kitty OSC 99 terminal-mediated desktop notifications, true-color
@@ -1772,6 +1820,7 @@ build_common_docker_args() {
     # Security policy mode consumed by the mounted hooks
     # (strict | balanced | none). Defaults to balanced when unset.
     DOCKER_COMMON_ARGS+=(-e "CLAUDE_DOCKERIZED_POLICY=$SECURITY_POLICY")
+    DOCKER_COMMON_ARGS+=(-e "CLAUDE_DOCKERIZED_HARDENING=$HARDENING")
 
     # Claude Code self-update is disabled via env.DISABLE_AUTOUPDATER=1 in the
     # managed settings.json (see write_claude_settings_template); the wrapper
@@ -1804,6 +1853,14 @@ build_standard_volume_args() {
     if [ -n "$project_dir" ] && [ -n "$CONTAINER_WORKDIR" ]; then
         VOLUME_ARGS+=(-v "$project_dir:$CONTAINER_WORKDIR")
         build_git_worktree_args "$project_dir"
+        # strict: the git files the HOST executes are read-only overlays on
+        # the read-write project (T-01); commit/branch/fetch keep working.
+        if [ "$HARDENING" = strict ] && [ -d "$project_dir/.git" ]; then
+            [ -f "$project_dir/.git/config" ] &&
+                VOLUME_ARGS+=(-v "$project_dir/.git/config:$CONTAINER_WORKDIR/.git/config:ro")
+            [ -d "$project_dir/.git/hooks" ] &&
+                VOLUME_ARGS+=(-v "$project_dir/.git/hooks:$CONTAINER_WORKDIR/.git/hooks:ro")
+        fi
     fi
 
     local chome="$CCODE_HOME"
@@ -1842,16 +1899,22 @@ build_standard_volume_args() {
         VOLUME_ARGS+=(-v "$chome/.claude/.credentials.json:/home/coder/.claude/.credentials.json:rw")
     fi
 
-    # User plugins / skills / agents / commands (read-write).
+    # Paths that later sessions (or the host) execute: read-write by default,
+    # read-only under setting.hardening=strict (T-05; install plugins, skills
+    # and LSP binaries from the host then).
+    local persist="rw"
+    [ "$HARDENING" = strict ] && persist="ro"
+
+    # User plugins / skills / agents / commands.
     for d in plugins skills agents commands; do
         if [ -d "$chome/.claude/$d" ]; then
-            VOLUME_ARGS+=(-v "$chome/.claude/$d:/home/coder/.claude/$d:rw")
+            VOLUME_ARGS+=(-v "$chome/.claude/$d:/home/coder/.claude/$d:$persist")
         fi
     done
 
-    # LSP config (read-write; regenerated when setting.lsp=true).
+    # LSP config (regenerated when setting.lsp=true).
     if [ -f "$chome/.claude/.lsp.json" ]; then
-        VOLUME_ARGS+=(-v "$chome/.claude/.lsp.json:/home/coder/.claude/.lsp.json:rw")
+        VOLUME_ARGS+=(-v "$chome/.claude/.lsp.json:/home/coder/.claude/.lsp.json:$persist")
     fi
 
     # MCP user-scope state (read-write).
@@ -1865,7 +1928,7 @@ build_standard_volume_args() {
     # Generated-home binaries: LSP servers and formatters installed by
     # ensure_lsp_formatters (read-write, on PATH in the container).
     if [ -d "$chome/.local/bin" ]; then
-        VOLUME_ARGS+=(-v "$chome/.local/bin:/home/coder/.local/bin:rw")
+        VOLUME_ARGS+=(-v "$chome/.local/bin:/home/coder/.local/bin:$persist")
     fi
 
     # Sessions / history / caches (read-write).
@@ -1885,7 +1948,7 @@ build_standard_volume_args() {
     # Composio CLI state (optional custom mount lives in user config; the dir
     # itself is only wired here when present so `composio` resolves on PATH).
     if [ -d "$HOME/.composio" ]; then
-        VOLUME_ARGS+=(-v "$HOME/.composio:/home/coder/.composio:rw")
+        VOLUME_ARGS+=(-v "$HOME/.composio:/home/coder/.composio:$persist")
     fi
 
     # Agent-compatible skills directory (optional, read-only).
@@ -1961,6 +2024,21 @@ init_config_file() {
 # cloud/dev false positives (default); none = vendored patterns disabled
 # (built-in backstops still apply). Remote flows stay allowed in all modes.
 # setting.security_policy=balanced
+
+# Runtime hardening profile (opt-in; default off keeps today's behavior).
+# standard = init + pids limit + private IPC; strict = standard + read-only
+# root filesystem, read-only persistent mounts (plugins, skills, ~/.local/bin,
+# project .git hooks/config) and bridge networking unless network is set.
+# setting.hardening=off
+
+# Report changes to persistent paths (git hooks/config, ~/.local/bin, plugins,
+# MCP servers, ...) after each session; audit log in audit/sessions.jsonl.
+# setting.integrity_check=true
+
+# Image build options (applied by `build` / `update`): strip setuid bits,
+# leave out the Docker CLI (only needed with docker_socket).
+# setting.image_strip_setuid=false
+# setting.image_docker_cli=true
 
 # Optional container resource limits (docker --memory / --cpus). Empty = no limit.
 # setting.memory=4g
@@ -2056,7 +2134,12 @@ load_config() {
     GPG_RELAY=true
     DOCKER_SOCKET=false
     NETWORK="host"
+    NETWORK_EXPLICIT=false
     SECURITY_POLICY="balanced"
+    HARDENING="off"
+    INTEGRITY_CHECK=true
+    IMAGE_STRIP_SETUID=false
+    IMAGE_DOCKER_CLI=true
     MEMORY=""
     CPUS=""
     ENV_FILE=""
@@ -2083,7 +2166,10 @@ load_config() {
         docker_socket) [[ "$value" == "true" ]] && DOCKER_SOCKET=true ;;
         network)
             case "$value" in
-            "" | host | bridge) NETWORK="${value:-host}" ;;
+            "" | host | bridge)
+                NETWORK="${value:-host}"
+                [ -n "$value" ] && NETWORK_EXPLICIT=true
+                ;;
             *) config_warning "Invalid network '$value' (use host|bridge); keeping host" ;;
             esac
             ;;
@@ -2143,6 +2229,22 @@ load_config() {
                 config_warning "Invalid cpus '$value' (e.g. 2); ignoring"
             fi
             ;;
+        hardening)
+            case "$value" in
+            "" | off) HARDENING="off" ;;
+            standard | strict) HARDENING="$value" ;;
+            *) config_warning "Invalid hardening '$value' (use off|standard|strict); keeping off" ;;
+            esac
+            ;;
+        integrity_check)
+            case "$value" in
+            "" | true) INTEGRITY_CHECK=true ;;
+            false) INTEGRITY_CHECK=false ;;
+            *) config_warning "Invalid integrity_check '$value' (use true|false); keeping true" ;;
+            esac
+            ;;
+        image_strip_setuid) [[ "$value" == "true" ]] && IMAGE_STRIP_SETUID=true ;;
+        image_docker_cli) [[ "$value" == "false" ]] && IMAGE_DOCKER_CLI=false ;;
         security_policy)
             case "$value" in
             strict | balanced | none) SECURITY_POLICY="$value" ;;
@@ -2209,6 +2311,13 @@ save_config() {
         echo "setting.network=$NETWORK"
         echo "# Security policy mode: strict | balanced | none (off = alias for none)"
         echo "setting.security_policy=$SECURITY_POLICY"
+        echo "# Runtime hardening profile: off (default) | standard | strict"
+        echo "setting.hardening=$HARDENING"
+        echo "# Report persistent-path changes after each session (audit/sessions.jsonl)"
+        echo "setting.integrity_check=$INTEGRITY_CHECK"
+        echo "# Image build options (build/update): strip setuid bits, include the Docker CLI"
+        echo "setting.image_strip_setuid=$IMAGE_STRIP_SETUID"
+        echo "setting.image_docker_cli=$IMAGE_DOCKER_CLI"
         echo "# Optional container resource limits (empty = no limit)"
         echo "setting.memory=$MEMORY"
         echo "setting.cpus=$CPUS"
@@ -3019,6 +3128,26 @@ prompt_network() {
     config_success "Container network: $NETWORK"
 }
 
+# Interactive hardening-profile prompt (Enter keeps the current value).
+prompt_hardening() {
+    echo ""
+    config_info "Runtime Hardening (opt-in)"
+    echo "  off      = today's runtime (default)"
+    echo "  standard = + init process, pids limit, private IPC"
+    echo "  strict   = + read-only root filesystem, read-only plugins/skills/~/.local/bin"
+    echo "             and project .git hooks/config, bridge network (install plugins"
+    echo "             and LSP binaries from the host)"
+    echo ""
+    local answer
+    read -r -p "Hardening profile (off|standard|strict) [$HARDENING]: " answer || answer=""
+    case "$answer" in
+    "") ;;
+    off | standard | strict) HARDENING="$answer" ;;
+    *) config_warning "Invalid profile '$answer' (use off|standard|strict); keeping $HARDENING" ;;
+    esac
+    config_success "Hardening profile: $HARDENING"
+}
+
 # Interactive security policy prompt
 # Selects which vendored policy pattern set the guard enforces.
 prompt_security_policy() {
@@ -3244,6 +3373,9 @@ print_config() {
     fi
     echo "  Container network: $NETWORK"
     echo "  Security policy: $SECURITY_POLICY"
+    echo "  Hardening profile: $HARDENING"
+    echo "  Session integrity check: $INTEGRITY_CHECK"
+    echo "  Image: strip setuid=$IMAGE_STRIP_SETUID, Docker CLI=$IMAGE_DOCKER_CLI"
     echo "  Memory limit: ${MEMORY:-(none)}"
     echo "  CPU limit: ${CPUS:-(none)}"
     if [ -n "$ENV_FILE" ]; then
@@ -3329,6 +3461,7 @@ interactive_config_setup() {
         prompt_docker_socket
         prompt_network
         prompt_security_policy
+        prompt_hardening
         prompt_memory
         prompt_cpus
         prompt_model
@@ -3350,6 +3483,7 @@ interactive_config_setup() {
             prompt_docker_socket
             prompt_network
             prompt_security_policy
+            prompt_hardening
             prompt_memory
             prompt_cpus
             prompt_model
@@ -3358,7 +3492,7 @@ interactive_config_setup() {
             prompt_formatters
             prompt_custom_mounts
             prompt_env_vars
-            if [ ${#CUSTOM_MOUNTS[@]} -gt 0 ] || [ "$SSH_AGENT_SUPPORT" = true ] || [ "$GPG_AGENT_SUPPORT" = true ] || [ "$DOCKER_SOCKET" = true ] || [ "$NETWORK" != "host" ] || [ -n "$MEMORY" ] || [ -n "$CPUS" ] || [ "$SECURITY_POLICY" != "balanced" ] || [ -n "$ENV_FILE" ] || [ -n "$CLAUDE_MODEL" ] || [ -n "$CLEANUP_DAYS" ] || [ "$LSP_ENABLED" = true ] || [ "$FORMATTERS_ENABLED" = true ]; then
+            if [ ${#CUSTOM_MOUNTS[@]} -gt 0 ] || [ "$SSH_AGENT_SUPPORT" = true ] || [ "$GPG_AGENT_SUPPORT" = true ] || [ "$DOCKER_SOCKET" = true ] || [ "$NETWORK" != "host" ] || [ -n "$MEMORY" ] || [ -n "$CPUS" ] || [ "$SECURITY_POLICY" != "balanced" ] || [ "$HARDENING" != "off" ] || [ -n "$ENV_FILE" ] || [ -n "$CLAUDE_MODEL" ] || [ -n "$CLEANUP_DAYS" ] || [ "$LSP_ENABLED" = true ] || [ "$FORMATTERS_ENABLED" = true ]; then
                 save_config
                 print_config
             else
