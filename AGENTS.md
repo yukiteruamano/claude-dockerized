@@ -8,8 +8,7 @@ Shell script-based Docker wrapper for running [Claude Code](https://code.claude.
 - `bin/claude-dockerized` — Main wrapper, no extension (build, run, auth, models, exec, mcp, plugin, stats, debug, doctor, install, upgrade, update, config, clean commands). Reached via `<install>/bin` on PATH; nothing lives in `~/.local/bin`. `bin/` holds only this binary.
 - `install.sh` — Curl-able bootstrap: runs the local `bin/claude-dockerized install` when present, else clones to `~/.local/share/claude-dockerized` and runs it there (full setup in one shot, no second manual install)
 - `lib/config-lib.sh` — Shared library sourced by other scripts (config parsing, mount/env arg building, shared volume logic, interactive prompts, installs the security layer). **Not executable directly.**
-- `config/managed-settings.json`, `config/user-settings.default.json` — Managed Claude policy template and user-settings defaults (source of truth; rendered/seeded by `lib/config-lib.sh`)
-- `lib/migrate-settings.js` — Migrates a legacy combined `settings.json` to user scope
+- `lib/integrity-lib.sh` — Session integrity check: fingerprints persistent paths (project git hooks/config and Claude settings, `~/.local/bin`, plugins, skills, MCP servers, `~/.composio`) before/after each run and logs changes to `$CONFIG_DIR/audit/sessions.jsonl`. Sourced by `config-lib.sh`. **Not executable directly.**
 - `lib/install-lib.sh` — Install wizard library sourced by the wrapper's `install` command (`--yes`, `--only config,completions,aliases,global[,path][,build]`). **Not executable directly.**
 - `Dockerfile` — Container image (Debian trixie-slim + Node.js/NVM + uv + Claude Code native binary v2.1.284, no sudo, no npm install)
 - `entrypoint.sh` — Container entrypoint (unprivileged; resolves workdir, loads NVM, execs the command)

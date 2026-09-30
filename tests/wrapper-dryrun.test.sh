@@ -43,7 +43,11 @@ printf '%s\n' "$@" >"$DOCKER_STUB_CALLS/$(printf '%04d' "$n")"
 case "$1" in
 info) exit 0 ;;
 image) [ -z "${DOCKER_STUB_NO_IMAGE:-}" ] ;;
-run) exit "${DOCKER_STUB_RUN_RC:-0}" ;;
+run)
+    # Simulate a session that plants a file in a persistent path.
+    [ -n "${DOCKER_STUB_PLANT:-}" ] && printf '#!/bin/sh\n' >"$DOCKER_STUB_PLANT"
+    exit "${DOCKER_STUB_RUN_RC:-0}"
+    ;;
 *) exit 0 ;;
 esac
 EOF
@@ -121,6 +125,18 @@ check "default network is host" argv_pair --network host
 check_not "no read-only rootfs by default" argv_has --read-only
 check_not "no pids limit by default" argv_has_text "--pids-limit"
 
+# --- session integrity report (default on) ----------------------------------------
+mkdir -p "$PROJECT/.git/hooks"
+DOCKER_STUB_PLANT="$PROJECT/.git/hooks/pre-push" wrapper run "$PROJECT"
+check "a hook planted during the session is reported" has_text ".git/hooks/pre-push" "$OUT"
+check "the report is logged" grep -q 'pre-push' "$CONFIG_DIR/audit/sessions.jsonl"
+wrapper run "$PROJECT"
+check_not "a clean session reports nothing" has_text "Session integrity" "$OUT"
+printf 'setting.integrity_check=false\n' >"$CONFIG_DIR/config"
+DOCKER_STUB_PLANT="$PROJECT/.git/hooks/post-merge" wrapper run "$PROJECT"
+check_not "integrity_check=false disables the report" has_text "Session integrity" "$OUT"
+rm -f "$CONFIG_DIR/config"
+
 # --- other container entry points share the same rootless flags ---------------
 wrapper exec "summarize"
 check "exec runs claude -p" argv_pair claude -p
@@ -182,7 +198,7 @@ rm -f "$STUB/id"
 
 # --- UX contract gaps (fixed in Phase 5) -------------------------------------------
 DOCKER_STUB_RUN_RC=130 wrapper run "$PROJECT"
-gap UX-01 "run propagates the container exit code" [ "$RC" = 130 ]
+assert_eq "$RC" 130 "run propagates the container exit code (UX-01)"
 wrapper run "$PROJECT" -- --resume
 gap UX-02 "run passes extra args to claude" argv_has --resume
 wrapper help
