@@ -93,6 +93,27 @@ config_error() {
     fi
 }
 
+# Point TMPDIR at a private, user-owned 0700 dir unless the caller already set
+# one (T-17). The former default, a fixed /tmp/claude, is predictable and
+# shared: another local user could pre-create it and race the merge temps
+# that become the managed settings. Prefers $XDG_RUNTIME_DIR (per-user tmpfs),
+# then $CONFIG_DIR/tmp. Usage: ensure_private_tmpdir
+ensure_private_tmpdir() {
+    [ -n "${TMPDIR:-}" ] && return 0
+    local dir
+    for dir in "${XDG_RUNTIME_DIR:+$XDG_RUNTIME_DIR/claude-dockerized}" "$CONFIG_DIR/tmp"; do
+        [ -n "$dir" ] || continue
+        mkdir -p "$dir" 2>/dev/null || continue
+        # Refuse a dir someone else owns or that is a symlink.
+        [ -O "$dir" ] && [ ! -L "$dir" ] || continue
+        chmod 700 "$dir" 2>/dev/null || continue
+        export TMPDIR="$dir"
+        return 0
+    done
+    # mktemp in /tmp still creates unique 0600 files.
+    export TMPDIR=/tmp
+}
+
 # Resolve an editor: $EDITOR first, then common fallbacks.
 # Prints the editor command name, or nothing when none is available.
 # Usage: editor=$(resolve_editor)
@@ -194,6 +215,14 @@ validate_project_dir() {
         ;;
     esac
 
+    # Secrets and the wrapper's own layer are never a project (T-07).
+    local reason
+    if reason=$(sensitive_host_path_reason "$(canonical_host_path "$project_dir")"); then
+        config_error "Refusing to run with '$project_dir' as the project: $reason."
+        config_info "Pass a project subdirectory instead (e.g. ~/projects/my-app)."
+        return 1
+    fi
+
     return 0
 }
 
@@ -280,18 +309,14 @@ write_managed_settings() {
     return 0
 }
 
-# Seed or migrate the user-level ~/.claude/settings.json (read-write in the
-# container, so /model, /config and /permissions persist). A missing file is
-# seeded from config/user-settings.default.json; a legacy file that still
-# carries the old wrapper-managed policy is backed up to .bak and rewritten
-# with only the user's own keys (lib/migrate-settings.js). Without node the
-# legacy file is backed up and reseeded. Otherwise the file is never touched.
-# Usage: ensure_user_settings <settings.json>
-ensure_user_settings() {
-    local target="$1" repo_dir
-    repo_dir="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
-    local defaults="$repo_dir/config/user-settings.default.json"
-    [ -f "$defaults" ] || return 0
+# Emit the user-level Claude settings.json template to <output>: preferences
+# only (model, cleanup days, formatter plugins, a minimal allow list). The
+# security policy lives in the managed settings (write_claude_managed_settings),
+# which Claude Code ranks above every project/user scope.
+# Usage: write_claude_settings_template <output>
+write_claude_settings_template() {
+    local output="$1"
+    local model_json="null" cleanup_json="null" plugins_json="{}"
 
     if [ ! -f "$target" ]; then
         cp "$defaults" "$target" 2>/dev/null && config_success "Seeded user settings at $target"
@@ -310,7 +335,109 @@ ensure_user_settings() {
         cat "$defaults" >"$target" 2>/dev/null || true
         config_warning "Reseeded user settings.json from defaults (legacy copy kept as settings.json.bak)"
     fi
-    rm -f "$migrated"
+    if [ "$FORMATTERS_ENABLED" = true ]; then
+        plugins_json='{"prettier@claude": true, "ruff@claude": true}'
+    fi
+
+    cat >"$output" <<EOF
+{
+  "\$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "model": $model_json,
+  "cleanupPeriodDays": $cleanup_json,
+  "permissions": {
+    "allow": [
+      "Bash(mkdir *)",
+      "Bash(ls *)"
+    ]
+  },
+  "enabledPlugins": $plugins_json
+}
+EOF
+}
+
+# Emit the managed policy settings to <output>. Mounted read-only at
+# /etc/claude-code/managed-settings.json: the highest-precedence scope, so a
+# project's .claude/settings*.json cannot drop the hooks, relax deny rules or
+# override the env below (per-variable, managed wins) (T-03). Auto-updates are
+# always disabled; the policy mode is pinned here and in hooks-guard/policy-mode.
+# The sandbox is explicitly off: the image has no bubblewrap, so enabling it
+# would silently run unsandboxed (T-30); the container is the boundary.
+# Usage: write_claude_managed_settings <output>
+write_claude_managed_settings() {
+    local output="$1"
+    cat >"$output" <<EOF
+{
+  "\$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "env": {
+    "DISABLE_AUTOUPDATER": "1",
+    "CLAUDE_DOCKERIZED_POLICY": "${SECURITY_POLICY:-balanced}"
+  },
+  "permissions": {
+    "ask": [
+      "Bash(git push *)",
+      "Bash(git reset --hard *)",
+      "Bash(docker system prune *)"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./*.pem)",
+      "Read(./*.key)",
+      "Read(./auth.json)",
+      "Read(./credentials*)",
+      "Read(./**/.ssh/**)",
+      "Read(./**/private-keys-v1.d/**)",
+      "Bash(sudo *)",
+      "Bash(rm -rf /*)",
+      "Bash(mkfs *)",
+      "Bash(dd *)",
+      "Bash(shutdown *)",
+      "Bash(reboot *)",
+      "Bash(docker * --privileged *)",
+      "Bash(docker * -v /:/ *)",
+      "Bash(curl *169.254.169.254*)"
+    ],
+    "disableBypassPermissionsMode": "disable"
+  },
+  "sandbox": {
+    "enabled": false
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/coder/.claude/hooks-guard/claude-guard-bash.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Read|Edit|MultiEdit|Write|NotebookEdit|Glob|Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/coder/.claude/hooks-guard/claude-guard-file.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
+EOF
+}
+
+# Atomically replace <dest> with <src> (same-dir temp + mv, so a concurrent
+# session never reads a half-written file). Usage: atomic_install <src> <dest>
+atomic_install() {
+    local src="$1" dest="$2" tmp
+    tmp=$(mktemp "$dest.tmp.XXXXXX" 2>/dev/null) || return 1
+    if cat "$src" >"$tmp" 2>/dev/null && chmod 644 "$tmp" 2>/dev/null && mv -f "$tmp" "$dest" 2>/dev/null; then
+        return 0
+    fi
+    rm -f "$tmp" 2>/dev/null
+    return 1
 }
 
 # Install LSP server binaries into the generated home (never system-wide, so
@@ -415,11 +542,19 @@ ensure_claude_dockerized_config() {
     local installed_guard_ver repo_guard_ver
     installed_guard_ver=$(grep -oE 'CLAUDE_DOCKERIZED_GUARD_VERSION=[0-9]+' "$CONFIG_DIR/hooks/claude-guard-bash.sh" 2>/dev/null | head -1)
     repo_guard_ver=$(grep -oE 'CLAUDE_DOCKERIZED_GUARD_VERSION=[0-9]+' "$guard_src_bash" 2>/dev/null | head -1)
-    if [ ! -f "$CONFIG_DIR/hooks/claude-guard-bash.sh" ] || [ "$installed_guard_ver" != "$repo_guard_ver" ]; then
+    # Content, not just the marker, decides (T-15): an edited or tampered copy
+    # that keeps the version string is refreshed too (backed up first).
+    local guard_differs=false gf
+    for gf in claude-guard-bash.sh claude-guard-file.sh guard-eval.js; do
+        [ -f "$repo_dir/hooks/$gf" ] || continue
+        cmp -s "$repo_dir/hooks/$gf" "$CONFIG_DIR/hooks/$gf" 2>/dev/null || guard_differs=true
+    done
+    if [ ! -f "$CONFIG_DIR/hooks/claude-guard-bash.sh" ] || [ "$installed_guard_ver" != "$repo_guard_ver" ] || [ "$guard_differs" = true ]; then
         if [ -f "$guard_src_bash" ] && [ -f "$guard_src_file" ]; then
             if [ -f "$CONFIG_DIR/hooks/claude-guard-bash.sh" ]; then
                 cp "$CONFIG_DIR/hooks/claude-guard-bash.sh" "$CONFIG_DIR/hooks/claude-guard-bash.sh.bak" 2>/dev/null || true
                 cp "$CONFIG_DIR/hooks/claude-guard-file.sh" "$CONFIG_DIR/hooks/claude-guard-file.sh.bak" 2>/dev/null || true
+                [ -f "$CONFIG_DIR/hooks/guard-eval.js" ] && cp "$CONFIG_DIR/hooks/guard-eval.js" "$CONFIG_DIR/hooks/guard-eval.js.bak" 2>/dev/null
                 config_warning "Backed up previous guard hooks to *.bak"
             fi
             if cp "$guard_src_bash" "$CONFIG_DIR/hooks/claude-guard-bash.sh" 2>/dev/null \
@@ -459,6 +594,12 @@ ensure_claude_dockerized_config() {
     [ "$src_ver" != "$inst_ver" ] && policy_refresh=true
     for pf in "${policy_files[@]}"; do
         [ -f "$policy_dest/$pf" ] || policy_refresh=true
+    done
+    # The vendored deny sets must match the repo byte for byte (T-15); only
+    # allow-patterns.json is a local customization point.
+    for pf in unsafe-tool-patterns.json prompt-injection-patterns.json; do
+        [ -f "$policy_src/$pf" ] || continue
+        cmp -s "$policy_src/$pf" "$policy_dest/$pf" 2>/dev/null || policy_refresh=true
     done
 
     if [ "$policy_refresh" = true ]; then
@@ -688,17 +829,36 @@ EOF
         if [ -f "$CONFIG_DIR/CLAUDE.md" ]; then
             cp "$CONFIG_DIR/CLAUDE.md" "$claude_dir/CLAUDE.md" 2>/dev/null || true
         fi
-        # Regenerate the managed policy (mounted read-only at /etc/claude-code,
-        # highest precedence: user and project settings cannot relax it) and
-        # seed/migrate the read-write user settings.
-        local managed_dir="$CCODE_HOME/etc/claude-code" managed_tmp
-        mkdir -p "$managed_dir" 2>/dev/null || true
+        # Pin the policy mode next to the hooks (read-only mount): the hooks
+        # prefer it over the env var, which project settings could inject.
+        printf '%s\n' "${SECURITY_POLICY:-balanced}" >"$claude_dir/hooks-guard/policy-mode" 2>/dev/null || true
+        # Regenerate the managed policy (always template-only) and the user
+        # settings.json (template wins its keys, user extras preserved). Both
+        # are mounted read-only; edit the wrapper config on the host instead.
+        local settings_tmp merged_tmp managed_tmp
+        settings_tmp=$(mktemp 2>/dev/null) || settings_tmp=""
+        merged_tmp=$(mktemp 2>/dev/null) || merged_tmp=""
         managed_tmp=$(mktemp 2>/dev/null) || managed_tmp=""
         if [ -n "$managed_tmp" ]; then
-            if write_managed_settings "$managed_tmp"; then
-                cat "$managed_tmp" >"$managed_dir/managed-settings.json" 2>/dev/null || true
+            write_claude_managed_settings "$managed_tmp"
+            atomic_install "$managed_tmp" "$claude_dir/managed-settings.json" ||
+                config_warning "Could not write managed-settings.json"
+            rm -f "$managed_tmp"
+        fi
+        if [ -n "$settings_tmp" ] && [ -n "$merged_tmp" ]; then
+            write_claude_settings_template "$settings_tmp"
+            if [ -f "$claude_dir/settings.json" ]; then
+                if merge_claude_permissions "$claude_dir/settings.json" "$settings_tmp" "$merged_tmp"; then
+                    atomic_install "$merged_tmp" "$claude_dir/settings.json" || true
+                    [ "$MERGED_ADDED" -gt 0 ] && config_success "Preserved $MERGED_ADDED custom setting(s) in settings.json"
+                    [ -n "$MERGED_OVERRIDDEN" ] && config_warning "Template overrode managed key(s):$MERGED_OVERRIDDEN"
+                else
+                    cp "$claude_dir/settings.json" "$claude_dir/settings.json.bak" 2>/dev/null || true
+                    atomic_install "$settings_tmp" "$claude_dir/settings.json" || true
+                    config_warning "Could not merge settings.json; reseeded from template (backup kept)"
+                fi
             else
-                config_warning "Could not render managed-settings.json (previous copy kept)"
+                atomic_install "$settings_tmp" "$claude_dir/settings.json" || true
             fi
             rm -f "$managed_tmp"
         fi
@@ -861,14 +1021,38 @@ check_security_layer() {
         stale=true
     fi
 
-    # The managed policy must match a fresh render of the repo template for
-    # the current wrapper config (sync rewrites it otherwise).
-    local managed_settings="$CCODE_HOME/etc/claude-code/managed-settings.json" rendered
-    rendered=$(mktemp 2>/dev/null) || rendered=""
-    if [ -n "$rendered" ] && write_managed_settings "$rendered" && cmp -s "$rendered" "$managed_settings"; then
-        config_success "managed-settings.json (in sync)"
+    # The managed policy must match the template exactly (sync regenerates
+    # it); any difference is drift or tampering.
+    local managed_settings="$CCODE_HOME/.claude/managed-settings.json" expected_managed v=0
+    expected_managed=$(mktemp 2>/dev/null) || expected_managed=""
+    if [ -n "$expected_managed" ] && [ -f "$managed_settings" ]; then
+        write_claude_managed_settings "$expected_managed"
+        if cmp -s "$expected_managed" "$managed_settings"; then
+            config_success "managed-settings.json policy (in sync)"
+        else
+            config_warning "managed-settings.json differs from the template (regenerated on sync)"
+            stale=true
+        fi
     else
-        config_warning "managed-settings.json stale or missing"
+        config_warning "managed-settings.json missing"
+        stale=true
+    fi
+    rm -f "$expected_managed" 2>/dev/null
+
+    local user_settings="$CCODE_HOME/.claude/settings.json"
+    if [ -f "$user_settings" ]; then
+        v=0; json_valid "$user_settings" || v=$?
+        if [ "$v" -eq 1 ]; then
+            config_warning "settings.json is not valid JSON (regenerated on sync)"
+            stale=true
+        elif grep -q '"disableAllHooks"' "$user_settings" 2>/dev/null; then
+            config_warning "settings.json sets disableAllHooks (dropped on sync)"
+            stale=true
+        else
+            config_success "settings.json preferences (in sync)"
+        fi
+    else
+        config_warning "settings.json missing"
         stale=true
     fi
     [ -n "$rendered" ] && rm -f "$rendered"
@@ -913,6 +1097,31 @@ check_security_layer() {
 
     if [ ! -f "$CCODE_HOME/.claude/hooks-guard/policies/VERSION" ]; then
         config_warning "hooks-guard policies mirror missing (reseeded on sync)"
+        stale=true
+    fi
+
+    # Byte-for-byte integrity of the enforced layer (T-15): a hook or deny set
+    # edited without bumping its version marker is drift (or tampering).
+    local lf mirror="$CCODE_HOME/.claude/hooks-guard" content_ok=true
+    for lf in claude-guard-bash.sh claude-guard-file.sh guard-eval.js \
+        policies/unsafe-tool-patterns.json policies/prompt-injection-patterns.json; do
+        local src="$repo_dir/hooks/$lf"
+        [[ "$lf" == policies/* ]] && src="$repo_dir/$lf"
+        if ! cmp -s "$src" "$CONFIG_DIR/hooks/$lf" 2>/dev/null; then
+            config_warning "$lf differs from the repo copy (local edit or tampering; sync restores it, keeping a .bak)"
+            content_ok=false
+        elif ! cmp -s "$CONFIG_DIR/hooks/$lf" "$mirror/$lf" 2>/dev/null; then
+            config_warning "$lf mirror differs from the installed copy (re-mirrored on sync)"
+            content_ok=false
+        fi
+    done
+    if ! cmp -s "$CONFIG_DIR/hooks/policies/allow-patterns.json" "$mirror/policies/allow-patterns.json" 2>/dev/null; then
+        config_warning "allow-patterns.json mirror differs from the installed copy (re-mirrored on sync)"
+        content_ok=false
+    fi
+    if [ "$content_ok" = true ]; then
+        config_success "guard and policy content verified (byte-identical to the repo)"
+    else
         stale=true
     fi
 
@@ -1111,11 +1320,21 @@ resolve_gpg_agent_extra_socket() {
     fi
 }
 
+# Print the value of a command-override test seam (GPG_AGENT_PROBE_CMD,
+# GPG_AGENT_LAUNCH_CMD, GPG_RELAY_CMD) only when the test suite opts in with
+# CLAUDE_DOCKERIZED_TEST_HOOKS=1: outside tests an inherited variable must
+# never run arbitrary shell on the host. Usage: cmd=$(test_seam NAME)
+test_seam() {
+    [ "${CLAUDE_DOCKERIZED_TEST_HOOKS:-}" = 1 ] || return 0
+    printf '%s' "${!1:-}"
+}
+
 # Return 0 when the host gpg-agent looks reachable, 1 otherwise. Socket
 # presence alone is not enough: a stale socket file would pass for "running",
 # so on a real host the agent is probed with gpg-connect-agent (2s timeout).
 # Test seams:
-#   - GPG_AGENT_PROBE_CMD replaces the probe with an arbitrary command.
+#   - GPG_AGENT_PROBE_CMD replaces the probe with an arbitrary command
+#     (tests only, see test_seam).
 #   - GPG_AGENT_SOCKET / GPG_AGENT_EXTRA_SOCKET (plain test sockets, not real
 #     agents) skip the probe and trust the socket.
 # Usage: gpg_agent_is_running
@@ -1128,8 +1347,10 @@ gpg_agent_is_running() {
         return 1
     fi
 
-    if [ -n "${GPG_AGENT_PROBE_CMD:-}" ]; then
-        bash -c "$GPG_AGENT_PROBE_CMD" >/dev/null 2>&1 && return 0
+    local probe_cmd
+    probe_cmd=$(test_seam GPG_AGENT_PROBE_CMD)
+    if [ -n "$probe_cmd" ]; then
+        bash -c "$probe_cmd" >/dev/null 2>&1 && return 0
         return 1
     fi
 
@@ -1196,8 +1417,10 @@ ensure_gpg_agent_ready() {
     done
 
     config_info "Starting host gpg-agent for GnuPG forwarding..."
-    if [ -n "${GPG_AGENT_LAUNCH_CMD:-}" ]; then
-        bash -c "$GPG_AGENT_LAUNCH_CMD" >/dev/null 2>&1 || true
+    local launch_cmd
+    launch_cmd=$(test_seam GPG_AGENT_LAUNCH_CMD)
+    if [ -n "$launch_cmd" ]; then
+        bash -c "$launch_cmd" >/dev/null 2>&1 || true
     else
         gpgconf --launch gpg-agent >/dev/null 2>&1 || config_warning "gpgconf --launch gpg-agent failed"
     fi
@@ -1362,14 +1585,15 @@ cleanup_stale_relays() {
 # Relay a GnuPG agent socket through a socket on a normal filesystem so Docker
 # can bind it. One process per session; the wrapper stops it when the container
 # exits. Uses `socat` by default; GPG_RELAY_CMD overrides the command for tests
-# (it receives RELAY_SOCK and RELAY_REAL in its environment).
+# only (see test_seam; it receives RELAY_SOCK and RELAY_REAL in its environment).
 # Usage: relay_socket=$(start_gpg_relay <real_socket>)
 start_gpg_relay() {
     local real="$1"
     [ -n "$real" ] && [ -S "$real" ] || return 1
     relay_dir_ok || return 1
 
-    local template="${GPG_RELAY_CMD:-}"
+    local template
+    template=$(test_seam GPG_RELAY_CMD)
     if [ -z "$template" ]; then
         command -v socat >/dev/null 2>&1 || return 1
         # Single quotes are intentional: expanded later via RELAY_SOCK/RELAY_REAL env.
@@ -1507,7 +1731,7 @@ build_git_worktree_args() {
 # Usage: validate_claude_config || exit 1
 validate_claude_config() {
     local oc
-    for oc in "$CCODE_HOME/.claude/settings.json" "$CCODE_HOME/.claude.json"; do
+    for oc in "$CCODE_HOME/.claude/managed-settings.json" "$CCODE_HOME/.claude/settings.json" "$CCODE_HOME/.claude.json"; do
         [ -f "$oc" ] || continue
         local hits m keys=""
         hits=$(grep -oE '"[A-Za-z0-9_.-]*(apiKey|api_key|api-key|accessToken|access_token|clientSecret|client_secret|token|secret|password|passwd|authorization|bearer|API_KEY|SECRET|TOKEN|PASSWORD|PASSWD)[A-Za-z0-9_.-]*"[[:space:]]*:[[:space:]]*"[^"]*"' "$oc" 2>/dev/null || true)
@@ -1626,9 +1850,17 @@ build_standard_volume_args() {
     local chome="$CCODE_HOME"
     ensure_claude_dirs
 
-    # Managed policy (read-only directory, so no drop-in can be added).
-    if [ -f "$chome/etc/claude-code/managed-settings.json" ]; then
-        VOLUME_ARGS+=(-v "$chome/etc/claude-code:/etc/claude-code:ro")
+    # Managed policy (read-only, highest precedence: hooks, deny rules, env).
+    if [ -f "$chome/.claude/managed-settings.json" ]; then
+        VOLUME_ARGS+=(-v "$chome/.claude/managed-settings.json:/etc/claude-code/managed-settings.json:ro")
+    else
+        config_warning "Managed policy not found at $chome/.claude/managed-settings.json"
+    fi
+
+    # User settings.json (read-only preferences). Edit the wrapper config on
+    # the host (`claude-dockerized config edit`).
+    if [ -f "$chome/.claude/settings.json" ]; then
+        VOLUME_ARGS+=(-v "$chome/.claude/settings.json:/home/coder/.claude/settings.json:ro")
     else
         config_warning "Managed policy not found at $chome/etc/claude-code/managed-settings.json"
     fi
@@ -2062,6 +2294,93 @@ mount_bind() {
 
 # Build docker volume mount arguments from CUSTOM_MOUNTS array
 # Populates DOCKER_MOUNT_ARGS array with -v arguments
+# Canonical absolute form of a host path: leading ~ expanded, symlinks and
+# `.`/`..`/`//` resolved (readlink -m tolerates missing components; falls back
+# to the literal path where unavailable, e.g. macOS without coreutils).
+# Usage: canonical_host_path <path>
+canonical_host_path() {
+    local p="$1" c
+    if [[ "$p" == "~"* ]]; then
+        p="$HOME${p#"~"}"
+    fi
+    if c=$(readlink -m -- "$p" 2>/dev/null) && [ -n "$c" ]; then
+        printf '%s' "$c"
+    else
+        printf '%s' "$p"
+    fi
+}
+
+# Is <path> equal to <dir> or inside it? Usage: path_within <path> <dir>
+path_within() {
+    [ -n "$2" ] && { [ "$1" = "$2" ] || [[ "$1" == "$2/"* ]]; }
+}
+
+# Explain why a canonical host path must never reach the container, or return
+# 1 when it is acceptable. Shared by custom mounts and the project dir (T-07).
+# Usage: reason=$(sensitive_host_path_reason <canonical>) && refuse
+sensitive_host_path_reason() {
+    local c="$1" home_c config_c ccode_c
+    home_c=$(canonical_host_path "$HOME")
+    config_c=$(canonical_host_path "$CONFIG_DIR")
+    ccode_c=$(canonical_host_path "$CCODE_HOME")
+    if [ "$c" = / ] || [ "$c" = "$home_c" ] || [[ "$home_c" == "$c/"* ]]; then
+        echo "it is the filesystem root, your home or one of its ancestors"
+    elif path_within "$c" "$home_c/.ssh"; then
+        echo "it would expose SSH private keys (use setting.ssh_agent_support=true)"
+    elif path_within "$c" "$home_c/.gnupg"; then
+        echo "it would expose GnuPG private keys (use setting.gpg_agent_support=true)"
+    elif path_within "$c" "$config_c" || path_within "$c" "$ccode_c"; then
+        echo "it holds the wrapper's own config, security layer and secrets file"
+    elif [ "$c" = "$home_c/.config" ]; then
+        echo "it holds every application's config and credentials (mount a single subdirectory instead)"
+    else
+        return 1
+    fi
+    return 0
+}
+
+# Validate one custom mount; prints the canonical "host:container:mode" docker
+# spec, or explains the refusal on stderr and returns 1 (T-07).
+# Usage: spec=$(validate_mount_spec <host> <container> [mode]) || exit 1
+validate_mount_spec() {
+    local host="$1" container="$2" mode="${3:-ro}" c reason
+    if [ -z "$host" ] || [ -z "$container" ] || [[ "$container" != /* ]]; then
+        config_error "Invalid mount '$host:$container': container path must be absolute" >&2
+        return 1
+    fi
+    case "$mode" in
+    ro | rw) ;;
+    *)
+        config_error "Invalid mount mode '$mode' for $host (use ro or rw)" >&2
+        return 1
+        ;;
+    esac
+    c=$(canonical_host_path "$host")
+    if reason=$(sensitive_host_path_reason "$c"); then
+        config_error "Refusing to mount $host: $reason." >&2
+        return 1
+    fi
+    # The Docker socket is root-equivalent: only setting.docker_socket may add it.
+    case "$c" in
+    */docker.sock)
+        config_error "Refusing to mount $host: use setting.docker_socket=true (root-equivalent opt-in)." >&2
+        return 1
+        ;;
+    esac
+    # Never shadow the managed read-only mounts or the image's system dirs.
+    local t
+    t="$(printf '%s' "$container" | tr -s '/')"
+    t="${t%/}"
+    case "$t" in
+    "" | /home/coder | /home/coder/.claude | /home/coder/.claude/* | /etc/claude-code | /etc/claude-code/* | \
+        /usr | /usr/* | /bin | /sbin | /lib | /lib64 | /etc | /proc | /proc/* | /sys | /sys/* | /dev | /dev/*)
+        config_error "Refusing to mount over $container: it would shadow the image or the managed security layer." >&2
+        return 1
+        ;;
+    esac
+    printf '%s:%s:%s' "$c" "$container" "$mode"
+}
+
 build_mount_args() {
     DOCKER_MOUNT_ARGS=()
     GPG_SOCKET=""
@@ -2084,50 +2403,21 @@ build_mount_args() {
             mount="$HOME${mount#"~"}"
         fi
 
-        # Extract host_path, container_path, and mode
-        local host_path="${mount%%:*}"
-        local rest="${mount#*:}"
-        local container_path="${rest%:*}"
-        local mode="${rest##*:}"
-
-        # A mount entry must be host_path:container_path[:mode].
+        # A mount entry must be host_path:container_path[:mode] (':' is the
+        # field separator; paths containing ':' are unsupported).
         if [[ "$mount" != *:* ]]; then
             config_error "Invalid mount '$mount': expected host_path:container_path"
             exit 1
         fi
+        local host_path="${mount%%:*}"
+        local rest="${mount#*:}"
+        local container_path="${rest%%:*}"
+        local mode=""
+        [[ "$rest" == *:* ]] && mode="${rest#*:}"
 
-        # Never expose the host SSH private material: agent forwarding is the
-        # supported path (config/known_hosts are mounted read-only automatically).
-        if [ "$host_path" = "$HOME/.ssh" ] || [[ "$host_path" == "$HOME/.ssh/"* ]]; then
-            config_error "Refusing to mount $host_path: it would expose SSH private keys."
-            config_info "Use setting.ssh_agent_support=true instead (config/known_hosts are mounted read-only automatically)."
-            exit 1
-        fi
-
-        # Never expose the host GnuPG private material either: agent forwarding
-        # mirrors only the public keyring and forwards the agent socket.
-        if [ "$host_path" = "$HOME/.gnupg" ] || [[ "$host_path" == "$HOME/.gnupg/"* ]]; then
-            config_error "Refusing to mount $host_path: it would expose GnuPG private keys."
-            config_info "Use setting.gpg_agent_support=true instead (only the public keyring and the agent socket are shared)."
-            exit 1
-        fi
-
-        # A malformed entry must not reach docker as `-v host::mode`.
-        if [ -z "$container_path" ] || [[ "$container_path" != /* ]]; then
-            config_error "Invalid mount '$mount': container path must be absolute"
-            exit 1
-        fi
-
-        # Validate mode is either not set or "rw"
-        if [ "$mode" = "$container_path" ]; then
-            # No mode specified, default to read-only
-            DOCKER_MOUNT_ARGS+=(-v "$host_path:$container_path:ro")
-        elif [ "$mode" = "rw" ]; then
-            DOCKER_MOUNT_ARGS+=(-v "$host_path:$container_path:rw")
-        else
-            # Mode was specified, use it as-is
-            DOCKER_MOUNT_ARGS+=(-v "$host_path:$container_path:$mode")
-        fi
+        local spec
+        spec=$(validate_mount_spec "$host_path" "$container_path" "$mode") || exit 1
+        DOCKER_MOUNT_ARGS+=(-v "$spec")
     done
 
     # Handle SSH agent forwarding if enabled. ensure_ssh_agent_ready has already
@@ -2287,6 +2577,12 @@ build_env_file_args() {
         exit 1
         ;;
     esac
+    # The generated home (and the GnuPG relay dir) are mounted: a secrets file
+    # there would be readable and rewritable from the session (T-18).
+    if path_within "$env_file" "$(canonical_host_path "$CCODE_HOME")" || path_within "$env_file" "$(canonical_host_path "$GPG_RELAY_DIR")"; then
+        config_error "Refusing env file inside the generated home ($CCODE_HOME): it is mounted into the container."
+        exit 1
+    fi
 
     if [ ! -f "$env_file" ]; then
         config_error "env file not found: $env_file"
@@ -2354,33 +2650,13 @@ add_mount() {
         return 1
     fi
 
-    # Validate host path exists (leading ~ expanded for the check)
-    local expanded_path="$host_path"
-    if [[ "$expanded_path" == "~"* ]]; then
-        expanded_path="$HOME${expanded_path#"~"}"
-    fi
+    # Same rules as build_mount_args (canonical path, sensitive dirs, mode).
+    validate_mount_spec "$host_path" "$container_path" "${mode:-ro}" >/dev/null || return 1
 
-    # Never expose the host SSH private material via a custom mount.
-    if [ "$expanded_path" = "$HOME/.ssh" ] || [[ "$expanded_path" == "$HOME/.ssh/"* ]]; then
-        config_error "Refusing to mount $expanded_path: it would expose SSH private keys."
-        config_info "Use setting.ssh_agent_support=true instead (config/known_hosts are mounted read-only automatically)."
-        return 1
-    fi
-
-    # Never expose the host GnuPG private material via a custom mount.
-    if [ "$expanded_path" = "$HOME/.gnupg" ] || [[ "$expanded_path" == "$HOME/.gnupg/"* ]]; then
-        config_error "Refusing to mount $expanded_path: it would expose GnuPG private keys."
-        config_info "Use setting.gpg_agent_support=true instead (only the public keyring and the agent socket are shared)."
-        return 1
-    fi
-
+    local expanded_path
+    expanded_path=$(canonical_host_path "$host_path")
     if [ ! -e "$expanded_path" ]; then
         config_warning "Host path does not exist: $expanded_path"
-    fi
-
-    if [ -n "$mode" ] && [ "$mode" != "ro" ] && [ "$mode" != "rw" ]; then
-        config_error "Invalid mode: $mode (must be 'ro' or 'rw')"
-        return 1
     fi
 
     local mount_entry="$host_path:$container_path"

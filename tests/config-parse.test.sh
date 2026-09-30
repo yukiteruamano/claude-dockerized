@@ -131,4 +131,37 @@ for model in sonnet opus claude-opus-5-5 "claude-sonnet-5-5[1m]" 'x"; rm' "a b" 
 done
 check_not "a model with a quote never reaches settings.json" model_from_config 'x"y'
 
+# --- private temp dir (T-17) ------------------------------------------------------------
+tmpdir_for() {
+    (
+        unset TMPDIR
+        XDG_RUNTIME_DIR="$1"
+        ensure_private_tmpdir
+        printf '%s' "$TMPDIR"
+    )
+}
+assert_eq "$(tmpdir_for "")" "$CONFIG_DIR/tmp" "falls back to a dir under CONFIG_DIR"
+assert_eq "$(stat -c '%a' "$CONFIG_DIR/tmp")" 700 "private temp dir is 0700"
+mkdir -p "$TMP/runtime"
+assert_eq "$(tmpdir_for "$TMP/runtime")" "$TMP/runtime/claude-dockerized" "prefers XDG_RUNTIME_DIR"
+assert_eq "$(TMPDIR=/somewhere bash -c 'source "$1/lib/config-lib.sh"; ensure_private_tmpdir; printf %s "$TMPDIR"' _ "$REPO_DIR")" /somewhere "an explicit TMPDIR is kept"
+mkdir -p "$TMP/elsewhere"
+mkdir -p "$TMP/runtime2"
+ln -s "$TMP/elsewhere" "$TMP/runtime2/claude-dockerized"
+rm -rf "$CONFIG_DIR/tmp"
+ln -s "$TMP/elsewhere" "$CONFIG_DIR/tmp"
+assert_eq "$(tmpdir_for "$TMP/runtime2")" /tmp "a planted symlink is never used"
+check "the private default is not the shared /tmp/claude" [ "$(grep -c 'TMPDIR:-/tmp/claude' "$REPO_DIR/bin/claude-dockerized" "$REPO_DIR/lib/install-lib.sh" | awk -F: '{s+=$2} END {print s}')" = 0 ]
+
+# --- command-override seams are test-only ------------------------------------------------
+seam_value() {
+    (
+        GPG_AGENT_PROBE_CMD="touch /tmp/should-not-run"
+        CLAUDE_DOCKERIZED_TEST_HOOKS="$1"
+        test_seam GPG_AGENT_PROBE_CMD
+    )
+}
+assert_eq "$(seam_value "")" "" "seams ignored without the test opt-in"
+assert_eq "$(seam_value 1)" "touch /tmp/should-not-run" "seams honored with the test opt-in"
+
 t_summary

@@ -101,6 +101,21 @@ check_not "wrapper CONFIG_DIR never mounted" argv_has_text "$CONFIG_DIR:"
 check_not "~/.ssh never mounted" argv_has_text "$HOME/.ssh:"
 check_not "privileged never used" argv_has --privileged
 
+check "managed policy mounted at the managed-settings path" argv_has_text "/.claude/managed-settings.json:/etc/claude-code/managed-settings.json:ro"
+
+# The configured policy is what gets pinned, and a configured model does not
+# trigger the old "template overrode" noise (config is parsed before the
+# managed layer is generated).
+mkdir -p "$CONFIG_DIR"
+printf 'setting.security_policy=strict\nsetting.model=sonnet\n' >"$CONFIG_DIR/config"
+wrapper run "$PROJECT"
+assert_eq "$(cat "$CCODE_HOME/.claude/hooks-guard/policy-mode")" strict "configured policy pinned next to the hooks"
+check "configured policy pinned in the managed env" grep -q '"CLAUDE_DOCKERIZED_POLICY": "strict"' "$CCODE_HOME/.claude/managed-settings.json"
+check_not "no 'template overrode' warning on a normal run" has_text "overrode" "$OUT"
+check "model flag passed" argv_pair claude --model
+rm -f "$CONFIG_DIR/config"
+wrapper run "$PROJECT"
+
 # Default runtime profile is unchanged (hardening is opt-in, see Phase 3).
 check "default network is host" argv_pair --network host
 check_not "no read-only rootfs by default" argv_has --read-only
