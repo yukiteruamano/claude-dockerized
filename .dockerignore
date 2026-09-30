@@ -17,6 +17,7 @@ examples/
 # Security layer sources and tests (installed on the host, not baked in)
 hooks/
 policies/
+config/
 tests/
 .github/
 
