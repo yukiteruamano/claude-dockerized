@@ -13,35 +13,13 @@
 //
 // Usage: node tests/claude-guard.test.mjs
 
-import { execFileSync } from "node:child_process";
-import {
-  mkdtempSync,
-  mkdirSync,
-  writeFileSync,
-  symlinkSync,
-  copyFileSync,
-  rmSync,
-} from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
-
-const here = dirname(fileURLToPath(import.meta.url));
-const repo = join(here, "..");
+import { join } from "node:path";
+import { stageHooks, runHook, cleanup } from "./lib/hook-runner.mjs";
 
 // Stage the hooks next to their ./policies data, exactly like the wrapper does.
-const stage = mkdtempSync(join(tmpdir(), "claude-guard-"));
-mkdirSync(join(stage, "policies"), { recursive: true });
-for (const f of ["claude-guard-bash.sh", "claude-guard-file.sh", "guard-eval.js"]) {
-  copyFileSync(join(repo, "hooks", f), join(stage, f));
-}
-for (const f of [
-  "unsafe-tool-patterns.json",
-  "prompt-injection-patterns.json",
-  "allow-patterns.json",
-]) {
-  copyFileSync(join(repo, "policies", f), join(stage, "policies", f));
-}
+const stage = stageHooks();
 
 // Real project tree so symlink escapes can be exercised with the real filesystem.
 const root = mkdtempSync(join(tmpdir(), "cproj-"));
@@ -54,30 +32,15 @@ writeFileSync(join(OUTSIDE, ".env"), "API_KEY=leak\n");
 symlinkSync(join(OUTSIDE, ".env"), join(PROJECT, "link-to-env"));
 symlinkSync(OUTSIDE, join(PROJECT, "link-out"));
 
-function runHook(script, mode, payload, extraEnv = {}) {
-  const input = JSON.stringify(payload);
-  try {
-    execFileSync("bash", [join(stage, script)], {
-      input,
-      encoding: "utf8",
-      stdio: ["pipe", "ignore", "ignore"],
-      env: {
-        ...process.env,
-        CLAUDE_DOCKERIZED_POLICY: mode,
-        CLAUDE_PROJECT_DIR: PROJECT,
-        ...extraEnv,
-      },
-    });
-    return "allow";
-  } catch {
-    return "deny";
-  }
-}
+// Verdict is "allow" (exit 0), "deny" (exit 2 + "Blocked by") or "crash:<rc>":
+// a crashing hook fails open in Claude Code, so it never counts as a deny.
+const hook = (script, mode, payload, env = {}) =>
+  runHook(stage, script, { mode, payload, env: { CLAUDE_PROJECT_DIR: PROJECT, ...env } }).verdict;
 
 const bashEval = (mode) => (value) =>
-  runHook("claude-guard-bash.sh", mode, { tool_input: { command: value } });
+  hook("claude-guard-bash.sh", mode, { tool_name: "Bash", tool_input: { command: value } });
 const fileEval = (mode, action) => (value) =>
-  runHook(
+  hook(
     "claude-guard-file.sh",
     mode,
     { tool_input: { file_path: value }, tool_name: action },
@@ -252,7 +215,10 @@ const devIdioms = [
   "cmd --yes | head -1",
 ];
 
-for (const mode of ["balanced", "strict", "none"]) {
+// "off" is the documented alias of "none" (case folding is covered by
+// guard-failure-modes.test.mjs).
+for (const mode of ["balanced", "strict", "none", "off"]) {
+  const effective = mode === "off" ? "none" : mode;
   const beval = bashEval(mode);
   const readEval = fileEval(mode, "Read");
   const editEval = fileEval(mode, "Edit");
@@ -267,7 +233,7 @@ for (const mode of ["balanced", "strict", "none"]) {
     assert(mode, "bash", value, beval(value), "allow");
   }
   for (const value of devIdioms) {
-    assert(mode, "bash", value, beval(value), mode === "strict" ? "deny" : "allow");
+    assert(mode, "bash", value, beval(value), effective === "strict" ? "deny" : "allow");
   }
 
   // File reads: secrets denied (incl. symlink escape), templates/sources allowed.
@@ -306,11 +272,10 @@ for (const mode of ["balanced", "strict", "none"]) {
   assert(mode, "glob", join(PROJECT, ".env"), globEval(join(PROJECT, ".env")), "deny");
 
   // Vendored patterns: nmap-like scanning only runs in strict/balanced.
-  assert(mode, "bash", "nmap 10.0.0.1", beval("nmap 10.0.0.1"), mode === "none" ? "allow" : "deny");
+  assert(mode, "bash", "nmap 10.0.0.1", beval("nmap 10.0.0.1"), effective === "none" ? "allow" : "deny");
 }
 
-rmSync(stage, { recursive: true, force: true });
-rmSync(root, { recursive: true, force: true });
+cleanup(stage, root);
 
 if (failures > 0) {
   console.log(`\n${failures} failure(s)`);
