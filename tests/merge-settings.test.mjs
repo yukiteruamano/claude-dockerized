@@ -87,8 +87,8 @@ report.check(
 // Keys that silence the security layer never survive (T-16).
 {
   const r = merge({ disableAllHooks: true });
-  report.check("disableAllHooks is dropped", r.merged?.disableAllHooks, undefined, "T-16");
-  report.check("disableAllHooks is reported", r.overridden.includes("disableAllHooks"), true, "T-16");
+  report.check("disableAllHooks is dropped", r.merged?.disableAllHooks, undefined);
+  report.check("disableAllHooks is reported", r.overridden.includes("disableAllHooks"), true);
 }
 
 cleanup(dir);

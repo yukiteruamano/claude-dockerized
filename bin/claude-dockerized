@@ -15,11 +15,6 @@ IMAGE_NAME="claude-dockerized:latest"
 # version and the bundled guard version.
 WRAPPER_VERSION="0.1.0"
 
-# Keep temporary files in the approved scratch dir unless overridden.
-# Bare `mktemp` honors TMPDIR, so relay sockets and merge temps land there
-# without touching every call site.
-export TMPDIR="${TMPDIR:-/tmp/claude}"
-mkdir -p "$TMPDIR" 2>/dev/null || export TMPDIR="/tmp"
 
 # In-container diagnostics for the wrapper security layer, SSH and GnuPG
 # forwarding, managed settings and LSP/formatters.
@@ -42,20 +37,30 @@ else
     note "MISSING guard hooks"; status=1
 fi
 echo "== managed settings =="
-if [ -f /home/coder/.claude/settings.json ]; then
-    if grep -q DISABLE_AUTOUPDATER /home/coder/.claude/settings.json 2>/dev/null; then
-        note "auto-updates: disabled (managed)"
+managed=/etc/claude-code/managed-settings.json
+if [ -f "$managed" ]; then
+    if grep -q DISABLE_AUTOUPDATER "$managed" 2>/dev/null; then
+        note "auto-updates: disabled (managed policy)"
     else
-        note "auto-updates: NOT disabled in settings.json"; status=1
+        note "auto-updates: NOT disabled in $managed"; status=1
     fi
-    if grep -q disableAllHooks /home/coder/.claude/settings.json 2>/dev/null; then
-        note "disableAllHooks: PRESENT (security hooks silenced)"; status=1
+    if grep -q claude-guard-bash.sh "$managed" 2>/dev/null; then
+        note "guard hooks: wired in the managed policy"
     else
-        note "disableAllHooks: absent (good)"
+        note "guard hooks: NOT wired in $managed"; status=1
+    fi
+    if touch "$managed" 2>/dev/null; then
+        note "managed policy: WRITABLE (must be a read-only mount)"; status=1
     fi
 else
-    note "MISSING settings.json"; status=1
+    note "MISSING $managed"; status=1
 fi
+for f in "$managed" /home/coder/.claude/settings.json "${CLAUDE_DOCKERIZED_WORKDIR:-.}/.claude/settings.json" "${CLAUDE_DOCKERIZED_WORKDIR:-.}/.claude/settings.local.json"; do
+    if [ -f "$f" ] && grep -q disableAllHooks "$f" 2>/dev/null; then
+        note "disableAllHooks: PRESENT in $f"; status=1
+    fi
+done
+note "policy mode: $(cat /home/coder/.claude/hooks-guard/policy-mode 2>/dev/null || echo "MISSING")"
 echo "== claude =="
 claude --version 2>&1 || { note "claude binary: FAILED"; status=1; }
 if command -v claude >/dev/null 2>&1; then
@@ -152,6 +157,10 @@ NC='\033[0m' # No Color
 # Source the shared config module
 source "$REPO_ROOT/lib/config-lib.sh"
 
+# Bare `mktemp` honors TMPDIR, so merge temps land in a private dir without
+# touching every call site (see ensure_private_tmpdir).
+ensure_private_tmpdir
+
 # Function to print colored output
 print_info() {
     echo -e "${BLUE}ℹ${NC} $1"
@@ -220,7 +229,10 @@ check_config() {
         print_info "Claude Code will run but may need configuration. Run 'claude auth login' inside the container."
     fi
 
-    # Ensure storage directories exist and the security layer is present
+    # Ensure storage directories exist and the security layer is present.
+    # The config is parsed first so the managed layer is generated once with
+    # the configured policy/model, never with defaults (then rewritten).
+    parse_config
     ensure_claude_dirs
 }
 
@@ -243,9 +255,9 @@ run_cli_command() {
     fi
 
     check_image "$IMAGE_NAME" || exit 1
+    parse_config
     ensure_claude_dirs
 
-    parse_config
     build_mount_args
     build_env_args
     build_env_file_args
@@ -638,7 +650,8 @@ run_debug() {
     paths)
         parse_config || true
         echo "Generated home: $CCODE_HOME"
-        echo "Managed settings: $CCODE_HOME/.claude/settings.json"
+        echo "Managed policy: $CCODE_HOME/.claude/managed-settings.json (-> /etc/claude-code/managed-settings.json, ro)"
+        echo "User settings: $CCODE_HOME/.claude/settings.json (ro)"
         echo "Guard hooks: $CCODE_HOME/.claude/hooks-guard/"
         echo "Credentials: $CCODE_HOME/.claude/.credentials.json"
         echo "MCP state: $CCODE_HOME/.claude.json"

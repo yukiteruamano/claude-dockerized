@@ -72,26 +72,26 @@ check_not "add_mount refuses an unknown mode" add_mount_ok "~/data" /d Z
 check "add_mount accepts ro" add_mount_ok "~/data" /d ro
 
 # --- canonicalization gaps (T-07) --------------------------------------------------
-gap T-07 "~/./.ssh refused" mount_refused "$HOME/./.ssh:/x"
-gap T-07 "~//.ssh refused" mount_refused "$HOME//.ssh:/x"
-gap T-07 "~/work/../.ssh refused" mount_refused "$HOME/work/../.ssh:/x"
-gap T-07 "symlink to ~/.ssh refused" mount_refused "$HOME/ssh-link:/x"
-gap T-07 "the whole home refused" mount_refused "$HOME:/h"
-gap T-07 "/ refused" mount_refused "/:/host"
-gap T-07 "~/.config refused" mount_refused "$HOME/.config:/c"
-gap T-07 "wrapper CONFIG_DIR refused" mount_refused "$CONFIG_DIR:/c"
-gap T-07 "generated home refused" mount_refused "$CCODE_HOME:/c"
-gap T-07 "docker socket via custom mount refused" mount_refused "/var/run/docker.sock:/var/run/docker.sock"
+check "T-07 ~/./.ssh refused" mount_refused "$HOME/./.ssh:/x"
+check "T-07 ~//.ssh refused" mount_refused "$HOME//.ssh:/x"
+check "T-07 ~/work/../.ssh refused" mount_refused "$HOME/work/../.ssh:/x"
+check "T-07 symlink to ~/.ssh refused" mount_refused "$HOME/ssh-link:/x"
+check "T-07 the whole home refused" mount_refused "$HOME:/h"
+check "T-07 / refused" mount_refused "/:/host"
+check "T-07 ~/.config refused" mount_refused "$HOME/.config:/c"
+check "T-07 wrapper CONFIG_DIR refused" mount_refused "$CONFIG_DIR:/c"
+check "T-07 generated home refused" mount_refused "$CCODE_HOME:/c"
+check "T-07 docker socket via custom mount refused" mount_refused "/var/run/docker.sock:/var/run/docker.sock"
 
 # --- mode allowlist (T-07) -----------------------------------------------------------
 for mode in Z z rshared "ro,z" "rw,rshared"; do
-    gap T-07 "mode '$mode' refused" mount_refused "~/data:/data:$mode"
+    check "T-07 mode '$mode' refused" mount_refused "~/data:/data:$mode"
 done
 
 # --- managed targets must not be shadowed (T-07) -------------------------------------
 for target in /home/coder/.claude/hooks-guard/policies /home/coder/.claude/settings.json \
     /home/coder/.claude /usr/local/bin /etc/claude-code; do
-    gap T-07 "target $target refused" mount_refused "~/data:$target"
+    check "T-07 target $target refused" mount_refused "~/data:$target"
 done
 
 # --- project directory (T-07) --------------------------------------------------------
@@ -101,10 +101,10 @@ check "a project subdir is accepted" project_ok "$HOME/work/proj"
 check_not "\$HOME refused as project" project_ok "$HOME"
 check_not "/ refused as project" project_ok /
 check_not "ancestor of \$HOME refused" project_ok "$(dirname "$HOME")"
-gap T-07 "~/.ssh refused as project" project_refused "$HOME/.ssh"
-gap T-07 "~/.gnupg refused as project" project_refused "$HOME/.gnupg"
-gap T-07 "CONFIG_DIR refused as project" project_refused "$CONFIG_DIR"
-gap T-07 "~/.config refused as project" project_refused "$HOME/.config"
+check "T-07 ~/.ssh refused as project" project_refused "$HOME/.ssh"
+check "T-07 ~/.gnupg refused as project" project_refused "$HOME/.gnupg"
+check "T-07 CONFIG_DIR refused as project" project_refused "$CONFIG_DIR"
+check "T-07 ~/.config refused as project" project_refused "$HOME/.config"
 
 # --- env file placement (T-18) -------------------------------------------------------
 env_file_ok() {
@@ -121,6 +121,24 @@ printf 'A=1\n' >"$CCODE_HOME/.claude/plugins/env"
 check "env file in CONFIG_DIR accepted" env_file_ok "$CONFIG_DIR/env"
 check_not "env file outside CONFIG_DIR refused" env_file_ok "$HOME/data/env"
 check_not "env file escaping via .. refused" env_file_ok "$CONFIG_DIR/../../data/env"
-gap T-18 "env file inside the mounted generated home refused" env_file_refused "$CCODE_HOME/.claude/plugins/env"
+check "T-18 env file inside the mounted generated home refused" env_file_refused "$CCODE_HOME/.claude/plugins/env"
+
+# --- legitimate mounts keep working -----------------------------------------------------
+mkdir -p "$HOME/.config/git"
+: >"$HOME/.config/git/gitignore_global"
+check "a ~/.config subpath is accepted" mount_ok "~/.config/git/gitignore_global:/home/coder/.config/git/gitignore_global"
+check "the git identity file is accepted" mount_ok "~/.gitconfig:/home/coder/.gitconfig"
+ln -s "$HOME/data" "$HOME/data-link"
+canonical_spec() {
+    (
+        CUSTOM_MOUNTS=("$1")
+        build_mount_args >/dev/null 2>&1 || exit 1
+        printf '%s' "${DOCKER_MOUNT_ARGS[1]}"
+    )
+}
+assert_eq "$(canonical_spec "~/data-link:/data")" "$HOME/data:/data:ro" "docker receives the canonical host path"
+assert_eq "$(canonical_spec "~/work/../data:/data:rw")" "$HOME/data:/data:rw" "dot-dot segments are resolved"
+check "a mount under /home/coder is accepted" mount_ok "~/data:/home/coder/data"
+check "a mount under /opt is accepted" mount_ok "~/data:/opt/data"
 
 t_summary

@@ -51,6 +51,10 @@ parse_config >/dev/null 2>&1 || true
 build_common_docker_args >/dev/null
 build_standard_volume_args "$PROJECT" false >/dev/null
 
+# A shim planted in the persistent, session-writable ~/.local/bin (T-04).
+printf '#!/bin/sh\necho hijacked\n' >"$CCODE_HOME/.local/bin/claude"
+chmod +x "$CCODE_HOME/.local/bin/claude"
+
 run_in() {
     docker run --rm -e CLAUDE_DOCKERIZED_WORKDIR=/work/proj --workdir /work/proj \
         "${DOCKER_COMMON_ARGS[@]}" "${VOLUME_ARGS[@]}" "$IMAGE" bash -c "$1"
@@ -64,6 +68,14 @@ echo "nnp=$(awk "/^NoNewPrivs/ {print \$2}" /proc/self/status)"
 echo "claude_version=$(claude --version 2>/dev/null | cut -d" " -f1)"
 [ -f /usr/local/bin/claude ] && [ ! -L /usr/local/bin/claude ] && echo "claude_realfile=yes"
 touch /home/coder/.claude/settings.json 2>/dev/null && echo "settings_writable=yes"
+[ -f /etc/claude-code/managed-settings.json ] && echo "managed_present=yes"
+touch /etc/claude-code/managed-settings.json 2>/dev/null && echo "managed_writable=yes"
+echo "claude_resolves=$(command -v claude)"
+echo "guard_node_owner=$(stat -c %u /usr/local/lib/claude-dockerized/bin/node 2>/dev/null)"
+/usr/local/lib/claude-dockerized/bin/node --version >/dev/null 2>&1 && echo "guard_node_ok=yes"
+touch /usr/local/lib/claude-dockerized/bin/node 2>/dev/null && echo "guard_node_writable=yes"
+echo "policy_mode=$(cat /home/coder/.claude/hooks-guard/policy-mode 2>/dev/null)"
+printf "%s" "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cat .env\"}}" | /home/coder/.claude/hooks-guard/claude-guard-bash.sh >/dev/null 2>&1; echo "hook_rc=$?"
 touch /home/coder/.claude/hooks-guard/x 2>/dev/null && echo "hooks_writable=yes"
 touch /home/coder/.claude/CLAUDE.md 2>/dev/null && echo "rules_writable=yes"
 touch /work/proj/.probe 2>/dev/null && echo "project_writable=yes"
@@ -87,6 +99,14 @@ assert_eq "$(value rules_writable)" "" "managed CLAUDE.md is read-only"
 assert_eq "$(value project_writable)" yes "project is writable"
 assert_eq "$(value scratch_writable)" yes "/tmp/claude is writable"
 assert_eq "$(value sudo_present)" "" "no privilege-escalation binary in the image"
+assert_eq "$(value managed_present)" yes "managed policy present at /etc/claude-code"
+assert_eq "$(value managed_writable)" "" "managed policy is read-only"
+assert_eq "$(value claude_resolves)" /usr/local/bin/claude "a planted ~/.local/bin/claude never shadows the image binary"
+assert_eq "$(value guard_node_owner)" 0 "guard node is root-owned"
+assert_eq "$(value guard_node_ok)" yes "guard node runs"
+assert_eq "$(value guard_node_writable)" "" "guard node is not writable by the session"
+assert_eq "$(value policy_mode)" balanced "policy mode pinned next to the hooks"
+assert_eq "$(value hook_rc)" 2 "the mounted bash guard blocks a secret read with exit 2"
 # Report-only: setuid binaries are neutralized by no_new_privs; removing them
 # is the opt-in STRIP_SETUID build (see docs/security/BLUE.md).
 echo "container: setuid inventory: $(value setuid)"
