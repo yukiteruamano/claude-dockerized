@@ -5,8 +5,8 @@
 # Some read-write paths are executed or trusted outside the session that can
 # write them: the project's git hooks/config run on the HOST (T-01), the
 # generated home's ~/.local/bin, plugins, skills, agents, commands and MCP
-# server entries run in every FUTURE session (T-05), and ~/.composio holds a
-# CLI the host runs (T-02). The default profile keeps them writable, so the
+# server entries run in every FUTURE session (T-05). No host CLI directory is
+# mounted (T-02). The default profile keeps them writable, so the
 # wrapper fingerprints them (sha256 of content, mode and symlink target; an
 # mtime could be forged) before the session and reports every change after
 # it, with a JSONL audit trail in $CONFIG_DIR/audit/sessions.jsonl.
@@ -62,9 +62,6 @@ integrity_snapshot() {
             _integrity_walk "$CCODE_HOME/$rel"
         done
         _integrity_mcp_servers "$CCODE_HOME/.claude.json"
-        if [ -d "$HOME/.composio" ]; then
-            _integrity_walk "$HOME/.composio"
-        fi
     } >"$out" 2>/dev/null
     # Detection is best-effort: never abort a caller running under `set -e`.
     return 0

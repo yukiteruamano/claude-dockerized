@@ -1,6 +1,6 @@
 #!/bin/bash
 # Session integrity check (lib/integrity-lib.sh; Blue-team detection for
-# T-01, T-02, T-05): every change to a persistent path the session could plant
+# T-01, T-05): every change to a persistent path the session could plant
 # code in is reported and logged; ordinary Claude state churn is not.
 #
 # Usage: bash tests/integrity.test.sh
@@ -24,7 +24,7 @@ export CCODE_HOME="$CONFIG_DIR/home"
 export NO_COLOR=1
 PROJECT="$HOME/work/proj"
 mkdir -p "$PROJECT/.git/hooks" "$PROJECT/src" "$CCODE_HOME/.local/bin" "$CCODE_HOME/.claude/plugins" \
-    "$CCODE_HOME/.claude/skills" "$HOME/.composio"
+    "$CCODE_HOME/.claude/skills"
 printf '[core]\n' >"$PROJECT/.git/config"
 printf '{"numStartups":1,"mcpServers":{}}\n' >"$CCODE_HOME/.claude.json"
 
@@ -85,10 +85,6 @@ check "a new MCP server is reported (T-05)" reported ".claude.json#mcpServers"
 add_skill() { mkdir -p "$CCODE_HOME/.claude/skills/x"; printf 'x\n' >"$CCODE_HOME/.claude/skills/x/SKILL.md"; }
 session add_skill
 check "a new skill is reported (T-05)" reported ".claude/skills/x/SKILL.md"
-
-swap_composio() { printf '#!/bin/sh\n' >"$HOME/.composio/composio"; }
-session swap_composio
-check "a changed ~/.composio file is reported (T-02)" reported ".composio/composio"
 
 chmod_hook() { chmod -x "$PROJECT/.git/hooks/post-checkout"; }
 session chmod_hook

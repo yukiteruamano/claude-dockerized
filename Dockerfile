@@ -92,17 +92,15 @@ RUN curl -fsSL -o- "https://raw.githubusercontent.com/nvm-sh/nvm/${NVM_COMMIT}/i
 RUN curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh && \
     /home/coder/.local/bin/uv --version | grep -q "^uv ${UV_VERSION}"
 
-# Add nvm, node, ~/.composio and ~/.local/bin to PATH
+# Add nvm, node and ~/.local/bin to PATH
 # Node.js is available via the NVM default symlink created above.
 # ~/.local/bin holds user-installed CLIs (LSP servers, formatters from the
 # generated home, mounted read-write at runtime).
-# ~/.composio holds the Composio CLI and its login, mounted read-write from the
-# host via mount.composio in the wrapper config, so `composio` resolves on PATH.
 # /usr/local/bin holds the image-provided CLIs (see below); it is explicit here
 # so resolution never depends on the inherited base-image PATH.
 # NOTE: No npm/pnpm global install is used for Claude Code itself (no official
 # npm support); the native installer below is the only supported path.
-ENV PATH="$NVM_DIR/default:/usr/local/bin:/home/coder/.composio:/home/coder/.local/bin:$PATH"
+ENV PATH="$NVM_DIR/default:/usr/local/bin:/home/coder/.local/bin:$PATH"
 
 # Install Claude Code natively with a pinned version (official installer).
 # See: https://code.claude.com/docs/en/setup#install-a-specific-version

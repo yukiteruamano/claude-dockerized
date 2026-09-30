@@ -20,7 +20,7 @@ export HOME=/home/coder
 export USER=coder
 
 # Ensure user-installed CLIs are on PATH for Claude Code and every process it
-# spawns (e.g. composio, LSP servers and formatters installed under
+# spawns (e.g. LSP servers and formatters installed under
 # ~/.local/bin in the generated home). Kept explicit here so it
 # holds even if the image PATH changes. It goes LAST: the directory is
 # writable by the session and persists across runs, so it must never shadow

@@ -26,7 +26,8 @@ export CLAUDE_DOCKERIZED_ALLOW_CONTAINER_SYNC=1
 export CLAUDE_DOCKERIZED_SKIP_LSP_INSTALL=1
 export NO_COLOR=1
 PROJECT="$HOME/work/proj"
-mkdir -p "$PROJECT/.git/hooks" "$HOME/.composio"
+# A host ~/.mcp-auth exists on purpose: it must never be picked up.
+mkdir -p "$PROJECT/.git/hooks" "$HOME/.mcp-auth"
 : >"$PROJECT/.git/config"
 
 # shellcheck source=/dev/null
@@ -43,6 +44,22 @@ argv_for() {
 }
 line() { has_line "$1" "$ARGV"; }
 text() { has_text "$1" "$ARGV"; }
+# Every read-write bind comes from the generated home or the project: no host
+# directory holding a CLI or tokens is shared read-write (T-02).
+rw_sources_contained() {
+    local l src
+    while IFS= read -r l; do
+        case "$l" in
+        /*:/*:rw)
+            src="${l%%:*}"
+            case "$src" in
+            "$CCODE_HOME" | "$CCODE_HOME"/* | "$PROJECT" | "$PROJECT"/*) ;;
+            *) return 1 ;;
+            esac
+            ;;
+        esac
+    done <<<"$ARGV"
+}
 
 # --- off (default): nothing added -------------------------------------------------------
 ARGV="$(argv_for '')"
@@ -54,6 +71,9 @@ check "off keeps host networking" line host
 check "off keeps plugins read-write" text "/home/coder/.claude/plugins:rw"
 check "off keeps ~/.local/bin read-write" text "/home/coder/.local/bin:rw"
 check_not "off adds no .git overlay" text "/.git/hooks:ro"
+check "off: rw mounts only from the generated home or the project (T-02)" rw_sources_contained
+check "off: MCP OAuth store from the generated home" text "$CCODE_HOME/.mcp-auth:/home/coder/.mcp-auth:rw"
+check_not "off: the host ~/.mcp-auth is never mounted" text "$HOME/.mcp-auth:"
 ARGV="$(argv_for 'setting.hardening=off\n')"
 assert_eq "$ARGV" "$DEFAULT_ARGV" "explicit off is identical to the default"
 ARGV="$(argv_for 'setting.hardening=paranoid\n')"
@@ -81,7 +101,8 @@ for d in plugins skills agents commands; do
     check "strict: $d read-only" text "/home/coder/.claude/$d:ro"
 done
 check "strict: ~/.local/bin read-only" text "/home/coder/.local/bin:ro"
-check "strict: ~/.composio read-only" text "/home/coder/.composio:ro"
+check "strict: rw mounts only from the generated home or the project (T-02)" rw_sources_contained
+check "strict: MCP OAuth store stays writable (tokens, not code)" text "$CCODE_HOME/.mcp-auth:/home/coder/.mcp-auth:rw"
 check "strict: project .git/config read-only overlay" text "$PROJECT/.git/config:/work/proj/.git/config:ro"
 check "strict: project .git/hooks read-only overlay" text "$PROJECT/.git/hooks:/work/proj/.git/hooks:ro"
 check "strict: credentials stay writable (auth)" text "/home/coder/.claude/.credentials.json:rw"
