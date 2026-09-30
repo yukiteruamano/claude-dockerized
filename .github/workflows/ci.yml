@@ -130,6 +130,13 @@ jobs:
       - name: Runtime security contract
         run: bash tests/integration/container.test.sh
 
+      - name: Opt-in image options (no setuid bits, no Docker CLI)
+        run: |
+          docker build --build-arg STRIP_SETUID=1 --build-arg DOCKER_CLI=0 -t claude-dockerized:hardened .
+          test -z "$(docker run --rm --entrypoint bash claude-dockerized:hardened -c 'find / -xdev -perm /6000 -type f')"
+          ! docker run --rm --entrypoint bash claude-dockerized:hardened -c 'command -v docker'
+          docker run --rm --entrypoint bash claude-dockerized:hardened -c 'claude --version'
+
       - name: Vulnerability scan (report only)
         # v0.35.0+ are immutable releases (unaffected by CVE-2026-33634).
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0

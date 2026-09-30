@@ -42,7 +42,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install Docker CLI only (uses host Docker daemon via mounted socket)
 # We don't need docker-ce (daemon) or containerd.io since we use the host's Docker
-RUN install -m 0755 -d /etc/apt/keyrings && \
+# DOCKER_CLI=0 (setting.image_docker_cli=false) leaves it out entirely: it is
+# only useful with the opt-in socket mount (setting.docker_socket).
+ARG DOCKER_CLI=1
+RUN if [ "$DOCKER_CLI" != 1 ]; then echo "Docker CLI skipped (DOCKER_CLI=$DOCKER_CLI)"; exit 0; fi && \
+    install -m 0755 -d /etc/apt/keyrings && \
     curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc && \
     chmod a+r /etc/apt/keyrings/docker.asc && \
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian \
@@ -132,6 +136,16 @@ RUN set -e; \
 RUN install -d -m 0755 /usr/local/lib/claude-dockerized/bin && \
     install -m 0755 "$(readlink -f /home/coder/.nvm/default/node)" /usr/local/lib/claude-dockerized/bin/node && \
     /usr/local/lib/claude-dockerized/bin/node --version
+
+# STRIP_SETUID=1 (setting.image_strip_setuid=true) clears every setuid/setgid
+# bit (su, passwd, mount, newgrp, ssh-keysign, ...). no_new_privileges already
+# neutralizes them at runtime; this is defense in depth for runtimes where it
+# is missing (T-21).
+ARG STRIP_SETUID=0
+RUN if [ "$STRIP_SETUID" = 1 ]; then \
+        find / -xdev -perm /6000 -type f -exec chmod a-s {} + ; \
+        test -z "$(find / -xdev -perm /6000 -type f -print -quit)"; \
+    fi
 USER coder
 
 # Create the writable home tree, owned by coder and group-writable (g+rwX) so
