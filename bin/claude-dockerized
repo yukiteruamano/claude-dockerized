@@ -221,8 +221,8 @@ build_image() {
 check_config() {
     local missing_files=()
 
-    if [ ! -f "$CCODE_HOME/.claude/settings.json" ]; then
-        missing_files+=("$CCODE_HOME/.claude/settings.json")
+    if [ ! -f "$CCODE_HOME/etc/claude-code/managed-settings.json" ]; then
+        missing_files+=("$CCODE_HOME/etc/claude-code/managed-settings.json")
     fi
 
     if [ ! -d "$CCODE_HOME/.local/share/claude" ]; then
@@ -659,7 +659,8 @@ run_debug() {
     paths)
         parse_config || true
         echo "Generated home: $CCODE_HOME"
-        echo "Managed settings: $CCODE_HOME/.claude/settings.json"
+        echo "Managed policy: $CCODE_HOME/etc/claude-code/managed-settings.json"
+        echo "User settings: $CCODE_HOME/.claude/settings.json"
         echo "Guard hooks: $CCODE_HOME/.claude/hooks-guard/"
         echo "Credentials: $CCODE_HOME/.claude/.credentials.json"
         echo "MCP state: $CCODE_HOME/.claude.json"
