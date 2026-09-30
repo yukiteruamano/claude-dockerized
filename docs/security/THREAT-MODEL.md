@@ -20,9 +20,9 @@
 | T-09 | Guard coverage gaps: `NotebookEdit` / `MultiEdit` not routed, `notebook_path` / `glob` fields ignored | mitigated | corpus `notebook-*`, `multiedit-*`, `grep-glob-*`; tool-coverage matcher |
 | T-10 | Credential stores missing from the deny rules (`.credentials.json`, `.git-credentials`, `.netrc`, docker/gh configs) | mitigated | corpus `*-credentials-*`, `netrc-*`, `docker-config-*`, `gh-hosts-*` |
 | T-11 | Guard fails open: malformed payload, missing jq/node, corrupt or empty policy data, unknown mode | mitigated | `tests/guard-failure-modes.test.mjs`; corpus `empty-policy-mode-file-*`; CI job without jq/python3 |
-| T-12 | Unverified self-update: upstream compromise reaches host code, hooks and image | gap | self-update `unsigned upstream commit` |
-| T-13 | No rollback point for a bad update or failed rebuild | gap | self-update `previous image is tagged` |
-| T-14 | Unpinned LSP/formatter installs executed on the host | gap | — (Phase 4) |
+| T-12 | Unverified self-update: upstream compromise reaches host code, hooks and image | mitigated (after you pin a release key) | `tests/self-update.test.sh` (signed / impostor / unsigned / rewritten tags, origin pin, preview, confirmation); `install.sh` contract in supply-chain; release-verify workflow |
+| T-13 | No rollback point for a bad update or failed rebuild | mitigated | self-update rollback point, `:prev` image, `rollback`; failed rebuild prints recovery |
+| T-14 | Unpinned LSP/formatter installs executed on the host | mitigated | `tests/lsp-install.test.sh` (pinned, in-container, --ignore-scripts, no host npm/uv) |
 | T-15 | Security-layer tampering undetected (`sync --check` compares version markers only) | mitigated | wrapper-args content-integrity (edited hook keeping its marker, tampered mirror, tampered managed policy) |
 | T-16 | Settings merge keeps security-disabling keys (`disableAllHooks`) | mitigated | merge-settings `disableAllHooks is dropped`; wrapper-args merge |
 | T-17 | Shared, predictable host temp dir (`/tmp/claude`) — race on multi-user hosts | mitigated | config-parse private temp dir (0700, symlink refused) |
@@ -32,7 +32,7 @@
 | T-21 | Residual setuid/setgid binaries in the image | accepted (neutralized by no_new_privs) · opt-in `image_strip_setuid` | integration setuid inventory; CI hardened image build |
 | T-22 | Writable root filesystem and group-writable toolchain | accepted (default) · opt-in read-only rootfs (strict hardening) | hardening `strict: read-only rootfs`; integration strict profile |
 | T-23 | Resource exhaustion (no pids/memory limits by default) | accepted (default) · opt-in pids limit (standard/strict) | hardening `standard: pids limit` |
-| T-24 | Image supply chain (base by tag, piped installers, unpinned tools) | gap | — (Phase 4) |
+| T-24 | Image supply chain (base by tag, piped installers, unpinned tools) | mitigated (TOFU for the Claude binary sha256) | `tests/supply-chain.test.sh` (base digest, NVM commit, Node/uv/Claude versions, apt key fingerprint) |
 | T-25 | Cloud metadata / link-local exfiltration | mitigated | claude-guard metadata cases |
 | T-26 | Secret file reads through tools (`.env`, keys, `auth.json`, symlink escapes) | mitigated | claude-guard read cases |
 | T-27 | Wrapper started as root on the host | mitigated | dryrun `root is refused` |
