@@ -228,8 +228,7 @@ mapping is needed.
 | `~/.config/claude-dockerized/home/.claude.json` | `/home/coder/.claude.json` | read-write | MCP user-scope state |
 | `~/.config/claude-dockerized/home/.local/bin/` | `/home/coder/.local/bin/` | read-write | LSP/formatter binaries |
 | `~/.config/claude-dockerized/home/.local/share|state/claude/` + `.cache/claude/` | same | read-write | Sessions, history, caches |
-| `~/.mcp-auth/` | `/home/coder/.mcp-auth/` | **read-write** | MCP OAuth store for `mcp-remote` servers (optional) |
-| `~/.composio/` | `/home/coder/.composio/` | read-write | Composio CLI binary + login (when present) |
+| `~/.config/claude-dockerized/home/.mcp-auth/` | `/home/coder/.mcp-auth/` | read-write (`0700`) | OAuth tokens of `mcp-remote` proxy servers (native Claude MCP OAuth lives in `.credentials.json`); the host `~/.mcp-auth` is never shared |
 | `~/.config/claude-dockerized/home/.gnupg/` | `/home/coder/.gnupg/` | read-write | Mirrored **public** GnuPG material + agent socket (only with `setting.gpg_agent_support=true`); `private-keys-v1.d/` is never copied |
 
 The wrapper's own directory (`~/.config/claude-dockerized/`) is **not** mounted at all, and `~/.claude` is never mounted as a whole: managed files travel through fine-grained read-only mounts.
@@ -390,7 +389,7 @@ claude-dockerized run
 ❌ Never share:
 - Secrets file (`env`) or `.credentials.json`
 - Personal `~/.config/claude-dockerized/home/` state
-- Personal `.mcp-auth/`
+- Personal `.mcp-auth/` (MCP OAuth tokens)
 
 ## 🔍 Advanced Usage
 
@@ -469,14 +468,14 @@ Defaults keep the runtime unchanged. Opt in with `setting.hardening`:
 |---------|------|
 | `off` (default) | — |
 | `standard` | `--init`, `--pids-limit 4096`, private IPC |
-| `strict` | standard + read-only root filesystem (tmpfs for `/tmp` and caches), read-only plugins / skills / agents / commands / `~/.local/bin` / `.composio` and project `.git` hooks/config, bridge network unless `setting.network` is set |
+| `strict` | standard + read-only root filesystem (tmpfs for `/tmp` and caches), read-only plugins / skills / agents / commands / `~/.local/bin` and project `.git` hooks/config, bridge network unless `setting.network` is set |
 
 Image options: `setting.image_strip_setuid=true` (no setuid bits),
 `setting.image_docker_cli=false` (no Docker CLI; only useful with the socket).
 
 After every `run`, the wrapper compares fingerprints of the persistent paths a
 session could plant code in (project git hooks/config and Claude settings,
-`~/.local/bin`, plugins, skills, MCP servers, `.composio`) and lists every
+`~/.local/bin`, plugins, skills, MCP servers) and lists every
 change; the log is `~/.config/claude-dockerized/audit/sessions.jsonl` and
 `doctor` shows the last entry. Disable with `setting.integrity_check=false`.
 

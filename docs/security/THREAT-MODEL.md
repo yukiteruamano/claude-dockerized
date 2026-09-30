@@ -38,7 +38,7 @@ deliberately mounts or puts in the env file.
 | Host account and files | outside the container | code execution as the user = full compromise |
 | Provider credentials | `setting.env_file` → container env; `.credentials.json` | account takeover, billing |
 | Signing oracles | forwarded SSH / GnuPG agents (opt-in) | impersonation (signed commits, SSH auth) |
-| MCP OAuth tokens | `~/.mcp-auth` | access to connected services |
+| MCP OAuth tokens | `.credentials.json` (native), generated-home `~/.mcp-auth` (`mcp-remote`) | access to connected services |
 | Security layer | managed policy, hooks, policies, wrapper code | disabling it removes every soft control |
 | Project source | the mounted project | integrity of the user's work, supply chain of their users |
 | Future sessions | generated home (`~/.local/bin`, plugins, skills, MCP config) | persistence across sessions and projects |
@@ -103,7 +103,7 @@ Status legend: **mitigated** (control in place, test green) · **detected**
 | Id | Threat | Status | Evidence (tests) |
 |----|--------|--------|------------------|
 | T-01 | Host code execution via the project's `.git` (`hooks/`, `config`: `core.fsmonitor`, `core.hooksPath`, filters) and tool configs run by the host | detected (default) · prevented (strict policy / strict hardening) | integrity `git hook`, `git config`; hardening `.git overlays`; corpus `write-git-hook` (strict) |
-| T-02 | Host binary replacement through the read-write `~/.composio` mount | detected (default) · prevented (strict hardening) | integrity `~/.composio`; hardening `~/.composio read-only` |
+| T-02 | Host binary replacement through a read-write mount of a host CLI or token directory | mitigated (no host CLI or token directory is mounted; read-write mounts come only from the generated home and the project) | hardening `rw mounts only from the generated home or the project (T-02)` (default and strict) |
 | T-03 | Managed policy override from the project: `.claude/settings.local.json`, or `env` relaxing `CLAUDE_DOCKERIZED_POLICY` | mitigated | managed policy at `/etc/claude-code/managed-settings.json` (tool-coverage, wrapper-args, dryrun); failure-modes `policy-mode file wins over env`; corpus `write-project-settings-local` (strict) |
 | T-04 | Helper hijack: writable `~/.local/bin` first on PATH shadows `jq` / `node` / `claude` used by the guard | mitigated | failure-modes `fake jq/node on PATH`; entrypoint PATH order; integration planted `~/.local/bin/claude`, root-owned guard node |
 | T-05 | Cross-session persistence via read-write `.claude.json` (MCP stdio), plugins, skills, agents, commands, `.lsp.json` | detected (default) · prevented (strict hardening, except `.claude.json`) | integrity `MCP server`, `skill`, `~/.local/bin`; hardening read-only plugins/skills/agents/commands |

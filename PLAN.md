@@ -293,7 +293,7 @@ ENV NVM_DIR="/home/coder/.nvm"
 RUN curl -o- "https://raw.githubusercontent.com/nvm-sh/nvm/${NVM_VERSION}/install.sh" | bash \
  && bash -c "source $NVM_DIR/nvm.sh && nvm install --lts && nvm alias default node && nvm use default && ln -sf \$(dirname \$(which node)) $NVM_DIR/default"
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-ENV PATH="$NVM_DIR/default:/home/coder/.composio:/home/coder/.local/bin:$PATH"
+ENV PATH="$NVM_DIR/default:/home/coder/.local/bin:$PATH"
 # Claude Code nativo con versión fija (setup#install-a-specific-version). Sin npm.
 RUN curl -fsSL https://claude.ai/install.sh | bash -s ${CLAUDE_CODE_VERSION} \
  && claude --version
@@ -316,7 +316,7 @@ Notas vinculantes:
 - Último `USER coder`, `chown coder:coder + chmod g+rwX /home/coder`, sin sudo,
   `COPY` root-owned en `/usr/local/bin` (invariantes ya auditados en tests).
 - `hadolint` en verde; `ARG CLAUDE_CODE_VERSION` documentado en `README`.
-- `uv`/NVM/`~/.composio`/`~/.local/bin` en PATH (entrypoint re-exporta
+- `uv`/NVM/`~/.local/bin` en PATH (entrypoint re-exporta
   `/home/coder/.local/bin`, donde viven también los binarios LSP/formatters del
   home generado).
 - Prohibido `pnpm add -g` / `npm install -g` para Claude. Si un LS/formatter
@@ -362,7 +362,7 @@ Notas vinculantes:
     ├── .local/share/claude/        ← rw (sesiones, transcripts)
     ├── .local/state/claude/        ← rw (historial, locks)
     ├── .cache/claude/              ← rw (cachés)
-    ├── .mcp-auth/ (bajo $HOME, igual que hoy) ← rw
+    ├── .mcp-auth/                  ← rw 0700 (OAuth `mcp-remote`; nunca el del host)
     └── .gnupg/ (espejo público)    ← rw solo con gpg_support
 ```
 
@@ -378,7 +378,7 @@ Tabla de montajes (opción A, cerrada — prohibido montar `~/.claude/` entero):
 | `.claude.json` | `/home/coder/.claude.json` | rw | MCP user-scope |
 | `.local/bin/` | `/home/coder/.local/bin/` | rw | binarios LSP/formatters del home generado |
 | `.local/share|state/claude/` `.cache/claude/` | mismas | rw | sesiones/historial/caché |
-| `~/.mcp-auth/` | `/home/coder/.mcp-auth/` | rw | OAuth `mcp-remote` |
+| `.mcp-auth/` | `/home/coder/.mcp-auth/` | rw (0700) | OAuth `mcp-remote` (home generado) |
 | `~/.config/claude-dockerized/home/.gnupg/` | `/home/coder/.gnupg/` | rw opt-in | espejo público + socket (nunca `private-keys-v1.d`) |
 | (SSH) `$SSH_AUTH_SOCK` + `~/.ssh/config` `known_hosts` | mismas | mount/env + ro | git SSH sin llaves privadas |
 | (`setting.docker_socket=true` solo) `/var/run/docker.sock` | `/var/run/docker.sock` | rw opt-in | root-equivalent, documentado |

@@ -40,10 +40,11 @@ reduces noise and blocks the obvious.
 | Managed policy, hooks, `CLAUDE.md` read-only; `$CONFIG_DIR` never mounted; `~/.ssh`/`~/.gnupg` private material never mounted | T-03, T-15 | `wrapper-args`, `wrapper-dryrun` |
 | Mount validation: canonical paths, `ro`/`rw` only, sensitive host dirs, docker socket, managed/system targets | T-07 | `mounts` |
 | Env file only under `$CONFIG_DIR`, never in the mounted home | T-18 | `mounts` |
+| Read-write binds only from the generated home and the project: no host CLI or token directory (the MCP OAuth store is `$CCODE_HOME/.mcp-auth`, `0700`) | T-02 | `hardening`, `wrapper-args` |
 | Docker socket off by default | T-20 | `wrapper-dryrun` |
 | `~/.local/bin` last on PATH | T-04 | `entrypoint`, integration |
 | `setting.hardening=standard`: `--init`, `--pids-limit`, private IPC | T-23 | `hardening` |
-| `setting.hardening=strict`: read-only rootfs + tmpfs; read-only plugins/skills/agents/commands/`~/.local/bin`/`.composio`; read-only `.git` hooks/config overlays; bridge network | T-01, T-02, T-05, T-06, T-22 | `hardening`, integration |
+| `setting.hardening=strict`: read-only rootfs + tmpfs; read-only plugins/skills/agents/commands/`~/.local/bin`; read-only `.git` hooks/config overlays; bridge network | T-01, T-05, T-06, T-22 | `hardening`, integration |
 
 ### Policy (`config/managed-settings.json`, rendered by `write_managed_settings`)
 
@@ -73,7 +74,7 @@ reduces noise and blocks the obvious.
 |---------|--------|-------------|
 | `config sync --check` compares hooks, evaluator and deny sets byte for byte (repo → install → mirror) and the managed policy with its template; `sync` restores (with `.bak`) | T-15 | `wrapper-args` |
 | Private 0700 `TMPDIR`; atomic settings writes | T-17 | `config-parse` |
-| Session integrity report + JSONL audit log (default on) | T-01, T-02, T-05 | `integrity`, `wrapper-dryrun` |
+| Session integrity report + JSONL audit log (default on) | T-01, T-05 | `integrity`, `wrapper-dryrun` |
 | Verified updates (pinned keys, origin pin, preview, confirmation, fast-forward, re-exec), rollback | T-12, T-13 | `self-update` |
 | LSP/formatters pinned, installed in a throwaway container with `--ignore-scripts` | T-14 | `lsp-install` |
 | CI actions pinned by SHA, Dependabot, release tags verified | T-29, T-12 | `supply-chain`, `release-verify.yml` |

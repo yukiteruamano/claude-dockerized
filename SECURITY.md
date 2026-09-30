@@ -33,8 +33,8 @@ treated as untrusted code execution inside the container.
   validated mounts are visible; `~/.ssh` / `~/.gnupg` private material, the
   wrapper's config dir and the Docker socket (unless opted in) never are.
 - **Detection by default.** Changes to paths that run on the host or in later
-  sessions (git hooks/config, `~/.local/bin`, plugins, skills, MCP servers,
-  `.composio`) are reported after every session and logged.
+  sessions (git hooks/config, `~/.local/bin`, plugins, skills, MCP servers)
+  are reported after every session and logged.
 - **Opt-in prevention.** `setting.hardening=standard|strict` (pids limit,
   read-only root filesystem, read-only persistent paths and `.git` overlays,
   bridge network), `setting.image_strip_setuid`, `setting.image_docker_cli`.
