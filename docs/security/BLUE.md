@@ -45,7 +45,7 @@ reduces noise and blocks the obvious.
 | `setting.hardening=standard`: `--init`, `--pids-limit`, private IPC | T-23 | `hardening` |
 | `setting.hardening=strict`: read-only rootfs + tmpfs; read-only plugins/skills/agents/commands/`~/.local/bin`/`.composio`; read-only `.git` hooks/config overlays; bridge network | T-01, T-02, T-05, T-06, T-22 | `hardening`, integration |
 
-### Policy (`write_claude_managed_settings`)
+### Policy (`config/managed-settings.json`, rendered by `write_managed_settings`)
 
 | Control | Threat | Verified by |
 |---------|--------|-------------|
@@ -53,7 +53,7 @@ reduces noise and blocks the obvious.
 | `DISABLE_AUTOUPDATER=1`, pinned `CLAUDE_DOCKERIZED_POLICY`, `disableBypassPermissionsMode`, deny/ask rules | T-03, T-12 | `guard-tool-coverage` |
 | Hook matcher covers Read/Edit/MultiEdit/Write/NotebookEdit/Glob/Grep | T-09 | `guard-tool-coverage` |
 | Sandbox explicitly off (no bubblewrap; the container is the boundary) | T-30 | `guard-tool-coverage` |
-| User settings are preferences only; merges drop `disableAllHooks` | T-16 | `merge-settings`, `wrapper-args` |
+| User settings are writable preferences only; `config sync` drops `disableAllHooks` (and `--check` flags it) | T-16 | `migrate-settings`, `wrapper-args` |
 
 ### Guard (`hooks/`)
 

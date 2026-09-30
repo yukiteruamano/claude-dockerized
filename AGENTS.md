@@ -15,6 +15,8 @@ Shell script-based Docker wrapper for running [Claude Code](https://code.claude.
 - `lib/doctor-container.sh` — Diagnostics run inside the container by `doctor` (passed as `bash -c`; never on the host)
 - `lib/integrity-lib.sh` — Session integrity check: fingerprints persistent paths (project git hooks/config and Claude settings, `~/.local/bin`, plugins, skills, MCP servers, `~/.composio`) before/after each run and logs changes to `$CONFIG_DIR/audit/sessions.jsonl`. Sourced by `config-lib.sh`. **Not executable directly.**
 - `lib/install-lib.sh` — Install wizard library sourced by the wrapper's `install` command (`--yes`, `--only config,completions,aliases,global[,path][,build]`). **Not executable directly.**
+- `config/managed-settings.json`, `config/user-settings.default.json` — Managed policy template (rendered by `write_managed_settings`) and user-settings seed
+- `lib/migrate-settings.js` — Node helper for `ensure_user_settings`: strips policy keys (and `disableAllHooks`) from a legacy `settings.json`, keeping the user's own keys
 - `Dockerfile` — Container image (Debian trixie-slim + Node.js/NVM + uv + Claude Code native binary v2.1.284, no sudo, no npm install)
 - `entrypoint.sh` — Container entrypoint (unprivileged; resolves workdir, loads NVM, execs the command)
 - `run-simple.sh` — Simplified alternative runner (delegates to `claude-dockerized run`)
@@ -24,7 +26,7 @@ Shell script-based Docker wrapper for running [Claude Code](https://code.claude.
 - `tests/run-all.sh` — Runs every suite (`--integration` adds the Docker runtime test, `--verbose` lists known gaps)
 - `tests/claude-guard.test.mjs` — Security-policy regression tests (a deny is exit 2 exactly)
 - `tests/guard-bypass-corpus.test.mjs` + `tests/fixtures/guard-corpus.json` — Data-driven Red-team bypass corpus, tagged by threat id
-- `tests/guard-failure-modes.test.mjs`, `tests/guard-tool-coverage.test.mjs`, `tests/guard-eval.test.mjs`, `tests/merge-settings.test.mjs` — Guard fail-closed behaviour, hook wiring, policy data integrity, settings merge
+- `tests/guard-failure-modes.test.mjs`, `tests/guard-tool-coverage.test.mjs`, `tests/guard-eval.test.mjs`, `tests/migrate-settings.test.mjs` — Guard fail-closed behaviour, hook wiring, policy data integrity, legacy settings migration
 - `tests/wrapper-args.test.sh` — Wrapper mount/env contract test (no Docker)
 - `tests/wrapper-dryrun.test.sh`, `tests/mounts.test.sh`, `tests/config-parse.test.sh`, `tests/self-update.test.sh`, `tests/cli-contract.test.sh` — Full `docker run` argv via a docker stub, mount/path validation, config parsing, self-update against a local bare origin, help/completion drift
 - `tests/integration/container.test.sh` — Container runtime contract (non-root, zero caps, no_new_privs, read-only mounts); skips without Docker
@@ -61,6 +63,7 @@ claude-dockerized config show       # Show parsed configuration
 claude-dockerized config edit       # Edit config in $EDITOR
 claude-dockerized config path       # Print config file path
 claude-dockerized config sync [--check]  # Refresh security layer (hooks/policies/settings) from repo
+claude-dockerized config claude [path|edit|policy]  # User settings.json (writable) / managed policy path
 claude-dockerized clean             # Remove Docker image
 claude-dockerized help              # Show help
 DRY_RUN=true claude-dockerized run  # Print docker command without running
@@ -71,7 +74,7 @@ bash -n lib/*.sh completions/*.sh hooks/*.sh            # Syntax-check lib + com
 shellcheck -x -S warning bin/* lib/*.sh install.sh completions/*.sh hooks/*.sh   # Lint (config in .shellcheckrc)
 cat Dockerfile | docker run --rm -i hadolint/hadolint:latest hadolint -   # Lint Dockerfile
 node --check hooks/guard-eval.js    # Syntax-check the policy evaluator
-node --check lib/merge-settings.js  # Syntax-check the settings merge helper
+node --check lib/migrate-settings.js  # Syntax-check the legacy settings migration helper
 bash tests/run-all.sh               # Every suite (Node 22+, no Docker); --verbose lists known gaps
 bash tests/run-all.sh --integration # + container runtime contract (needs Docker)
 node tests/claude-guard.test.mjs    # Single suite, e.g. the security-policy regression tests
@@ -167,9 +170,9 @@ always print `claude-dockerized`, never `$0`.
 
 All volume mount logic lives in `lib/config-lib.sh` to eliminate duplication:
 - `CCODE_HOME` (`~/.config/claude-dockerized/home`) — self-contained Claude Code state root mirroring the container home; all mounts source from here, never from host XDG dirs
-- `build_standard_volume_args "$project_dir" [include_docker_socket]` — populates `VOLUME_ARGS` array with fine-grained mounts (managed policy at `/etc/claude-code/managed-settings.json`, user `settings.json` and `hooks-guard/` read-only; credentials, `.claude.json`, sessions read-write; plugins/skills/agents/commands, `.local/bin`, `.composio` read-write, or read-only under `setting.hardening=strict`, which also overlays the project's `.git` hooks/config read-only; never `~/.claude` as a whole)
+- `build_standard_volume_args "$project_dir" [include_docker_socket]` — populates `VOLUME_ARGS` array with fine-grained mounts (managed policy dir `$CCODE_HOME/etc/claude-code` at `/etc/claude-code` read-only; the generated `~/.claude` read-write as a directory so `settings.json` saves never hit EBUSY, with `hooks-guard/` and `CLAUDE.md` overlaid read-only; `.claude.json`, sessions read-write; plugins/skills/agents/commands, `.local/bin`, `.composio` read-write, or read-only under `setting.hardening=strict`, which also overlays the project's `.git` hooks/config read-only; never the host `~/.claude`)
 - `build_common_docker_args` — populates `DOCKER_COMMON_ARGS` array (--rm, --network host, `--user <host uid>:<host gid>`, `--group-add coder`, `--cap-drop=ALL`, `--security-opt no-new-privileges:true`, TERM, `CLAUDE_DOCKERIZED_POLICY`)
-- `ensure_claude_dirs` — creates required host directories, seeds the state tree (credentials placeholder `0600`, `.claude.json`) and installs the versioned security layer (`ensure_claude_dockerized_config`: native hooks + `policies/*.json` with their `policies/VERSION` marker, `managed-settings.json` (hooks, deny/ask, `DISABLE_AUTOUPDATER=1`, pinned policy mode) + preference-only `settings.json`, `hooks-guard/policy-mode`, `CLAUDE.md`, optional `.lsp.json`)
+- `ensure_claude_dirs` — creates required host directories, seeds the state tree (credentials placeholder `0600`, `.claude.json`) and installs the versioned security layer (`ensure_claude_dockerized_config`: native hooks + `policies/*.json` with their `policies/VERSION` marker, `managed-settings.json` rendered from `config/managed-settings.json` by `write_managed_settings` (hooks, deny/ask, `DISABLE_AUTOUPDATER=1`, pinned policy mode, sandbox off) + writable preference-only `settings.json` seeded from `config/user-settings.default.json` by `ensure_user_settings` (legacy copies or `disableAllHooks` migrated by `lib/migrate-settings.js`), `hooks-guard/policy-mode`, `CLAUDE.md`, optional `.lsp.json`)
 - `validate_mount_spec` / `sensitive_host_path_reason` / `canonical_host_path` — the single validator for custom mounts, the wizard and the project dir (canonical paths, `ro|rw`, refused host dirs and targets)
 - `append_hardening_args` — opt-in `standard`/`strict` runtime flags (`setting.hardening`)
 - `check_image "$IMAGE_NAME"` — validates Docker image exists
@@ -237,7 +240,7 @@ Removed settings (`websearch_provider`, `theme`) warn and are ignored. Secrets o
 
 ### Security Rules
 
-- The security policy lives in the **managed** scope (`/etc/claude-code/managed-settings.json`, read-only, highest precedence); the user `settings.json` holds preferences only. Managed files (`managed-settings.json`, `settings.json`, `hooks-guard/`, `CLAUDE.md`) are **read-only** fine-grained mounts; user state (credentials, plugins, sessions, `.local/bin`) read-write by default. The wrapper's `$CONFIG_DIR` is never mounted. `~/.claude` is never mounted as a whole. `~/.mcp-auth` is read-write
+- The security policy lives in the **managed** scope (`/etc/claude-code/managed-settings.json`, read-only, highest precedence); the user `settings.json` holds preferences only and stays writable (`/model`, `/config`, `/permissions`). Managed files (`/etc/claude-code/`, `hooks-guard/`, `CLAUDE.md`) are **read-only** mounts; user state (settings, credentials, plugins, sessions, `.local/bin`) read-write by default. The wrapper's `$CONFIG_DIR` is never mounted. The host `~/.claude` is never mounted. `~/.mcp-auth` is read-write
 - Guard hooks fail closed (exit 2 on anything they cannot evaluate), use a trusted tool path (`hook-path` / image default, never the inherited PATH) and read the mode from `hooks-guard/policy-mode`; see `docs/security/YELLOW.md` before changing them
 - Changes to persistent paths are reported after each `run` (`lib/integrity-lib.sh`, `setting.integrity_check`); stricter prevention is opt-in (`setting.hardening`) — defaults never change behavior silently
 - Auto-updates always disabled via `env.DISABLE_AUTOUPDATER=1` in the managed policy; upgrades happen only through `claude-dockerized update` (signed release tag verified against locally pinned keys, preview, fast-forward, rebuild with pinned `CLAUDE_CODE_VERSION`; `rollback` undoes it)
@@ -263,8 +266,8 @@ Removed settings (`websearch_provider`, `theme`) warn and are ignored. Secrets o
 | Host Path | Container Path | Mode | Purpose |
 |-----------|---------------|------|---------|
 | `$PROJECT_DIR` | `$PROJECT_DIR` (with `$HOME` stripped) | rw | Project files |
-| `~/.config/claude-dockerized/home/.claude/managed-settings.json` | `/etc/claude-code/managed-settings.json` | **read-only** | Managed policy (highest precedence): hooks, deny/ask, `DISABLE_AUTOUPDATER`, pinned policy mode, sandbox off. Generated by the wrapper |
-| `~/.config/claude-dockerized/home/.claude/settings.json` | `/home/coder/.claude/settings.json` | **read-only** | User preferences (model, cleanup days, plugins, allow list). Generated by the wrapper; edit via `config edit` |
+| `~/.config/claude-dockerized/home/etc/claude-code/` | `/etc/claude-code/` | **read-only** | Managed policy `managed-settings.json` (highest precedence): hooks, deny/ask, `DISABLE_AUTOUPDATER`, pinned policy mode, sandbox off. Rendered from `config/managed-settings.json` |
+| `~/.config/claude-dockerized/home/.claude/` | `/home/coder/.claude/` | rw | Generated Claude state as a directory (a single-file bind would make settings saves fail with EBUSY); `settings.json` holds writable preferences seeded from `config/user-settings.default.json` (`/model`, `/config`, or `config claude edit`) |
 | `~/.config/claude-dockerized/home/.claude/hooks-guard/` | `/home/coder/.claude/hooks-guard/` | **read-only** | Native `PreToolUse` hooks + policy data |
 | `~/.config/claude-dockerized/home/.claude/CLAUDE.md` | `/home/coder/.claude/CLAUDE.md` | **read-only** | Managed session rules |
 | `~/.config/claude-dockerized/home/.claude/.credentials.json` | `/home/coder/.claude/.credentials.json` | rw (`0600`) | Login (`claude auth login`), persists across rebuilds |

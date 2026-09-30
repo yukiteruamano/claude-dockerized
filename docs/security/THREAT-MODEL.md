@@ -117,7 +117,7 @@ Status legend: **mitigated** (control in place, test green) · **detected**
 | T-13 | No rollback point for a bad update or failed rebuild | mitigated | self-update rollback point, `:prev` image, `rollback`; failed rebuild prints recovery |
 | T-14 | Unpinned LSP/formatter installs executed on the host | mitigated | `tests/lsp-install.test.sh` (pinned, in-container, --ignore-scripts, no host npm/uv) |
 | T-15 | Security-layer tampering undetected (`sync --check` compares version markers only) | mitigated | wrapper-args content-integrity (edited hook keeping its marker, tampered mirror, tampered managed policy) |
-| T-16 | Settings merge keeps security-disabling keys (`disableAllHooks`) | mitigated | merge-settings `disableAllHooks is dropped`; wrapper-args merge |
+| T-16 | User settings keep security-disabling keys (`disableAllHooks`) | mitigated | migrate-settings `disableAllHooks is dropped (T-16)`; wrapper-args `sync must drop disableAllHooks`; `config sync --check` flags it |
 | T-17 | Shared, predictable host temp dir (`/tmp/claude`) — race on multi-user hosts | mitigated | config-parse private temp dir (0700, symlink refused) |
 | T-18 | Env file placed inside the mounted generated home | mitigated | mounts `env file inside the mounted generated home` |
 | T-19 | Secrets visible through the process environment | accepted (mitigated by guard) | claude-guard env-dump cases |
