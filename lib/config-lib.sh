@@ -135,8 +135,8 @@ SECURITY_POLICY="balanced"      # Security policy mode: strict | balanced | none
 MEMORY=""                       # Optional container memory limit (docker --memory), e.g. 4g
 CPUS=""                         # Optional container CPU limit (docker --cpus), e.g. 2
 ENV_FILE=""                     # Optional dotenv file with secrets (docker --env-file), must live under CONFIG_DIR
-CLAUDE_MODEL=""                 # Optional default model (passed as --model and settings.json model); empty = Claude default
-CLEANUP_DAYS="7"                # Local session-data retention (settings.json cleanupPeriodDays); empty = Claude default
+CLAUDE_MODEL=""                 # Optional default model (passed as --model); empty = Claude default / last /model choice
+CLEANUP_DAYS="7"                # Local session-data retention (managed cleanupPeriodDays); empty = Claude default
 LSP_ENABLED=false               # Enable native LSP support (binaries + .lsp.json live in CCODE_HOME)
 LSP_SERVERS="ts,python"         # CSV of language servers to configure when setting.lsp=true
 FORMATTERS_ENABLED=false        # Enable native formatters (binaries + enabledPlugins in CCODE_HOME)
@@ -223,10 +223,10 @@ ensure_claude_dirs() {
 }
 
 # Ensure the claude-dockerized directory and its generated security layer exist.
-# This directory is the host-side source of truth for the sandbox: its managed
-# settings.json template, CLAUDE.md rules, native hooks and policy data are
-# mirrored read-only into the generated home (never mounted as a whole, so a
-# session cannot reach or edit these sources).
+# This directory is the host-side source of truth for the sandbox: its
+# CLAUDE.md rules, native hooks and policy data are mirrored read-only into
+# the generated home, next to the rendered managed policy (never mounted as a
+# whole, so a session cannot reach or edit these sources).
 # Files are only created when missing — user edits are never overwritten.
 # Check whether a file parses as JSON. Tries node, then python3; without either
 # the check is skipped (return 2 = unknown, never a false failure).
@@ -243,129 +243,74 @@ json_valid() {
     return 2
 }
 
-# Merge user customizations into a fresh Claude settings.json template.
-# Managed keys always come from the template (template wins, reported via
-# MERGED_OVERRIDDEN): env, permissions, hooks, sandbox, cleanupPeriodDays,
-# $schema, model (when setting.model is set). Unknown user keys and extra
-# permissions.allow entries are preserved (counted in MERGED_ADDED).
-# The result is JSON-validated before use; on failure nothing is written.
-# Usage: merge_claude_permissions <installed> <template> <output>
-# Sets: MERGED_ADDED (count), MERGED_OVERRIDDEN ("path ..." list)
-merge_claude_permissions() {
-    local installed="$1" template="$2" output="$3"
-    MERGED_ADDED=0
-    MERGED_OVERRIDDEN=""
+# Render the managed Claude policy (config/managed-settings.json in the repo)
+# to <output>, honoring the parsed wrapper settings. Pure bash + sed on known
+# key lines, so the security policy never depends on optional host tooling:
+#   - setting.cleanup_days  -> cleanupPeriodDays (line dropped when empty)
+#   - security_policy=strict -> allowManagedPermissionRulesOnly
+#   - setting.formatters    -> enabledPlugins; plugin hooks need
+#                              allowManagedHooksOnly off, so it is dropped
+# The model is never written: it travels as --model (see bin/claude-dockerized)
+# so /model keeps working and persists in the user settings.
+# Usage: write_managed_settings <output>
+write_managed_settings() {
+    local output="$1" repo_dir
+    repo_dir="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+    local src="$repo_dir/config/managed-settings.json"
+    [ -f "$src" ] || return 1
 
-    cp "$template" "$output" 2>/dev/null || return 1
-
-    if ! command -v node >/dev/null 2>&1; then
-        return 0
+    local -a sed_args=()
+    case "$CLEANUP_DAYS" in
+    '') sed_args+=(-e '/^  "cleanupPeriodDays": /d') ;;
+    *[!0-9]*) sed_args+=(-e '/^  "cleanupPeriodDays": /d') ;;
+    *) sed_args+=(-e "s/^  \"cleanupPeriodDays\": [0-9]*,/  \"cleanupPeriodDays\": $CLEANUP_DAYS,/") ;;
+    esac
+    if [ "$SECURITY_POLICY" = strict ]; then
+        sed_args+=(-e '/^  "allowManagedHooksOnly": true,/a\
+  "allowManagedPermissionRulesOnly": true,')
+    fi
+    if [ "$FORMATTERS_ENABLED" = true ]; then
+        sed_args+=(-e 's/^  "allowManagedHooksOnly": true,/  "enabledPlugins": {"prettier@claude": true, "ruff@claude": true},/')
     fi
 
-    local merge_out merger
-    merger="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/merge-settings.js"
-    merge_out=$(node "$merger" "$installed" "$template" "$output" 2>/dev/null) || return 1
-
-    MERGED_ADDED="$(printf '%s' "$merge_out" | head -n1)"
-    MERGED_OVERRIDDEN="$(printf '%s' "$merge_out" | tail -n +2)"
-    case "$MERGED_ADDED" in ''|*[!0-9]*) MERGED_ADDED=0 ;; esac
-
+    sed "${sed_args[@]}" "$src" >"$output" 2>/dev/null || return 1
     local v=0
     json_valid "$output" || v=$?
     [ "$v" -eq 1 ] && return 1
     return 0
 }
 
-# Emit the managed Claude settings.json template to <output>, honoring the
-# parsed wrapper settings (model, cleanup days, formatters). Hooks point at
-# the read-only hooks-guard dir; auto-updates are always disabled.
-# Usage: write_claude_settings_template <output>
-write_claude_settings_template() {
-    local output="$1"
-    local model_json="null" cleanup_json="null" plugins_json="{}"
+# Seed or migrate the user-level ~/.claude/settings.json (read-write in the
+# container, so /model, /config and /permissions persist). A missing file is
+# seeded from config/user-settings.default.json; a legacy file that still
+# carries the old wrapper-managed policy is backed up to .bak and rewritten
+# with only the user's own keys (lib/migrate-settings.js). Without node the
+# legacy file is backed up and reseeded. Otherwise the file is never touched.
+# Usage: ensure_user_settings <settings.json>
+ensure_user_settings() {
+    local target="$1" repo_dir
+    repo_dir="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+    local defaults="$repo_dir/config/user-settings.default.json"
+    [ -f "$defaults" ] || return 0
 
-    if [ -n "$CLAUDE_MODEL" ]; then
-        model_json="\"$CLAUDE_MODEL\""
+    if [ ! -f "$target" ]; then
+        cp "$defaults" "$target" 2>/dev/null && config_success "Seeded user settings at $target"
+        return 0
     fi
-    if [ -n "$CLEANUP_DAYS" ]; then
-        cleanup_json="$CLEANUP_DAYS"
-    fi
-    if [ "$FORMATTERS_ENABLED" = true ]; then
-        plugins_json='{"prettier@claude": true, "ruff@claude": true}'
-    fi
+    grep -q 'claude-guard-bash.sh' "$target" 2>/dev/null || return 0
 
-    cat >"$output" <<EOF
-{
-  "\$schema": "https://json.schemastore.org/claude-code-settings.json",
-  "env": {
-    "DISABLE_AUTOUPDATER": "1"
-  },
-  "model": $model_json,
-  "cleanupPeriodDays": $cleanup_json,
-  "permissions": {
-    "allow": [
-      "Bash(mkdir *)",
-      "Bash(ls *)"
-    ],
-    "ask": [
-      "Bash(git push *)",
-      "Bash(git reset --hard *)",
-      "Bash(docker system prune *)"
-    ],
-    "deny": [
-      "Read(./.env)",
-      "Read(./.env.*)",
-      "Read(./*.pem)",
-      "Read(./*.key)",
-      "Read(./auth.json)",
-      "Read(./credentials*)",
-      "Read(./**/.ssh/**)",
-      "Read(./**/private-keys-v1.d/**)",
-      "Bash(sudo *)",
-      "Bash(rm -rf /*)",
-      "Bash(mkfs *)",
-      "Bash(dd *)",
-      "Bash(shutdown *)",
-      "Bash(reboot *)",
-      "Bash(docker * --privileged *)",
-      "Bash(docker * -v /:/ *)",
-      "Bash(curl *169.254.169.254*)"
-    ],
-    "disableBypassPermissionsMode": "disable"
-  },
-  "sandbox": {
-    "enabled": true,
-    "filesystem": {
-      "allowWrite": [
-        "/tmp/claude"
-      ]
-    }
-  },
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/home/coder/.claude/hooks-guard/claude-guard-bash.sh"
-          }
-        ]
-      },
-      {
-        "matcher": "Read|Edit|Write|Glob|Grep",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/home/coder/.claude/hooks-guard/claude-guard-file.sh"
-          }
-        ]
-      }
-    ]
-  },
-  "enabledPlugins": $plugins_json
-}
-EOF
+    cp "$target" "$target.bak" 2>/dev/null || return 0
+    local migrated
+    migrated=$(mktemp 2>/dev/null) || return 0
+    if command -v node >/dev/null 2>&1 &&
+        node "$repo_dir/lib/migrate-settings.js" "$target" "$defaults" "$migrated" >/dev/null 2>&1; then
+        cat "$migrated" >"$target" 2>/dev/null || true
+        config_success "Migrated settings.json to user scope (policy now in managed-settings.json; backup kept)"
+    else
+        cat "$defaults" >"$target" 2>/dev/null || true
+        config_warning "Reseeded user settings.json from defaults (legacy copy kept as settings.json.bak)"
+    fi
+    rm -f "$migrated"
 }
 
 # Install LSP server binaries into the generated home (never system-wide, so
@@ -540,7 +485,7 @@ ensure_claude_dockerized_config() {
 
     # (Re)generate the managed session rules when missing or predating the
     # current template (markers below). A pre-existing file is backed up first.
-    if [ ! -f "$CONFIG_DIR/CLAUDE.md" ] || ! grep -q "Language Tooling" "$CONFIG_DIR/CLAUDE.md" 2>/dev/null || ! grep -q "## Tool Usage" "$CONFIG_DIR/CLAUDE.md" 2>/dev/null || ! grep -q "## Core Workflow" "$CONFIG_DIR/CLAUDE.md" 2>/dev/null || ! grep -q "private-keys-v1.d" "$CONFIG_DIR/CLAUDE.md" 2>/dev/null || ! grep -q "id_ed25519" "$CONFIG_DIR/CLAUDE.md" 2>/dev/null || ! grep -q "setting.env_file" "$CONFIG_DIR/CLAUDE.md" 2>/dev/null || ! grep -q "Manejo remoto" "$CONFIG_DIR/CLAUDE.md" 2>/dev/null; then
+    if [ ! -f "$CONFIG_DIR/CLAUDE.md" ] || ! grep -q "Language Tooling" "$CONFIG_DIR/CLAUDE.md" 2>/dev/null || ! grep -q "## Tool Usage" "$CONFIG_DIR/CLAUDE.md" 2>/dev/null || ! grep -q "## Core Workflow" "$CONFIG_DIR/CLAUDE.md" 2>/dev/null || ! grep -q "private-keys-v1.d" "$CONFIG_DIR/CLAUDE.md" 2>/dev/null || ! grep -q "id_ed25519" "$CONFIG_DIR/CLAUDE.md" 2>/dev/null || ! grep -q "setting.env_file" "$CONFIG_DIR/CLAUDE.md" 2>/dev/null || ! grep -q "Manejo remoto" "$CONFIG_DIR/CLAUDE.md" 2>/dev/null || ! grep -q "managed-settings.json" "$CONFIG_DIR/CLAUDE.md" 2>/dev/null; then
         if [ -f "$CONFIG_DIR/CLAUDE.md" ]; then
             cp "$CONFIG_DIR/CLAUDE.md" "$CONFIG_DIR/CLAUDE.md.bak" 2>/dev/null || true
             config_warning "Backed up previous CLAUDE.md to CLAUDE.md.bak"
@@ -602,7 +547,10 @@ commit messages, heredocs and `grep` patterns. Keep that in mind:
 - Do not reference `/var/run/docker.sock` directly; Docker access is opt-in.
 - Do not set `disableAllHooks`: it would silence the security hooks and break
   the `config sync --check` contract.
-- Never edit `~/.claude/settings.json` from inside the container (read-only);
+- The security policy lives in `/etc/claude-code/managed-settings.json`
+  (read-only, highest precedence). `~/.claude/settings.json` holds user
+  preferences: change them only through `/model`, `/config` or `/permissions`,
+  never by editing settings files directly.
   MCP `add`/`remove` and plugin `install`/`update`/`remove` are host-only.
   `mcp login`/`logout`/`list` keep working (tokens live in a read-write dir).
 - Prefer small, single-purpose commands; the full string is inspected.
@@ -714,8 +662,8 @@ EOF
         config_success "Created security rules at $CONFIG_DIR/CLAUDE.md"
     fi
 
-    # Mirror the security layer into the generated home using fine-grained
-    # mounts (option A): settings.json (ro), hooks-guard (ro) and CLAUDE.md.
+    # Mirror the security layer into the generated home: hooks-guard and
+    # CLAUDE.md (read-only overlays) and the managed policy (etc/claude-code).
     # These copies are wrapper-managed and overwritten on every run, so edit
     # the sources in "$CONFIG_DIR" instead.
     local claude_dir="$CCODE_HOME/.claude"
@@ -740,29 +688,21 @@ EOF
         if [ -f "$CONFIG_DIR/CLAUDE.md" ]; then
             cp "$CONFIG_DIR/CLAUDE.md" "$claude_dir/CLAUDE.md" 2>/dev/null || true
         fi
-        # Regenerate the managed settings.json (template wins managed keys,
-        # user extras preserved). The file is mounted read-only; edit the
-        # wrapper config on the host instead.
-        local settings_tmp merged_tmp
-        settings_tmp=$(mktemp 2>/dev/null) || settings_tmp=""
-        merged_tmp=$(mktemp 2>/dev/null) || merged_tmp=""
-        if [ -n "$settings_tmp" ] && [ -n "$merged_tmp" ]; then
-            write_claude_settings_template "$settings_tmp"
-            if [ -f "$claude_dir/settings.json" ]; then
-                if merge_claude_permissions "$claude_dir/settings.json" "$settings_tmp" "$merged_tmp"; then
-                    cat "$merged_tmp" >"$claude_dir/settings.json" 2>/dev/null || true
-                    [ "$MERGED_ADDED" -gt 0 ] && config_success "Preserved $MERGED_ADDED custom setting(s) in settings.json"
-                    [ -n "$MERGED_OVERRIDDEN" ] && config_warning "Template overrode managed key(s):$MERGED_OVERRIDDEN"
-                else
-                    cp "$claude_dir/settings.json" "$claude_dir/settings.json.bak" 2>/dev/null || true
-                    cat "$settings_tmp" >"$claude_dir/settings.json" 2>/dev/null || true
-                    config_warning "Could not merge settings.json; reseeded from template (backup kept)"
-                fi
+        # Regenerate the managed policy (mounted read-only at /etc/claude-code,
+        # highest precedence: user and project settings cannot relax it) and
+        # seed/migrate the read-write user settings.
+        local managed_dir="$CCODE_HOME/etc/claude-code" managed_tmp
+        mkdir -p "$managed_dir" 2>/dev/null || true
+        managed_tmp=$(mktemp 2>/dev/null) || managed_tmp=""
+        if [ -n "$managed_tmp" ]; then
+            if write_managed_settings "$managed_tmp"; then
+                cat "$managed_tmp" >"$managed_dir/managed-settings.json" 2>/dev/null || true
             else
-                cat "$settings_tmp" >"$claude_dir/settings.json" 2>/dev/null || true
+                config_warning "Could not render managed-settings.json (previous copy kept)"
             fi
-            rm -f "$settings_tmp" "$merged_tmp"
+            rm -f "$managed_tmp"
         fi
+        ensure_user_settings "$claude_dir/settings.json"
         # LSP config (regenerated when enabled so server paths stay correct).
         if [ "$LSP_ENABLED" = true ]; then
             write_lsp_json "$claude_dir/.lsp.json"
@@ -921,20 +861,35 @@ check_security_layer() {
         stale=true
     fi
 
-    # The managed settings.json must carry the current markers (sync
-    # regenerates it with a merge when it predates the template).
-    local managed_settings="$CCODE_HOME/.claude/settings.json"
-    if [ -f "$managed_settings" ] && grep -q 'DISABLE_AUTOUPDATER' "$managed_settings" 2>/dev/null && grep -q 'disableBypassPermissionsMode' "$managed_settings" 2>/dev/null && grep -q 'claude-guard-bash.sh' "$managed_settings" 2>/dev/null && grep -q 'private-keys-v1.d' "$managed_settings" 2>/dev/null; then
-        local v=0; json_valid "$managed_settings" || v=$?
-        if [ "$v" -eq 0 ]; then
-            config_success "settings.json managed (in sync)"
-        else
-            config_warning "settings.json is not valid JSON (regenerated on sync)"
-            stale=true
-        fi
+    # The managed policy must match a fresh render of the repo template for
+    # the current wrapper config (sync rewrites it otherwise).
+    local managed_settings="$CCODE_HOME/etc/claude-code/managed-settings.json" rendered
+    rendered=$(mktemp 2>/dev/null) || rendered=""
+    if [ -n "$rendered" ] && write_managed_settings "$rendered" && cmp -s "$rendered" "$managed_settings"; then
+        config_success "managed-settings.json (in sync)"
     else
-        config_warning "settings.json managed stale or missing"
+        config_warning "managed-settings.json stale or missing"
         stale=true
+    fi
+    [ -n "$rendered" ] && rm -f "$rendered"
+
+    # The user settings must exist, parse, and no longer carry the legacy
+    # wrapper policy (sync migrates it).
+    local user_settings="$CCODE_HOME/.claude/settings.json" v=0
+    if [ ! -f "$user_settings" ]; then
+        config_warning "user settings.json missing (seeded on sync)"
+        stale=true
+    elif grep -q 'claude-guard-bash.sh' "$user_settings" 2>/dev/null; then
+        config_warning "user settings.json still carries the legacy policy (migrated on sync)"
+        stale=true
+    else
+        json_valid "$user_settings" || v=$?
+        if [ "$v" -eq 1 ]; then
+            config_warning "user settings.json is not valid JSON (reseeded on sync)"
+            stale=true
+        else
+            config_success "user settings.json (writable preferences)"
+        fi
     fi
 
     # Managed session rules must carry the current markers (sync regenerates
@@ -1056,14 +1011,14 @@ sync_security_layer() {
     config_info "Refreshing security layer from the repo..."
     ensure_claude_dirs
     ensure_claude_dockerized_config
-    # Repair an unparsable managed settings.json (user extras are only lost
+    # Repair an unparsable user settings.json (preferences are only lost
     # when the file is already broken; the broken copy is kept as .bak).
-    local managed="$CCODE_HOME/.claude/settings.json" v
-    if [ -f "$managed" ]; then
-        v=0; json_valid "$managed" || v=$?
+    local user_settings="$CCODE_HOME/.claude/settings.json" v
+    if [ -f "$user_settings" ]; then
+        v=0; json_valid "$user_settings" || v=$?
         if [ "$v" -eq 1 ]; then
-            cp "$managed" "$managed.bak" 2>/dev/null || true
-            ensure_claude_dockerized_config
+            mv "$user_settings" "$user_settings.bak" 2>/dev/null || true
+            ensure_user_settings "$user_settings"
             config_warning "Backed up broken settings.json to settings.json.bak and reseeded it"
         fi
     fi
@@ -1586,9 +1541,9 @@ validate_claude_config() {
 # no-new-privileges neutralizes setuid binaries and cap-drop removes Linux
 # capabilities the non-root process never needs.
 # Security note: unlike the previous generation, no permission rules travel
-# inline — Claude Code has no inline-config equivalent. The managed
-# settings.json (with permissions, hooks, sandbox and DISABLE_AUTOUPDATER) is
-# delivered via fine-grained read-only mounts (see build_standard_volume_args),
+# inline — Claude Code has no inline-config equivalent. The managed policy
+# (permissions, hooks, DISABLE_AUTOUPDATER) is delivered read-only as
+# /etc/claude-code/managed-settings.json (see build_standard_volume_args),
 # and the hooks enforce the policy modes.
 # Usage: build_common_docker_args
 build_common_docker_args() {
@@ -1634,18 +1589,20 @@ build_common_docker_args() {
     DOCKER_COMMON_ARGS+=(-e "CLAUDE_DOCKERIZED_POLICY=$SECURITY_POLICY")
 
     # Claude Code self-update is disabled via env.DISABLE_AUTOUPDATER=1 in the
-    # managed settings.json (see write_claude_settings_template); the wrapper
-    # `update` command (image rebuild) is the only supported upgrade path.
+    # managed policy (see write_managed_settings); the wrapper `update`
+    # command (image rebuild) is the only supported upgrade path.
     # The default model travels as a CLI flag (see bin/claude-dockerized), not
     # as an env var, so user sessions can still switch with /model.
-    if [ ! -f "$CCODE_HOME/.claude/settings.json" ]; then
-        config_warning "Managed settings.json not found (run 'claude-dockerized install')"
+    if [ ! -f "$CCODE_HOME/etc/claude-code/managed-settings.json" ]; then
+        config_warning "Managed policy not found (run 'claude-dockerized config sync')"
     fi
 }
 
-# Build standard volume mount arguments for Claude Code directories (option A:
-# fine-grained mounts — never ~/.claude as a whole, so managed files stay
-# read-only while user state stays read-write).
+# Build standard volume mount arguments for Claude Code directories. The
+# policy is a read-only /etc/claude-code (managed settings, highest
+# precedence); ~/.claude comes from the generated home read-write (user
+# settings, credentials, plugins, memory) with the guard hooks and CLAUDE.md
+# overlaid read-only. The host ~/.claude and $CONFIG_DIR are never mounted.
 # Populates VOLUME_ARGS and CONTAINER_WORKDIR
 # The project is mounted at a path derived from the host path (with $HOME stripped)
 # so that sessions stay portable across machines/users.
@@ -1669,42 +1626,28 @@ build_standard_volume_args() {
     local chome="$CCODE_HOME"
     ensure_claude_dirs
 
-    # Managed settings.json (read-only). Edit on the host via
-    # `claude-dockerized config claude edit`.
-    if [ -f "$chome/.claude/settings.json" ]; then
-        VOLUME_ARGS+=(-v "$chome/.claude/settings.json:/home/coder/.claude/settings.json:ro")
+    # Managed policy (read-only directory, so no drop-in can be added).
+    if [ -f "$chome/etc/claude-code/managed-settings.json" ]; then
+        VOLUME_ARGS+=(-v "$chome/etc/claude-code:/etc/claude-code:ro")
     else
-        config_warning "Managed settings.json not found at $chome/.claude/settings.json"
+        config_warning "Managed policy not found at $chome/etc/claude-code/managed-settings.json"
     fi
 
-    # Security hooks (read-only).
+    # Claude state (read-write directory: a single-file bind would make every
+    # settings save fail with EBUSY). Credentials stay 0600.
+    chmod 600 "$chome/.claude/.credentials.json" 2>/dev/null || true
+    VOLUME_ARGS+=(-v "$chome/.claude:/home/coder/.claude:rw")
+
+    # Security hooks (read-only overlay).
     if [ -d "$chome/.claude/hooks-guard" ]; then
         VOLUME_ARGS+=(-v "$chome/.claude/hooks-guard:/home/coder/.claude/hooks-guard:ro")
     else
         config_warning "Security hooks not found at $chome/.claude/hooks-guard"
     fi
 
-    # Managed session rules (read-only).
+    # Managed session rules (read-only overlay).
     if [ -f "$chome/.claude/CLAUDE.md" ]; then
         VOLUME_ARGS+=(-v "$chome/.claude/CLAUDE.md:/home/coder/.claude/CLAUDE.md:ro")
-    fi
-
-    # Credentials (read-write, 0600) — auth persists across restarts/rebuilds.
-    if [ -f "$chome/.claude/.credentials.json" ]; then
-        chmod 600 "$chome/.claude/.credentials.json" 2>/dev/null || true
-        VOLUME_ARGS+=(-v "$chome/.claude/.credentials.json:/home/coder/.claude/.credentials.json:rw")
-    fi
-
-    # User plugins / skills / agents / commands (read-write).
-    for d in plugins skills agents commands; do
-        if [ -d "$chome/.claude/$d" ]; then
-            VOLUME_ARGS+=(-v "$chome/.claude/$d:/home/coder/.claude/$d:rw")
-        fi
-    done
-
-    # LSP config (read-write; regenerated when setting.lsp=true).
-    if [ -f "$chome/.claude/.lsp.json" ]; then
-        VOLUME_ARGS+=(-v "$chome/.claude/.lsp.json:/home/coder/.claude/.lsp.json:rw")
     fi
 
     # MCP user-scope state (read-write).

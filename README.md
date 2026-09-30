@@ -21,8 +21,8 @@ Run [Claude Code](https://code.claude.com/docs) (native binary, pinned version) 
 ## 🔒 Security Features
 
 - **Isolated Environment** - Claude Code only has access to the mounted project directory
-- **Persistent Configuration** - All Claude Code state lives self-contained under `~/.config/claude-dockerized/home/`, so MCP servers, sessions, auth, plugins and LSP servers survive container restarts and image rebuilds. Managed files (`settings.json`, hooks) are mounted **read-only**: edit them on the host
-- **Native Security Layer** - A generated `~/.config/claude-dockerized/` directory (managed `settings.json` with `permissions.deny/ask`, `sandbox`, `disableBypassPermissionsMode`, `DISABLE_AUTOUPDATER=1`, plus native `PreToolUse` hooks and the vendored policy pattern sets) is never mounted as a whole: managed files reach the container through fine-grained read-only mounts, so every session receives them and cannot relax them
+- **Persistent Configuration** - All Claude Code state lives self-contained under `~/.config/claude-dockerized/home/`, so MCP servers, sessions, auth, plugins and LSP servers survive container restarts and image rebuilds. The security policy (`/etc/claude-code/managed-settings.json`) and hooks are mounted **read-only**; your own preferences (`~/.claude/settings.json`) stay writable, so `/model` and `/config` persist
+- **Native Security Layer** - A generated `~/.config/claude-dockerized/` directory (a managed policy with `permissions.deny/ask`, `allowManagedHooksOnly`, `disableBypassPermissionsMode`, `DISABLE_AUTOUPDATER=1`, plus native `PreToolUse` hooks and the vendored policy pattern sets) is never mounted as a whole: the policy reaches the container read-only as `/etc/claude-code/managed-settings.json`, the highest-precedence settings source, so user and project settings cannot relax it
 - **Configurable policy** - `setting.security_policy` selects `strict`, `balanced` (default, drops the noisy cloud/multi-tenant false positives) or `none`
 - **Remote flows allowed** - Git over SSH, remote MCP servers (`http`/`sse`), registries and APIs work in every policy mode; only destruction, exfiltration, secrets and Docker escapes are blocked
 - **No auto-updates** - The pinned Claude Code version (`2.1.284`) always runs; upgrades happen only through `claude-dockerized update` (image rebuild)
@@ -166,7 +166,7 @@ claude-dockerized config show    # Show parsed configuration
 claude-dockerized config edit    # Edit wrapper config in $EDITOR
 claude-dockerized config path    # Print wrapper config file path
 claude-dockerized config sync [--check]  # Refresh security layer (hooks/policies/settings) from repo
-claude-dockerized config claude path     # Print managed settings.json path
+claude-dockerized config claude path     # Print the user settings.json path (edit|policy also available)
 claude-dockerized config credentials path # Print credentials file path (values never printed)
 claude-dockerized clean          # Remove the Docker image
 claude-dockerized help           # Show help
@@ -192,7 +192,7 @@ Set `NO_COLOR=1` (or `TERM=dumb`) for plain output without ANSI colors.
 
 ### Inside the Container
 
-Once Claude Code starts, use it as usual (`/model` to switch models, `/mcp` for MCP servers, `/hooks` to inspect hooks, `/status` to confirm settings loaded, `/sandbox` for sandbox state).
+Once Claude Code starts, use it as usual (`/model` to switch models, `/mcp` for MCP servers, `/hooks` to inspect hooks, `/status` to confirm settings loaded).
 
 ## 🔧 Configuration
 
@@ -212,12 +212,10 @@ mapping is needed.
 | Host Path | Container Path | Mode | Purpose |
 |-----------|---------------|------|---------|
 | `$PROJECT_DIR` | `$PROJECT_DIR` (with `$HOME` stripped) | read-write | Your project files |
-| `~/.config/claude-dockerized/home/.claude/settings.json` | `/home/coder/.claude/settings.json` | **read-only** | Managed settings (permissions, hooks, sandbox, no-autoupdate) |
-| `~/.config/claude-dockerized/home/.claude/hooks-guard/` | `/home/coder/.claude/hooks-guard/` | **read-only** | Native `PreToolUse` hooks + policy data |
-| `~/.config/claude-dockerized/home/.claude/CLAUDE.md` | `/home/coder/.claude/CLAUDE.md` | **read-only** | Managed session rules |
-| `~/.config/claude-dockerized/home/.claude/.credentials.json` | `/home/coder/.claude/.credentials.json` | read-write (`0600`) | Login, persists across rebuilds |
-| `~/.config/claude-dockerized/home/.claude/plugins/` + skills/agents/commands | same under `/home/coder/.claude/` | read-write | Your plugins and skills |
-| `~/.config/claude-dockerized/home/.claude/.lsp.json` | `/home/coder/.claude/.lsp.json` | read-write | LSP config (when `setting.lsp=true`) |
+| `~/.config/claude-dockerized/home/etc/claude-code/` | `/etc/claude-code/` | **read-only** | Managed policy `managed-settings.json` (permissions, hooks, no-autoupdate), highest precedence |
+| `~/.config/claude-dockerized/home/.claude/` | `/home/coder/.claude/` | read-write | User settings (`/model`, `/config`), credentials (`0600`), plugins, skills, agents, commands, `.lsp.json`, memory |
+| `~/.config/claude-dockerized/home/.claude/hooks-guard/` | `/home/coder/.claude/hooks-guard/` | **read-only** | Native `PreToolUse` hooks + policy data (overlay) |
+| `~/.config/claude-dockerized/home/.claude/CLAUDE.md` | `/home/coder/.claude/CLAUDE.md` | **read-only** | Managed session rules (overlay) |
 | `~/.config/claude-dockerized/home/.claude.json` | `/home/coder/.claude.json` | read-write | MCP user-scope state |
 | `~/.config/claude-dockerized/home/.local/bin/` | `/home/coder/.local/bin/` | read-write | LSP/formatter binaries |
 | `~/.config/claude-dockerized/home/.local/share|state/claude/` + `.cache/claude/` | same | read-write | Sessions, history, caches |
@@ -245,8 +243,10 @@ that one directory and the whole setup travels with it. The host XDG dirs
 │   hooks/policies/*.json           ← policy pattern sets + local allowlist
 │
 └── home/                            ← mirrors /home/coder, mounted piece by piece
-    ├── .claude/
-    │   │   settings.json            ← GENERATED (managed, ro mount) — do not edit
+    ├── etc/claude-code/
+    │   │   managed-settings.json    ← GENERATED policy (ro mount at /etc/claude-code) — do not edit
+    ├── .claude/                     ← rw mount
+    │   │   settings.json            ← your preferences (/model, /config); seeded from config/user-settings.default.json
     │   │   .credentials.json        ← login, 0600, rw
     │   │   hooks-guard/             ← mirrored hooks + policies, ro mount
     │   │   CLAUDE.md                ← mirrored rules, ro mount
@@ -260,10 +260,10 @@ that one directory and the whole setup travels with it. The host XDG dirs
 Because everything lives on the host, all state persists across `docker` up/down
 cycles **and** image rebuilds:
 
-- **Editing config:** managed files are mounted **read-only**, so edit on the host (`claude-dockerized config edit` for wrapper settings). `claude mcp add/remove` and `claude plugin install/update/remove` are intentionally disabled inside the container; `claude mcp login/logout` keep working (tokens live in read-write mounts).
+- **Editing config:** the policy is mounted **read-only**, so change it on the host (`claude-dockerized config edit` for wrapper settings, then `config sync`). Your preferences are writable: use `/model` or `/config` in a session, or `claude-dockerized config claude edit`. `claude mcp add/remove` and `claude plugin install/update/remove` are intentionally disabled inside the container; `claude mcp login/logout` keep working (tokens live in read-write mounts).
 - **Security layer:** generated on the host and mirrored on every run (wrapper-managed). The hooks are versioned in the repo (`hooks/claude-guard-*.sh`); bumping `CLAUDE_DOCKERIZED_GUARD_VERSION` refreshes installs (the previous copy is backed up to `.bak`).
 - **Policy mode:** `setting.security_policy` (default `balanced`) selects which patterns the hooks enforce. `balanced` drops cloud/multi-tenant rules and common false positives while keeping the dangerous ones; `strict` enforces everything; `none` disables the vendored patterns but keeps the built-in backstops. Local exceptions live in `hooks/policies/allow-patterns.json`.
-- **No auto-updates:** `env.DISABLE_AUTOUPDATER=1` is always set in the managed settings (verify with `claude-dockerized doctor`, which also runs the native `claude doctor`). Upgrades happen only via `claude-dockerized update`, which rebuilds the image with the pinned `CLAUDE_CODE_VERSION` (default `2.1.284`; override per-build with `update --claude-version X.Y.Z`).
+- **No auto-updates:** `env.DISABLE_AUTOUPDATER=1` is always set in the managed policy (verify with `claude-dockerized doctor`, which also runs the native `claude doctor`). Upgrades happen only via `claude-dockerized update`, which rebuilds the image with the pinned `CLAUDE_CODE_VERSION` (default `2.1.284`; override per-build with `update --claude-version X.Y.Z`).
 
 ### Custom Global Configuration (Optional)
 
@@ -556,7 +556,7 @@ This significantly reduces risk while maintaining full functionality.
 
 1. **Docker Socket (opt-in)**: Not mounted by default. Set `setting.docker_socket=true` to use the host's Docker daemon — it is root-equivalent on the host, so enable it only when required.
 2. **Network Access**: Container uses host network mode by default for convenience (`setting.network=bridge` for more isolation)
-3. **Configuration Updates**: Managed files (`settings.json`, hooks) live in the generated home and are mounted **read-only**; modify wrapper settings on the host (`config edit`) and re-run. Auth/MCP-OAuth live in read-write mounts, so `auth`/`mcp login` keep working
+3. **Configuration Updates**: The managed policy and hooks live in the generated home and are mounted **read-only**; modify wrapper settings on the host (`config edit`) and re-run. Auth/MCP-OAuth live in read-write mounts, so `auth`/`mcp login` keep working
 4. **Persistent Data**: Project files plus the whole `~/.config/claude-dockerized/home/` state tree persist across restarts and rebuilds
 5. **No sudo/apt inside**: The image ships no sudo — the agent runs as the host user, never as root, with all Linux capabilities dropped and `no-new-privileges` set, so it cannot escalate by design
 6. **No self-updates**: Claude Code never updates itself inside the container (`DISABLE_AUTOUPDATER=1`); use `claude-dockerized update`
