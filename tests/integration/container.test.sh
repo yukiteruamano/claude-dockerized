@@ -8,6 +8,9 @@
 # project and scratch dir, arbitrary host UIDs. Then runs the guard suites
 # inside the image so the image's own bash/jq/node versions are what is tested.
 #
+# Threats: T-04, T-21 (setuid inventory), T-22 (strict rootfs), T-28 (no
+# capabilities, no_new_privs) - see docs/security/THREAT-MODEL.md.
+#
 # Usage: bash tests/integration/container.test.sh   (IMAGE=... to override)
 # shellcheck disable=SC2016,SC2034,SC2317  # probe scripts expand in the container; globals feed config-lib
 

@@ -11,6 +11,9 @@
 // Staging mirrors production: hooks + guard-eval.js + policies/*.json are
 // copied next to each other exactly like ensure_claude_dockerized_config does.
 //
+// Threats: T-19 (environment dumps), T-25 (cloud metadata), T-26 (secret
+// file reads, symlink escapes) - see docs/security/THREAT-MODEL.md.
+//
 // Usage: node tests/claude-guard.test.mjs
 
 import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync } from "node:fs";
