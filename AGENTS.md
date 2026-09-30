@@ -15,8 +15,14 @@ Shell script-based Docker wrapper for running [Claude Code](https://code.claude.
 - `hooks/claude-guard-bash.sh`, `hooks/claude-guard-file.sh` — Versioned native `PreToolUse` hooks (source of truth; copied into the user config by `lib/config-lib.sh`)
 - `hooks/guard-eval.js` — Vendored-pattern evaluator used by the bash hook (exact JS RegExp semantics)
 - `policies/` — Vendored policy pattern sets + local `allow-patterns.json` (see `policies/README.md`)
-- `tests/claude-guard.test.mjs` — Security-policy regression tests
+- `tests/run-all.sh` — Runs every suite (`--integration` adds the Docker runtime test, `--verbose` lists known gaps)
+- `tests/claude-guard.test.mjs` — Security-policy regression tests (a deny is exit 2 exactly)
+- `tests/guard-bypass-corpus.test.mjs` + `tests/fixtures/guard-corpus.json` — Data-driven Red-team bypass corpus, tagged by threat id
+- `tests/guard-failure-modes.test.mjs`, `tests/guard-tool-coverage.test.mjs`, `tests/guard-eval.test.mjs`, `tests/merge-settings.test.mjs` — Guard fail-closed behaviour, hook wiring, policy data integrity, settings merge
 - `tests/wrapper-args.test.sh` — Wrapper mount/env contract test (no Docker)
+- `tests/wrapper-dryrun.test.sh`, `tests/mounts.test.sh`, `tests/config-parse.test.sh`, `tests/self-update.test.sh`, `tests/cli-contract.test.sh` — Full `docker run` argv via a docker stub, mount/path validation, config parsing, self-update against a local bare origin, help/completion drift
+- `tests/integration/container.test.sh` — Container runtime contract (non-root, zero caps, no_new_privs, read-only mounts); skips without Docker
+- `tests/lib/` — Shared helpers (`assert.sh`, `hook-runner.mjs`); known gaps are XFAIL and turn red once fixed
 - `SECURITY.md`, `CONTRIBUTING.md` — Security model and contribution guide
 - `examples/config.example` — Example user config (INI-style)
 - `.dockerignore` — Excludes non-essential files from Docker build context
@@ -55,8 +61,10 @@ shellcheck -x -S warning bin/* lib/*.sh install.sh completions/*.sh hooks/*.sh  
 cat Dockerfile | docker run --rm -i hadolint/hadolint:latest hadolint -   # Lint Dockerfile
 node --check hooks/guard-eval.js    # Syntax-check the policy evaluator
 node --check lib/merge-settings.js  # Syntax-check the settings merge helper
-node tests/claude-guard.test.mjs    # Security-policy regression tests (Node 22+)
-bash tests/wrapper-args.test.sh     # Wrapper mount/env contract test (no Docker)
+bash tests/run-all.sh               # Every suite (Node 22+, no Docker); --verbose lists known gaps
+bash tests/run-all.sh --integration # + container runtime contract (needs Docker)
+node tests/claude-guard.test.mjs    # Single suite, e.g. the security-policy regression tests
+uvx --from shellcheck-py shellcheck -x -S warning bin/* lib/*.sh tests/*.sh   # ShellCheck without a local install
 
 # Docker operations
 docker build -t claude-dockerized:latest .                    # Manual build
@@ -64,7 +72,7 @@ docker build --no-cache -t claude-dockerized:latest .         # Force rebuild (n
 docker run --rm claude-dockerized:latest claude --version     # Verify version
 ```
 
-`bash -n`, `shellcheck`, `hadolint` and the policy test are the checks CI runs (`.github/workflows/ci.yml`). `shellcheck` is not installed in the container — run it via the `koalaman/shellcheck` image or install it on your host.
+`bash -n`, `shellcheck`, `hadolint`, `tests/run-all.sh`, a jq/python3-free guard job and the Docker integration job are what CI runs (`.github/workflows/ci.yml`, actions pinned by SHA). `shellcheck` is not installed in the container — use `uvx --from shellcheck-py shellcheck` or the `koalaman/shellcheck` image.
 
 ## Code Style Guidelines
 
