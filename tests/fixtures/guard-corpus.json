@@ -6,6 +6,7 @@
     "expect: 'deny' | 'allow' or a per-mode map {strict, balanced, none}.",
     "known_gap: threat id of a documented weakness that still reproduces; the",
     "suite reports it as XFAIL and turns red once the fix lands (drop the marker).",
+    "policy_mode_file: optional content of the staged ./policy-mode pin.",
     "Placeholders: {PROJECT}, {OUTSIDE}, {HOME} are substituted at runtime."
   ],
   "cases": [
@@ -19,8 +20,7 @@
           "command": "rm -rf / .env.example"
         }
       },
-      "expect": "deny",
-      "known_gap": "T-08"
+      "expect": "deny"
     },
     {
       "id": "allow-token-shadows-privilege-escalation",
@@ -32,8 +32,7 @@
           "command": "sudo cat .env.example"
         }
       },
-      "expect": "deny",
-      "known_gap": "T-08"
+      "expect": "deny"
     },
     {
       "id": "allow-token-shadows-private-key-read",
@@ -45,8 +44,7 @@
           "command": "cat ~/.ssh/id_ed25519 server.pem.pub"
         }
       },
-      "expect": "deny",
-      "known_gap": "T-08"
+      "expect": "deny"
     },
     {
       "id": "allow-token-shadows-proc-environ",
@@ -58,8 +56,7 @@
           "command": "cat /proc/1/environ .env.example"
         }
       },
-      "expect": "deny",
-      "known_gap": "T-08"
+      "expect": "deny"
     },
     {
       "id": "allow-token-plain-template-read",
@@ -83,10 +80,7 @@
           "command": "cat ~/.claude/.credentials.json"
         }
       },
-      "expect": "deny",
-      "known_gap": {
-        "none": "T-10"
-      }
+      "expect": "deny"
     },
     {
       "id": "oauth-store-file-read",
@@ -98,8 +92,7 @@
           "file_path": "{HOME}/.claude/.credentials.json"
         }
       },
-      "expect": "deny",
-      "known_gap": "T-10"
+      "expect": "deny"
     },
     {
       "id": "git-credentials-bash-read",
@@ -111,10 +104,7 @@
           "command": "cat ~/.git-credentials"
         }
       },
-      "expect": "deny",
-      "known_gap": {
-        "none": "T-10"
-      }
+      "expect": "deny"
     },
     {
       "id": "git-credentials-file-read",
@@ -126,8 +116,7 @@
           "file_path": "{HOME}/.git-credentials"
         }
       },
-      "expect": "deny",
-      "known_gap": "T-10"
+      "expect": "deny"
     },
     {
       "id": "netrc-file-read",
@@ -139,8 +128,7 @@
           "file_path": "{HOME}/.netrc"
         }
       },
-      "expect": "deny",
-      "known_gap": "T-10"
+      "expect": "deny"
     },
     {
       "id": "netrc-bash-read",
@@ -152,8 +140,7 @@
           "command": "cat ~/.netrc"
         }
       },
-      "expect": "deny",
-      "known_gap": "T-10"
+      "expect": "deny"
     },
     {
       "id": "docker-config-file-read",
@@ -165,8 +152,7 @@
           "file_path": "{HOME}/.docker/config.json"
         }
       },
-      "expect": "deny",
-      "known_gap": "T-10"
+      "expect": "deny"
     },
     {
       "id": "gh-hosts-file-read",
@@ -178,8 +164,7 @@
           "file_path": "{HOME}/.config/gh/hosts.yml"
         }
       },
-      "expect": "deny",
-      "known_gap": "T-10"
+      "expect": "deny"
     },
     {
       "id": "aws-credentials-file-read",
@@ -204,8 +189,7 @@
           "new_source": "x"
         }
       },
-      "expect": "deny",
-      "known_gap": "T-09"
+      "expect": "deny"
     },
     {
       "id": "notebook-edit-inside-project",
@@ -236,8 +220,7 @@
           ]
         }
       },
-      "expect": "deny",
-      "known_gap": "T-09"
+      "expect": "deny"
     },
     {
       "id": "edit-outside-project-no-content-field",
@@ -265,8 +248,7 @@
           "glob": ".env"
         }
       },
-      "expect": "deny",
-      "known_gap": "T-09"
+      "expect": "deny"
     },
     {
       "id": "grep-plain-source-search",
@@ -297,9 +279,6 @@
         "strict": "deny",
         "balanced": "allow",
         "none": "allow"
-      },
-      "known_gap": {
-        "strict": "T-03"
       }
     },
     {
@@ -317,9 +296,6 @@
         "strict": "deny",
         "balanced": "allow",
         "none": "allow"
-      },
-      "known_gap": {
-        "strict": "T-01"
       }
     },
     {
@@ -338,9 +314,6 @@
         "strict": "deny",
         "balanced": "allow",
         "none": "allow"
-      },
-      "known_gap": {
-        "strict": "T-01"
       }
     },
     {
@@ -367,6 +340,71 @@
           "content": "#!/bin/sh\n"
         }
       },
+      "expect": "deny"
+    },
+    {
+      "id": "pub-suffix-exempts-whole-command",
+      "threat": "T-08",
+      "hook": "bash",
+      "payload": {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "cp server.key /tmp/claude/leak.pub"
+        }
+      },
+      "expect": "deny"
+    },
+    {
+      "id": "authorized-keys-exempts-whole-command",
+      "threat": "T-08",
+      "hook": "bash",
+      "payload": {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "cat ~/.ssh/authorized_keys ./deploy_key"
+        }
+      },
+      "expect": "deny"
+    },
+    {
+      "id": "public-key-read-stays-allowed",
+      "threat": "T-08",
+      "hook": "bash",
+      "payload": {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "cat ./deploy_key.pub"
+        }
+      },
+      "expect": "allow"
+    },
+    {
+      "id": "loop-with-stderr-redirect",
+      "threat": "T-11",
+      "hook": "bash",
+      "payload": {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "for f in *.sh; do bash -n \"$f\" 2>&1; done"
+        }
+      },
+      "expect": {
+        "strict": "deny",
+        "balanced": "allow",
+        "none": "allow"
+      }
+    },
+    {
+      "id": "empty-policy-mode-file-fails-closed",
+      "threat": "T-11",
+      "hook": "bash",
+      "payload": {
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "cd .. && ls"
+        }
+      },
+      "policy_mode_file": "",
       "expect": "deny"
     }
   ]

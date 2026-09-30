@@ -39,13 +39,16 @@ const hook = (script, mode, payload, env = {}) =>
 
 const bashEval = (mode) => (value) =>
   hook("claude-guard-bash.sh", mode, { tool_name: "Bash", tool_input: { command: value } });
+// Real payload shapes: Write carries content, Edit old/new strings, reads a path.
+const FILE_INPUT = {
+  Write: (p) => ({ file_path: p, content: "x" }),
+  Edit: (p) => ({ file_path: p, old_string: "a", new_string: "b" }),
+  Read: (p) => ({ file_path: p }),
+  Grep: (p) => ({ pattern: "KEY", path: p }),
+  Glob: (p) => ({ pattern: p }),
+};
 const fileEval = (mode, action) => (value) =>
-  hook(
-    "claude-guard-file.sh",
-    mode,
-    { tool_input: { file_path: value }, tool_name: action },
-    { CLAUDE_DOCKERIZED_TEST_ACTION: action.toLowerCase() },
-  );
+  hook("claude-guard-file.sh", mode, { tool_name: action, tool_input: FILE_INPUT[action](value) });
 
 let failures = 0;
 const assert = (mode, kind, value, got, want) => {

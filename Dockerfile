@@ -123,6 +123,15 @@ RUN set -e; \
     ls -la /usr/local/bin/claude; \
     test -f /usr/local/bin/claude && test ! -L /usr/local/bin/claude && test -x /usr/local/bin/claude; \
     command -v claude && command -v uv && claude --version
+
+# Root-owned node for the guard hooks' trusted path (T-04). The hooks never
+# use the inherited PATH (the session-writable ~/.local/bin comes first) and
+# the NVM tree under the group-writable home can be modified by the session,
+# so the policy evaluator runs from this read-only copy instead. Users keep
+# the NVM node (and nvm switching) on their own PATH.
+RUN install -d -m 0755 /usr/local/lib/claude-dockerized/bin && \
+    install -m 0755 "$(readlink -f /home/coder/.nvm/default/node)" /usr/local/lib/claude-dockerized/bin/node && \
+    /usr/local/lib/claude-dockerized/bin/node --version
 USER coder
 
 # Create the writable home tree, owned by coder and group-writable (g+rwX) so
