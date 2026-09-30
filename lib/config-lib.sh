@@ -37,61 +37,17 @@ CCODE_BIN_DIR="$CCODE_INSTALL_DIR/bin"
 CCODE_BIN_PATH_LINE='export PATH="$HOME/.local/share/claude-dockerized/bin:$PATH"'
 
 # ============================================
-# COLOR DEFINITIONS (with defaults if not set)
+# OUTPUT (colors, symbols, stdout/stderr levels: see lib/ui-lib.sh)
 # ============================================
 
-: "${RED:='\033[0;31m'}"
-: "${GREEN:='\033[0;32m'}"
-: "${YELLOW:='\033[1;33m'}"
-: "${BLUE:='\033[0;34m'}"
-: "${NC:='\033[0m'}"
+# shellcheck source=lib/ui-lib.sh
+source "$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/ui-lib.sh"
 
-# Honor NO_COLOR (https://no-color.org) and dumb terminals: strip ANSI codes.
-# Applied here so every script sourcing this library (wrapper, setup,
-# run-simple, tests) respects it without further changes.
-if [ -n "${NO_COLOR:-}" ] || [ "${TERM:-}" = "dumb" ]; then
-    RED=''
-    GREEN=''
-    YELLOW=''
-    BLUE=''
-    NC=''
-fi
-
-# ============================================
-# LOGGING FUNCTIONS (use caller's style if available)
-# ============================================
-
-config_info() {
-    if type print_info >/dev/null 2>&1; then
-        print_info "$1"
-    else
-        echo -e "${BLUE}ℹ${NC} $1"
-    fi
-}
-
-config_success() {
-    if type print_success >/dev/null 2>&1; then
-        print_success "$1"
-    else
-        echo -e "${GREEN}✓${NC} $1"
-    fi
-}
-
-config_warning() {
-    if type print_warning >/dev/null 2>&1; then
-        print_warning "$1"
-    else
-        echo -e "${YELLOW}⚠${NC} $1"
-    fi
-}
-
-config_error() {
-    if type print_error >/dev/null 2>&1; then
-        print_error "$1"
-    else
-        echo -e "${RED}✗${NC} $1"
-    fi
-}
+# Library-level names for the shared output helpers.
+config_info() { print_info "$1"; }
+config_success() { print_success "$1"; }
+config_warning() { print_warning "$1"; }
+config_error() { print_error "$1"; }
 
 # Point TMPDIR at a private, user-owned 0700 dir unless the caller already set
 # one (T-17). The former default, a fixed /tmp/claude, is predictable and
@@ -2179,7 +2135,11 @@ EOF
 # save_config can re-emit it unchanged (re-running setup never renames keys).
 load_config() {
     if ! config_exists; then
-        config_warning "Config file not found at $CONFIG_FILE"
+        # Defaults are valid: say it once per invocation, as information.
+        if [ -z "${_CONFIG_MISSING_NOTED:-}" ]; then
+            config_info "No config file yet ($CONFIG_FILE): using defaults. Create it with: claude-dockerized install --only config"
+            _CONFIG_MISSING_NOTED=1
+        fi
         return 1
     fi
 
@@ -2187,7 +2147,7 @@ load_config() {
     CUSTOM_MOUNT_KEYS=()
 
     # Read mounts (lines starting with "mount.")
-    while IFS='=' read -r key value; do
+    while IFS='=' read -r key value || [ -n "$key" ]; do
         # Skip comments and non-mount lines
         [[ "$key" =~ ^[[:space:]]*# ]] && continue
         [[ "$key" =~ ^[[:space:]]*mount\. ]] || continue
@@ -2208,7 +2168,7 @@ load_config() {
     # passthrough was removed; secrets now live in setting.env_file. Entries
     # are ignored with a warning telling how to migrate (see
     # migrate_legacy_env_vars for the interactive one-shot migration).
-    while IFS='=' read -r key value; do
+    while IFS='=' read -r key value || [ -n "$key" ]; do
         [[ "$key" =~ ^[[:space:]]*# ]] && continue
         [[ "$key" =~ ^[[:space:]]*env\. ]] || continue
         key="${key#"${key%%[![:space:]]*}"}"
@@ -2243,7 +2203,7 @@ load_config() {
     LSP_ENABLED=false
     LSP_SERVERS="ts,python"
     FORMATTERS_ENABLED=false
-    while IFS='=' read -r key value; do
+    while IFS='=' read -r key value || [ -n "$key" ]; do
         [[ "$key" =~ ^[[:space:]]*# ]] && continue
         [[ "$key" =~ ^[[:space:]]*setting\. ]] || continue
         # Trim whitespace and keep the suffix after "setting."
@@ -2950,9 +2910,10 @@ prompt_custom_mounts() {
             mode="rw"
         fi
 
-        # Add the mount
-        add_mount "$host_path" "$container_path" "$mode"
-        config_success "Added mount: $host_path -> $container_path${mode:+ ($mode)}"
+        # Add the mount (add_mount explains a refusal itself).
+        if add_mount "$host_path" "$container_path" "$mode"; then
+            config_success "Added mount: $host_path -> $container_path${mode:+ ($mode)}"
+        fi
         echo ""
     done
 }
@@ -3276,8 +3237,10 @@ prompt_security_policy() {
 prompt_memory() {
     echo ""
     config_info "Container Memory Limit (optional)"
-    read -r -p "Memory limit, e.g. 4g (empty = no limit) [${MEMORY:-(none)}]: " memory || memory=""
+    read -r -p "Memory limit, e.g. 4g ('none' = no limit, Enter keeps) [${MEMORY:-none}]: " memory || memory=""
     if [ -z "$memory" ]; then
+        config_info "Memory limit: ${MEMORY:-none}"
+    elif [ "$memory" = none ]; then
         MEMORY=""
         config_info "No memory limit"
     elif [[ "$memory" =~ ^[0-9]+[bBkKmMgG]$ ]]; then
@@ -3291,8 +3254,10 @@ prompt_memory() {
 prompt_cpus() {
     echo ""
     config_info "Container CPU Limit (optional)"
-    read -r -p "CPU limit, e.g. 2 (empty = no limit) [${CPUS:-(none)}]: " cpus || cpus=""
+    read -r -p "CPU limit, e.g. 2 ('none' = no limit, Enter keeps) [${CPUS:-none}]: " cpus || cpus=""
     if [ -z "$cpus" ]; then
+        config_info "CPU limit: ${CPUS:-none}"
+    elif [ "$cpus" = none ]; then
         CPUS=""
         config_info "No CPU limit"
     elif [[ "$cpus" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
@@ -3328,8 +3293,10 @@ prompt_model() {
 prompt_cleanup_days() {
     echo ""
     config_info "Session-Data Retention (optional)"
-    read -r -p "Retention in days (empty = Claude default) [${CLEANUP_DAYS:-(default)}]: " cleanup || cleanup=""
+    read -r -p "Retention in days ('default' = Claude default, Enter keeps) [${CLEANUP_DAYS:-default}]: " cleanup || cleanup=""
     if [ -z "$cleanup" ]; then
+        config_info "Retention: ${CLEANUP_DAYS:-Claude default}"
+    elif [ "$cleanup" = default ]; then
         CLEANUP_DAYS=""
         config_info "Claude default retention"
     elif [[ "$cleanup" =~ ^[0-9]+$ ]]; then
@@ -3347,7 +3314,10 @@ prompt_lsp() {
     echo "Installs language-server binaries into the generated home"
     echo "(~/.local/bin) and writes .lsp.json. Servers: go,ts,python,rust."
     echo ""
-    read -r -p "Enable LSP support? (y/N): " lsp_answer || lsp_answer=""
+    local lsp_hint="y/N"
+    [ "$LSP_ENABLED" = true ] && lsp_hint="Y/n"
+    read -r -p "Enable LSP support? ($lsp_hint): " lsp_answer || lsp_answer=""
+    [ -z "$lsp_answer" ] && [ "$LSP_ENABLED" = true ] && lsp_answer=y
     if [[ "$lsp_answer" =~ ^[Yy]$ ]]; then
         LSP_ENABLED=true
         read -r -p "Servers (csv) [$LSP_SERVERS]: " servers || servers=""
@@ -3373,7 +3343,10 @@ prompt_formatters() {
     echo "Installs formatter binaries into the generated home and enables"
     echo "the formatter plugins."
     echo ""
-    read -r -p "Enable formatters? (y/N): " fmt_answer || fmt_answer=""
+    local fmt_hint="y/N"
+    [ "$FORMATTERS_ENABLED" = true ] && fmt_hint="Y/n"
+    read -r -p "Enable formatters? ($fmt_hint): " fmt_answer || fmt_answer=""
+    [ -z "$fmt_answer" ] && [ "$FORMATTERS_ENABLED" = true ] && fmt_answer=y
     if [[ "$fmt_answer" =~ ^[Yy]$ ]]; then
         FORMATTERS_ENABLED=true
         config_success "Formatters enabled"
@@ -3484,7 +3457,7 @@ print_config() {
     fi
     echo "  Model: ${CLAUDE_MODEL:-(default)}"
     echo "  Session retention: ${CLEANUP_DAYS:-(default)} days"
-    echo "  LSP: $LSP_ENABLED${LSP_ENABLED:+ ($LSP_SERVERS)}"
+    if [ "$LSP_ENABLED" = true ]; then echo "  LSP: true ($LSP_SERVERS)"; else echo "  LSP: false"; fi
     echo "  Formatters: $FORMATTERS_ENABLED"
 
     if [ ${#CUSTOM_MOUNTS[@]} -gt 0 ]; then
