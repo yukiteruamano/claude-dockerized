@@ -250,10 +250,12 @@ if grep -qE 'npm (install|add).*(-g|@anthropic)|pnpm add -g.*@opencode' "$docker
 fi
 grep -Eq '^FROM debian:trixie-slim' "$dockerfile" ||
     fail "Dockerfile must stay on debian:trixie-slim"
-grep -q 'nvm install --lts' "$dockerfile" ||
-    fail "Dockerfile must keep NVM Node LTS"
-grep -q 'astral.sh/uv/install.sh' "$dockerfile" ||
-    fail "Dockerfile must keep uv"
+# Node (an exact LTS release via NVM) and uv stay; their pins are checked in
+# tests/supply-chain.test.sh.
+grep -q 'nvm install ${NODE_VERSION}' "$dockerfile" ||
+    fail "Dockerfile must keep Node via NVM (pinned NODE_VERSION)"
+grep -q 'astral.sh/uv/${UV_VERSION}/install.sh' "$dockerfile" ||
+    fail "Dockerfile must keep uv (pinned UV_VERSION)"
 grep -Eq '^CMD \["claude"\]' "$dockerfile" ||
     fail 'Dockerfile CMD must be ["claude"]'
 
