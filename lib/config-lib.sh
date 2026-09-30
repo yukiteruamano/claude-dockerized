@@ -858,20 +858,35 @@ check_security_layer() {
         stale=true
     fi
 
-    # The managed settings.json must carry the current markers (sync
-    # regenerates it with a merge when it predates the template).
-    local managed_settings="$CCODE_HOME/.claude/settings.json"
-    if [ -f "$managed_settings" ] && grep -q 'DISABLE_AUTOUPDATER' "$managed_settings" 2>/dev/null && grep -q 'disableBypassPermissionsMode' "$managed_settings" 2>/dev/null && grep -q 'claude-guard-bash.sh' "$managed_settings" 2>/dev/null && grep -q 'private-keys-v1.d' "$managed_settings" 2>/dev/null; then
-        local v=0; json_valid "$managed_settings" || v=$?
-        if [ "$v" -eq 0 ]; then
-            config_success "settings.json managed (in sync)"
-        else
-            config_warning "settings.json is not valid JSON (regenerated on sync)"
-            stale=true
-        fi
+    # The managed policy must match a fresh render of the repo template for
+    # the current wrapper config (sync rewrites it otherwise).
+    local managed_settings="$CCODE_HOME/etc/claude-code/managed-settings.json" rendered
+    rendered=$(mktemp 2>/dev/null) || rendered=""
+    if [ -n "$rendered" ] && write_managed_settings "$rendered" && cmp -s "$rendered" "$managed_settings"; then
+        config_success "managed-settings.json (in sync)"
     else
-        config_warning "settings.json managed stale or missing"
+        config_warning "managed-settings.json stale or missing"
         stale=true
+    fi
+    [ -n "$rendered" ] && rm -f "$rendered"
+
+    # The user settings must exist, parse, and no longer carry the legacy
+    # wrapper policy (sync migrates it).
+    local user_settings="$CCODE_HOME/.claude/settings.json" v=0
+    if [ ! -f "$user_settings" ]; then
+        config_warning "user settings.json missing (seeded on sync)"
+        stale=true
+    elif grep -q 'claude-guard-bash.sh' "$user_settings" 2>/dev/null; then
+        config_warning "user settings.json still carries the legacy policy (migrated on sync)"
+        stale=true
+    else
+        json_valid "$user_settings" || v=$?
+        if [ "$v" -eq 1 ]; then
+            config_warning "user settings.json is not valid JSON (reseeded on sync)"
+            stale=true
+        else
+            config_success "user settings.json (writable preferences)"
+        fi
     fi
 
     # Managed session rules must carry the current markers (sync regenerates
