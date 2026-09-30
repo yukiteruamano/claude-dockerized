@@ -8,8 +8,12 @@ Shell script-based Docker wrapper for running [Claude Code](https://code.claude.
 - `bin/claude-dockerized` — Main wrapper, no extension (build, run, auth, models, exec, mcp, plugin, stats, debug, doctor, install, upgrade, update, config, clean commands). Reached via `<install>/bin` on PATH; nothing lives in `~/.local/bin`. `bin/` holds only this binary.
 - `install.sh` — Curl-able bootstrap: runs the local `bin/claude-dockerized install` when present, else clones to `~/.local/share/claude-dockerized` and runs it there (full setup in one shot, no second manual install)
 - `lib/config-lib.sh` — Shared library sourced by other scripts (config parsing, mount/env arg building, shared volume logic, interactive prompts, installs the security layer). **Not executable directly.**
-- `config/managed-settings.json`, `config/user-settings.default.json` — Managed Claude policy template and user-settings defaults (source of truth; rendered/seeded by `lib/config-lib.sh`)
-- `lib/migrate-settings.js` — Migrates a legacy combined `settings.json` to user scope
+- `lib/ui-lib.sh` — Output helpers (`print_info`/`print_success` → stdout, `print_warning`/`print_error` → stderr; color only on a TTY, `NO_COLOR`/`--no-color`/`CLICOLOR_FORCE`, ASCII symbols outside UTF-8). Sourced by `config-lib.sh`. **Not executable directly.**
+- `lib/update-lib.sh` — Verified self-update: local trust store (`$CONFIG_DIR/trust`), signature verification, origin pin, target selection, preview, rollback state (`$CONFIG_DIR/state`). **Not executable directly.**
+- `lib/diag-lib.sh` — Docker preflight with remediation, host `doctor` checks (`--json`), `version`. **Not executable directly.**
+- `lib/help-lib.sh` — `help [COMMAND]` / `<command> --help` texts. **Not executable directly.**
+- `lib/doctor-container.sh` — Diagnostics run inside the container by `doctor` (passed as `bash -c`; never on the host)
+- `lib/integrity-lib.sh` — Session integrity check: fingerprints persistent paths (project git hooks/config and Claude settings, `~/.local/bin`, plugins, skills, MCP servers, `~/.composio`) before/after each run and logs changes to `$CONFIG_DIR/audit/sessions.jsonl`. Sourced by `config-lib.sh`. **Not executable directly.**
 - `lib/install-lib.sh` — Install wizard library sourced by the wrapper's `install` command (`--yes`, `--only config,completions,aliases,global[,path][,build]`). **Not executable directly.**
 - `Dockerfile` — Container image (Debian trixie-slim + Node.js/NVM + uv + Claude Code native binary v2.1.284, no sudo, no npm install)
 - `entrypoint.sh` — Container entrypoint (unprivileged; resolves workdir, loads NVM, execs the command)
@@ -17,8 +21,16 @@ Shell script-based Docker wrapper for running [Claude Code](https://code.claude.
 - `hooks/claude-guard-bash.sh`, `hooks/claude-guard-file.sh` — Versioned native `PreToolUse` hooks (source of truth; copied into the user config by `lib/config-lib.sh`)
 - `hooks/guard-eval.js` — Vendored-pattern evaluator used by the bash hook (exact JS RegExp semantics)
 - `policies/` — Vendored policy pattern sets + local `allow-patterns.json` (see `policies/README.md`)
-- `tests/claude-guard.test.mjs` — Security-policy regression tests
+- `tests/run-all.sh` — Runs every suite (`--integration` adds the Docker runtime test, `--verbose` lists known gaps)
+- `tests/claude-guard.test.mjs` — Security-policy regression tests (a deny is exit 2 exactly)
+- `tests/guard-bypass-corpus.test.mjs` + `tests/fixtures/guard-corpus.json` — Data-driven Red-team bypass corpus, tagged by threat id
+- `tests/guard-failure-modes.test.mjs`, `tests/guard-tool-coverage.test.mjs`, `tests/guard-eval.test.mjs`, `tests/merge-settings.test.mjs` — Guard fail-closed behaviour, hook wiring, policy data integrity, settings merge
 - `tests/wrapper-args.test.sh` — Wrapper mount/env contract test (no Docker)
+- `tests/wrapper-dryrun.test.sh`, `tests/mounts.test.sh`, `tests/config-parse.test.sh`, `tests/self-update.test.sh`, `tests/cli-contract.test.sh` — Full `docker run` argv via a docker stub, mount/path validation, config parsing, self-update against a local bare origin, help/completion drift
+- `tests/integration/container.test.sh` — Container runtime contract (non-root, zero caps, no_new_privs, read-only mounts); skips without Docker
+- `tests/threat-matrix.test.sh`, `tests/hardening.test.sh`, `tests/integrity.test.sh`, `tests/supply-chain.test.sh`, `tests/lsp-install.test.sh`, `tests/ui.test.sh`, `tests/entrypoint.test.sh` — Docs↔tests traceability, hardening profiles, session integrity, supply-chain pins, LSP installs, CLI output, entrypoint PATH
+- `docs/security/` — THREAT-MODEL (T-01…T-30), RED, BLUE, YELLOW; `SECURITY.md` is the index
+- `tests/lib/` — Shared helpers (`assert.sh`, `hook-runner.mjs`); known gaps are XFAIL and turn red once fixed
 - `SECURITY.md`, `CONTRIBUTING.md` — Security model and contribution guide
 - `examples/config.example` — Example user config (INI-style)
 - `.dockerignore` — Excludes non-essential files from Docker build context
@@ -32,16 +44,19 @@ Shell script-based Docker wrapper for running [Claude Code](https://code.claude.
 bin/claude-dockerized build             # Build Docker image (uses layer cache)
 bin/claude-dockerized run [DIR]         # Run Claude Code (default: current dir)
 bin/claude-dockerized auth              # Authenticate (claude auth login)
-bin/claude-dockerized upgrade --check   # Check for updates from GitHub (full upgrade: git pull + sync + rebuild)
-bin/claude-dockerized update [--check|--yes|--no-build|--claude-version X]  # Full upgrade: git pull + sync + image rebuild
+bin/claude-dockerized update --check     # 0 up to date, 100 update available, 1 error
+bin/claude-dockerized update [--dry-run|--yes|--no-build|--channel tags|branch|--claude-version X]  # Verified update: signed tag, preview, ff, sync, rebuild
+bin/claude-dockerized update --trust-key FILE  # Pin a release-signing key (interactive fingerprint confirmation)
+bin/claude-dockerized rollback [--yes]  # Undo the last update (checkout + :prev image)
 claude-dockerized models            # Show effective default model
 claude-dockerized exec MSG          # Non-interactive prompt (claude -p)
 claude-dockerized mcp [ARGS]        # Manage MCP servers (list|get|login|logout; add/remove are host-only)
 claude-dockerized plugin [ARGS]     # Manage plugins (list|check; install/update/remove are host-only)
 claude-dockerized stats             # Local session-storage statistics
 claude-dockerized debug [ARGS]      # Debug helpers (paths|doctor, default: paths)
-claude-dockerized doctor            # Diagnose install, guard, SSH/GPG, settings, LSP and env file
-claude-dockerized version           # Show wrapper, guard and Claude Code versions
+claude-dockerized doctor [--json]   # Host + container checks, summary, exit 1 on failure
+claude-dockerized version [--json]  # Wrapper, guard, policy, pinned/image Claude versions (no Docker needed)
+claude-dockerized help [COMMAND]    # Overview or one command's help (also: COMMAND --help)
 claude-dockerized config show       # Show parsed configuration
 claude-dockerized config edit       # Edit config in $EDITOR
 claude-dockerized config path       # Print config file path
@@ -56,9 +71,11 @@ bash -n lib/*.sh completions/*.sh hooks/*.sh            # Syntax-check lib + com
 shellcheck -x -S warning bin/* lib/*.sh install.sh completions/*.sh hooks/*.sh   # Lint (config in .shellcheckrc)
 cat Dockerfile | docker run --rm -i hadolint/hadolint:latest hadolint -   # Lint Dockerfile
 node --check hooks/guard-eval.js    # Syntax-check the policy evaluator
-node --check lib/migrate-settings.js  # Syntax-check the settings migration helper
-node tests/claude-guard.test.mjs    # Security-policy regression tests (Node 22+)
-bash tests/wrapper-args.test.sh     # Wrapper mount/env contract test (no Docker)
+node --check lib/merge-settings.js  # Syntax-check the settings merge helper
+bash tests/run-all.sh               # Every suite (Node 22+, no Docker); --verbose lists known gaps
+bash tests/run-all.sh --integration # + container runtime contract (needs Docker)
+node tests/claude-guard.test.mjs    # Single suite, e.g. the security-policy regression tests
+uvx --from shellcheck-py shellcheck -x -S warning bin/* lib/*.sh tests/*.sh   # ShellCheck without a local install
 
 # Docker operations
 docker build -t claude-dockerized:latest .                    # Manual build
@@ -66,7 +83,7 @@ docker build --no-cache -t claude-dockerized:latest .         # Force rebuild (n
 docker run --rm claude-dockerized:latest claude --version     # Verify version
 ```
 
-`bash -n`, `shellcheck`, `hadolint` and the policy test are the checks CI runs (`.github/workflows/ci.yml`). `shellcheck` is not installed in the container — run it via the `koalaman/shellcheck` image or install it on your host.
+`bash -n`, `shellcheck`, `hadolint`, `tests/run-all.sh`, a jq/python3-free guard job and the Docker integration job are what CI runs (`.github/workflows/ci.yml`, actions pinned by SHA). `shellcheck` is not installed in the container — use `uvx --from shellcheck-py shellcheck` or the `koalaman/shellcheck` image.
 
 ## Code Style Guidelines
 
@@ -118,21 +135,21 @@ source "$REPO_ROOT/lib/config-lib.sh"
 
 ### Color Output / Logging
 
+Use the helpers from `lib/ui-lib.sh` (sourced through `lib/config-lib.sh`);
+never hard-code ANSI escapes or `echo -e`:
+
 ```bash
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
-print_error()   { echo -e "${RED}✗${NC} $1"; }
-print_success() { echo -e "${GREEN}✓${NC} $1"; }
-print_warning() { echo -e "${YELLOW}⚠${NC} $1"; }
-print_info()    { echo -e "${BLUE}ℹ${NC} $1"; }
+print_info "..."     # stdout
+print_success "..."  # stdout
+print_warning "..."  # stderr
+print_error "..."    # stderr
 ```
 
-In `lib/config-lib.sh`, use fallback wrappers that delegate to caller's functions if defined:
-```bash
-config_info() {
-    if type print_info >/dev/null 2>&1; then print_info "$1"
-    else echo -e "${BLUE}ℹ${NC} $1"; fi
-}
-```
+`config_info`/`config_success`/`config_warning`/`config_error` are the same
+helpers under library names. Color is decided per stream (TTY only),
+`NO_COLOR`, `TERM=dumb` and `--no-color` disable it, `CLICOLOR_FORCE=1`
+forces it; symbols fall back to ASCII outside UTF-8 locales. Help texts
+always print `claude-dockerized`, never `$0`.
 
 ### Error Handling
 
@@ -150,9 +167,11 @@ config_info() {
 
 All volume mount logic lives in `lib/config-lib.sh` to eliminate duplication:
 - `CCODE_HOME` (`~/.config/claude-dockerized/home`) — self-contained Claude Code state root mirroring the container home; all mounts source from here, never from host XDG dirs
-- `build_standard_volume_args "$project_dir" [include_docker_socket]` — populates `VOLUME_ARGS` (managed policy dir read-only at `/etc/claude-code`; generated `~/.claude` read-write with `hooks-guard/` and `CLAUDE.md` overlaid read-only; `.claude.json`, `.local/bin`, sessions read-write; never the host `~/.claude`)
+- `build_standard_volume_args "$project_dir" [include_docker_socket]` — populates `VOLUME_ARGS` array with fine-grained mounts (managed policy at `/etc/claude-code/managed-settings.json`, user `settings.json` and `hooks-guard/` read-only; credentials, `.claude.json`, sessions read-write; plugins/skills/agents/commands, `.local/bin`, `.composio` read-write, or read-only under `setting.hardening=strict`, which also overlays the project's `.git` hooks/config read-only; never `~/.claude` as a whole)
 - `build_common_docker_args` — populates `DOCKER_COMMON_ARGS` array (--rm, --network host, `--user <host uid>:<host gid>`, `--group-add coder`, `--cap-drop=ALL`, `--security-opt no-new-privileges:true`, TERM, `CLAUDE_DOCKERIZED_POLICY`)
-- `ensure_claude_dirs` — creates required host directories, seeds the state tree (credentials placeholder `0600`, `.claude.json`) and installs the versioned security layer (`ensure_claude_dockerized_config`: native hooks + `policies/*.json` with their `policies/VERSION` marker, managed policy rendered from `config/managed-settings.json` by `write_managed_settings`, user `settings.json` seeded/migrated by `ensure_user_settings`, `CLAUDE.md`, optional `.lsp.json`)
+- `ensure_claude_dirs` — creates required host directories, seeds the state tree (credentials placeholder `0600`, `.claude.json`) and installs the versioned security layer (`ensure_claude_dockerized_config`: native hooks + `policies/*.json` with their `policies/VERSION` marker, `managed-settings.json` (hooks, deny/ask, `DISABLE_AUTOUPDATER=1`, pinned policy mode) + preference-only `settings.json`, `hooks-guard/policy-mode`, `CLAUDE.md`, optional `.lsp.json`)
+- `validate_mount_spec` / `sensitive_host_path_reason` / `canonical_host_path` — the single validator for custom mounts, the wizard and the project dir (canonical paths, `ro|rw`, refused host dirs and targets)
+- `append_hardening_args` — opt-in `standard`/`strict` runtime flags (`setting.hardening`)
 - `check_image "$IMAGE_NAME"` — validates Docker image exists
 - `sanitize_container_name "$name"` — strips invalid Docker container name characters
 - `generate_random_suffix` — produces random hex for unique container names
@@ -218,8 +237,10 @@ Removed settings (`websearch_provider`, `theme`) warn and are ignored. Secrets o
 
 ### Security Rules
 
-- The security policy is `/etc/claude-code/managed-settings.json` (rendered from `config/managed-settings.json`, mounted **read-only**, highest precedence, `allowManagedHooksOnly`); `hooks-guard/` and `CLAUDE.md` are read-only overlays. The generated `~/.claude` is read-write (user `settings.json` seeded from `config/user-settings.default.json`, credentials, plugins) so `/model` and `/config` persist. Never write a `model` key into either settings file (it travels as `--model`). The wrapper's `$CONFIG_DIR` and the host `~/.claude` are never mounted. `~/.mcp-auth` is read-write
-- Auto-updates always disabled via `env.DISABLE_AUTOUPDATER=1` in the managed policy; upgrades happen only through `claude-dockerized update` (image rebuild with pinned `CLAUDE_CODE_VERSION`)
+- The security policy lives in the **managed** scope (`/etc/claude-code/managed-settings.json`, read-only, highest precedence); the user `settings.json` holds preferences only. Managed files (`managed-settings.json`, `settings.json`, `hooks-guard/`, `CLAUDE.md`) are **read-only** fine-grained mounts; user state (credentials, plugins, sessions, `.local/bin`) read-write by default. The wrapper's `$CONFIG_DIR` is never mounted. `~/.claude` is never mounted as a whole. `~/.mcp-auth` is read-write
+- Guard hooks fail closed (exit 2 on anything they cannot evaluate), use a trusted tool path (`hook-path` / image default, never the inherited PATH) and read the mode from `hooks-guard/policy-mode`; see `docs/security/YELLOW.md` before changing them
+- Changes to persistent paths are reported after each `run` (`lib/integrity-lib.sh`, `setting.integrity_check`); stricter prevention is opt-in (`setting.hardening`) — defaults never change behavior silently
+- Auto-updates always disabled via `env.DISABLE_AUTOUPDATER=1` in the managed policy; upgrades happen only through `claude-dockerized update` (signed release tag verified against locally pinned keys, preview, fast-forward, rebuild with pinned `CLAUDE_CODE_VERSION`; `rollback` undoes it)
 - **Never commit:** `.env`, `.credentials.json`, `*.pem`, `*.key`, credentials
 - Docker socket is **opt-in** (`setting.docker_socket`, default `false`): mount the host socket only on request, no privileged mode, grant the socket GID via `--group-add` (no root step). It is root-equivalent on the host.
 - SSH agent forwarding is **opt-in** (`setting.ssh_agent_support`, default `false`): forwards only `SSH_AUTH_SOCK` and mounts `~/.ssh/config`/`known_hosts` read-only; private keys are never mounted and a custom mount of `~/.ssh` is refused
@@ -228,7 +249,7 @@ Removed settings (`websearch_provider`, `theme`) warn and are ignored. Secrets o
 - `hooks/claude-guard-*.sh` (+ `guard-eval.js`) is the guard source of truth; bump `CLAUDE_DOCKERIZED_GUARD_VERSION` when changing its behavior so installs refresh (previous copy backed up to `.bak`)
 - Prefer `policies/allow-patterns.json` or a policy mode over editing the vendored `policies/*.json`
 - In `balanced` mode the guard drops broad, whole-string false positives via the excluded-ID list in `hooks/guard-eval.js`; `strict` keeps them all; `none` keeps only the built-in backstops
-- Writes are allowed only inside the project directory and `/tmp/claude` (the advertised scratch dir); the file hook confines Edit/Write to those roots (the Claude Code sandbox stays off until the image ships `bubblewrap`)
+- File-tool writes are confined to the project directory and `/tmp/claude` (the advertised scratch dir) by the file hook; the Claude sandbox is explicitly off (no bubblewrap in the image; the container is the boundary)
 - `disableBypassPermissionsMode: disable` is always set in the managed settings; never set `disableAllHooks`
 - Run as non-root `coder` inside container; the wrapper maps the host user with `--user <host uid>:<host gid>` so no root process runs
 - Use `--rm` for automatic container cleanup; `--network host` for simplicity
@@ -242,10 +263,13 @@ Removed settings (`websearch_provider`, `theme`) warn and are ignored. Secrets o
 | Host Path | Container Path | Mode | Purpose |
 |-----------|---------------|------|---------|
 | `$PROJECT_DIR` | `$PROJECT_DIR` (with `$HOME` stripped) | rw | Project files |
-| `~/.config/claude-dockerized/home/etc/claude-code/` | `/etc/claude-code/` | **read-only** | Managed policy `managed-settings.json`: permissions, hooks, `allowManagedHooksOnly`, `DISABLE_AUTOUPDATER`. Rendered by the wrapper; change via `config edit` + `config sync` |
-| `~/.config/claude-dockerized/home/.claude/` | `/home/coder/.claude/` | rw | User `settings.json` (`/model`, `/config`), `.credentials.json` (`0600`), plugins, skills, agents, commands, `.lsp.json`, memory |
-| `~/.config/claude-dockerized/home/.claude/hooks-guard/` | `/home/coder/.claude/hooks-guard/` | **read-only** | Native `PreToolUse` hooks + policy data (overlay) |
-| `~/.config/claude-dockerized/home/.claude/CLAUDE.md` | `/home/coder/.claude/CLAUDE.md` | **read-only** | Managed session rules (overlay) |
+| `~/.config/claude-dockerized/home/.claude/managed-settings.json` | `/etc/claude-code/managed-settings.json` | **read-only** | Managed policy (highest precedence): hooks, deny/ask, `DISABLE_AUTOUPDATER`, pinned policy mode, sandbox off. Generated by the wrapper |
+| `~/.config/claude-dockerized/home/.claude/settings.json` | `/home/coder/.claude/settings.json` | **read-only** | User preferences (model, cleanup days, plugins, allow list). Generated by the wrapper; edit via `config edit` |
+| `~/.config/claude-dockerized/home/.claude/hooks-guard/` | `/home/coder/.claude/hooks-guard/` | **read-only** | Native `PreToolUse` hooks + policy data |
+| `~/.config/claude-dockerized/home/.claude/CLAUDE.md` | `/home/coder/.claude/CLAUDE.md` | **read-only** | Managed session rules |
+| `~/.config/claude-dockerized/home/.claude/.credentials.json` | `/home/coder/.claude/.credentials.json` | rw (`0600`) | Login (`claude auth login`), persists across rebuilds |
+| `~/.config/claude-dockerized/home/.claude/plugins/` `skills/` `agents/` `commands/` | same under `/home/coder/.claude/` | rw | User plugins, skills, agents, commands |
+| `~/.config/claude-dockerized/home/.claude/.lsp.json` | `/home/coder/.claude/.lsp.json` | rw | LSP config (generated when `setting.lsp=true`) |
 | `~/.config/claude-dockerized/home/.claude.json` | `/home/coder/.claude.json` | rw | MCP user-scope state |
 | `~/.config/claude-dockerized/home/.local/bin/` | `/home/coder/.local/bin/` | rw | LSP/formatter binaries (generated home) |
 | `~/.config/claude-dockerized/home/.local/share/claude/` | `/home/coder/.local/share/claude/` | rw | Sessions, transcripts |

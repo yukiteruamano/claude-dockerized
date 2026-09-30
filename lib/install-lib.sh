@@ -346,8 +346,7 @@ run_install_main() {
         ensure_git_upstream "$CCODE_INSTALL_DIR" || true
     fi
 
-    export TMPDIR="${TMPDIR:-/tmp/claude}"
-    mkdir -p "$TMPDIR" 2>/dev/null || export TMPDIR="/tmp"
+    ensure_private_tmpdir
 
     echo "Claude Docker Install"
     echo "================================"

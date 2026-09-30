@@ -1,20 +1,25 @@
 # Use Debian slim as lightweight Linux base
 # Note: We only install Docker CLI to use host's Docker daemon via mounted socket
-FROM debian:trixie-slim
+# Pinned by digest (T-24): a tag can be re-pointed, a digest cannot. Dependabot
+# (docker ecosystem) proposes digest bumps; `build --pull` never floats past it.
+FROM debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a
 
 # Fail fast inside RUN pipelines (curl | sh, | tee, …)
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # Parameterize tool versions for easier updates
-# Pin releases for reproducible builds; override with --build-arg.
-# CLAUDE_CODE_VERSION pins the CLI release (update with --build-arg
-# CLAUDE_BUILD_TIME to bust the installer cache; see `update`). Avoid `latest`
-# in production builds: a moving tag breaks reproducibility and widens
-# supply-chain exposure if a tag is ever mutated.
-# See: https://code.claude.com/docs/en/setup#install-a-specific-version
+# Pin releases for reproducible builds; override with --build-arg. Avoid
+# `latest` in production builds: a moving tag breaks reproducibility and
+# widens supply-chain exposure if a tag is ever mutated (T-24).
+# NVM is fetched by commit (NVM_COMMIT is the commit behind tag NVM_VERSION).
 ARG NVM_VERSION=v0.40.8
-# Claude Code CLI release; override with --build-arg CLAUDE_CODE_VERSION=x.y.z
-ARG CLAUDE_CODE_VERSION=2.1.284
+ARG NVM_COMMIT=a885b885fef16fac4bc544188fb25e9e37ae83e8
+# Node.js LTS line pinned to an exact release (was: whatever --lts resolved).
+ARG NODE_VERSION=24.21.0
+# uv pinned to an exact release (was: always latest).
+ARG UV_VERSION=0.12.21
+# Fingerprint of Docker's apt signing key (docs.docker.com/engine/install/debian).
+ARG DOCKER_APT_KEY_FPR=9DC858229FC7DD38854AE2D88D81803C0EBFCD88
 
 # Install base dependencies and useful CLI tools for coding agents
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -42,8 +47,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install Docker CLI only (uses host Docker daemon via mounted socket)
 # We don't need docker-ce (daemon) or containerd.io since we use the host's Docker
-RUN install -m 0755 -d /etc/apt/keyrings && \
+# DOCKER_CLI=0 (setting.image_docker_cli=false) leaves it out entirely: it is
+# only useful with the opt-in socket mount (setting.docker_socket).
+ARG DOCKER_CLI=1
+RUN if [ "$DOCKER_CLI" != 1 ]; then echo "Docker CLI skipped (DOCKER_CLI=$DOCKER_CLI)"; exit 0; fi && \
+    install -m 0755 -d /etc/apt/keyrings && \
     curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc && \
+    gpg --show-keys --with-colons /etc/apt/keyrings/docker.asc | awk -F: '$1=="fpr"{print $10}' | grep -qx "$DOCKER_APT_KEY_FPR" && \
     chmod a+r /etc/apt/keyrings/docker.asc && \
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian \
     $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
@@ -70,16 +80,17 @@ RUN git config --system user.name "Claude" \
 USER coder
 WORKDIR /home/coder
 ENV NVM_DIR="/home/coder/.nvm"
-RUN curl -o- "https://raw.githubusercontent.com/nvm-sh/nvm/${NVM_VERSION}/install.sh" | bash && \
+RUN curl -fsSL -o- "https://raw.githubusercontent.com/nvm-sh/nvm/${NVM_COMMIT}/install.sh" | bash && \
     bash -c "source $NVM_DIR/nvm.sh && \
-    nvm install --lts && \
+    nvm install ${NODE_VERSION} && \
     nvm alias default node && \
     nvm use default && \
     ln -sf \$(dirname \$(which node)) $NVM_DIR/default"
 
 # Install uv (Python package manager) as coder user
 # See: https://docs.astral.sh/uv/getting-started/installation/
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+RUN curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh && \
+    /home/coder/.local/bin/uv --version | grep -q "^uv ${UV_VERSION}"
 
 # Add nvm, node, ~/.composio and ~/.local/bin to PATH
 # Node.js is available via the NVM default symlink created above.
@@ -98,10 +109,21 @@ ENV PATH="$NVM_DIR/default:/usr/local/bin:/home/coder/.composio:/home/coder/.loc
 # The channel/version chosen at install time becomes the auto-update default,
 # but auto-updates are disabled at runtime via env.DISABLE_AUTOUPDATER=1 in the
 # managed settings.json (see config-lib.sh).
-# ARG CLAUDE_BUILD_TIME is only passed during 'update' to bust cache
-# ARG CLAUDE_CODE_VERSION pins the release; defaults to 2.1.284 for regular builds
+# ARG CLAUDE_BUILD_TIME is only passed during 'update' to bust cache.
+# ARG CLAUDE_CODE_VERSION pins the release (declared here, not at the top, so
+# changing it only rebuilds from this layer on). The installed binary must
+# report exactly that version, and, when the wrapper recorded its sha256 on an
+# earlier build of the same version (CLAUDE_CODE_SHA256, trust on first use),
+# the same bytes.
+# See: https://code.claude.com/docs/en/setup#install-a-specific-version
+ARG CLAUDE_CODE_VERSION=2.1.284
+ARG CLAUDE_CODE_SHA256=
 ARG CLAUDE_BUILD_TIME=0
-RUN curl -fsSL https://claude.ai/install.sh | bash -s "${CLAUDE_CODE_VERSION}" && claude --version
+RUN curl -fsSL https://claude.ai/install.sh | bash -s "${CLAUDE_CODE_VERSION}" && \
+    claude --version | grep -q "^${CLAUDE_CODE_VERSION} " && \
+    if [ -n "${CLAUDE_CODE_SHA256}" ]; then \
+        echo "${CLAUDE_CODE_SHA256}  $(readlink -f "$(command -v claude)")" | sha256sum -c -; \
+    fi
 
 # Move image-provided CLIs out of the shadowed home bin dir.
 # /home/coder/.local/bin is over-mounted at runtime with the generated home's
@@ -123,6 +145,25 @@ RUN set -e; \
     ls -la /usr/local/bin/claude; \
     test -f /usr/local/bin/claude && test ! -L /usr/local/bin/claude && test -x /usr/local/bin/claude; \
     command -v claude && command -v uv && claude --version
+
+# Root-owned node for the guard hooks' trusted path (T-04). The hooks never
+# use the inherited PATH (the session-writable ~/.local/bin comes first) and
+# the NVM tree under the group-writable home can be modified by the session,
+# so the policy evaluator runs from this read-only copy instead. Users keep
+# the NVM node (and nvm switching) on their own PATH.
+RUN install -d -m 0755 /usr/local/lib/claude-dockerized/bin && \
+    install -m 0755 "$(readlink -f /home/coder/.nvm/default/node)" /usr/local/lib/claude-dockerized/bin/node && \
+    /usr/local/lib/claude-dockerized/bin/node --version
+
+# STRIP_SETUID=1 (setting.image_strip_setuid=true) clears every setuid/setgid
+# bit (su, passwd, mount, newgrp, ssh-keysign, ...). no_new_privileges already
+# neutralizes them at runtime; this is defense in depth for runtimes where it
+# is missing (T-21).
+ARG STRIP_SETUID=0
+RUN if [ "$STRIP_SETUID" = 1 ]; then \
+        find / -xdev -perm /6000 -type f -exec chmod a-s {} + ; \
+        test -z "$(find / -xdev -perm /6000 -type f -print -quit)"; \
+    fi
 USER coder
 
 # Create the writable home tree, owned by coder and group-writable (g+rwX) so
