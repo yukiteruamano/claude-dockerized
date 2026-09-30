@@ -8,6 +8,8 @@ Shell script-based Docker wrapper for running [Claude Code](https://code.claude.
 - `bin/claude-dockerized` — Main wrapper, no extension (build, run, auth, models, exec, mcp, plugin, stats, debug, doctor, install, upgrade, update, config, clean commands). Reached via `<install>/bin` on PATH; nothing lives in `~/.local/bin`. `bin/` holds only this binary.
 - `install.sh` — Curl-able bootstrap: runs the local `bin/claude-dockerized install` when present, else clones to `~/.local/share/claude-dockerized` and runs it there (full setup in one shot, no second manual install)
 - `lib/config-lib.sh` — Shared library sourced by other scripts (config parsing, mount/env arg building, shared volume logic, interactive prompts, installs the security layer). **Not executable directly.**
+- `config/managed-settings.json`, `config/user-settings.default.json` — Managed Claude policy template and user-settings defaults (source of truth; rendered/seeded by `lib/config-lib.sh`)
+- `lib/migrate-settings.js` — Migrates a legacy combined `settings.json` to user scope
 - `lib/install-lib.sh` — Install wizard library sourced by the wrapper's `install` command (`--yes`, `--only config,completions,aliases,global[,path][,build]`). **Not executable directly.**
 - `Dockerfile` — Container image (Debian trixie-slim + Node.js/NVM + uv + Claude Code native binary v2.1.284, no sudo, no npm install)
 - `entrypoint.sh` — Container entrypoint (unprivileged; resolves workdir, loads NVM, execs the command)
@@ -148,9 +150,9 @@ config_info() {
 
 All volume mount logic lives in `lib/config-lib.sh` to eliminate duplication:
 - `CCODE_HOME` (`~/.config/claude-dockerized/home`) — self-contained Claude Code state root mirroring the container home; all mounts source from here, never from host XDG dirs
-- `build_standard_volume_args "$project_dir" [include_docker_socket]` — populates `VOLUME_ARGS` array with fine-grained mounts (managed `settings.json` and `hooks-guard/` read-only; credentials, plugins, `.claude.json`, `.local/bin`, sessions read-write; never `~/.claude` as a whole)
+- `build_standard_volume_args "$project_dir" [include_docker_socket]` — populates `VOLUME_ARGS` (managed policy dir read-only at `/etc/claude-code`; generated `~/.claude` read-write with `hooks-guard/` and `CLAUDE.md` overlaid read-only; `.claude.json`, `.local/bin`, sessions read-write; never the host `~/.claude`)
 - `build_common_docker_args` — populates `DOCKER_COMMON_ARGS` array (--rm, --network host, `--user <host uid>:<host gid>`, `--group-add coder`, `--cap-drop=ALL`, `--security-opt no-new-privileges:true`, TERM, `CLAUDE_DOCKERIZED_POLICY`)
-- `ensure_claude_dirs` — creates required host directories, seeds the state tree (credentials placeholder `0600`, `.claude.json`) and installs the versioned security layer (`ensure_claude_dockerized_config`: native hooks + `policies/*.json` with their `policies/VERSION` marker, managed `settings.json` with `DISABLE_AUTOUPDATER=1`, `CLAUDE.md`, optional `.lsp.json`)
+- `ensure_claude_dirs` — creates required host directories, seeds the state tree (credentials placeholder `0600`, `.claude.json`) and installs the versioned security layer (`ensure_claude_dockerized_config`: native hooks + `policies/*.json` with their `policies/VERSION` marker, managed policy rendered from `config/managed-settings.json` by `write_managed_settings`, user `settings.json` seeded/migrated by `ensure_user_settings`, `CLAUDE.md`, optional `.lsp.json`)
 - `check_image "$IMAGE_NAME"` — validates Docker image exists
 - `sanitize_container_name "$name"` — strips invalid Docker container name characters
 - `generate_random_suffix` — produces random hex for unique container names
@@ -216,8 +218,8 @@ Removed settings (`websearch_provider`, `theme`) warn and are ignored. Secrets o
 
 ### Security Rules
 
-- Managed files (`settings.json`, `hooks-guard/`, `CLAUDE.md`) mounted **read-only** via fine-grained mounts; user state (credentials, plugins, sessions, `.local/bin`) read-write. The wrapper's `$CONFIG_DIR` is never mounted. `~/.claude` is never mounted as a whole. `~/.mcp-auth` is read-write
-- Auto-updates always disabled via `env.DISABLE_AUTOUPDATER=1` in the managed `settings.json`; upgrades happen only through `claude-dockerized update` (image rebuild with pinned `CLAUDE_CODE_VERSION`)
+- The security policy is `/etc/claude-code/managed-settings.json` (rendered from `config/managed-settings.json`, mounted **read-only**, highest precedence, `allowManagedHooksOnly`); `hooks-guard/` and `CLAUDE.md` are read-only overlays. The generated `~/.claude` is read-write (user `settings.json` seeded from `config/user-settings.default.json`, credentials, plugins) so `/model` and `/config` persist. Never write a `model` key into either settings file (it travels as `--model`). The wrapper's `$CONFIG_DIR` and the host `~/.claude` are never mounted. `~/.mcp-auth` is read-write
+- Auto-updates always disabled via `env.DISABLE_AUTOUPDATER=1` in the managed policy; upgrades happen only through `claude-dockerized update` (image rebuild with pinned `CLAUDE_CODE_VERSION`)
 - **Never commit:** `.env`, `.credentials.json`, `*.pem`, `*.key`, credentials
 - Docker socket is **opt-in** (`setting.docker_socket`, default `false`): mount the host socket only on request, no privileged mode, grant the socket GID via `--group-add` (no root step). It is root-equivalent on the host.
 - SSH agent forwarding is **opt-in** (`setting.ssh_agent_support`, default `false`): forwards only `SSH_AUTH_SOCK` and mounts `~/.ssh/config`/`known_hosts` read-only; private keys are never mounted and a custom mount of `~/.ssh` is refused
@@ -226,7 +228,7 @@ Removed settings (`websearch_provider`, `theme`) warn and are ignored. Secrets o
 - `hooks/claude-guard-*.sh` (+ `guard-eval.js`) is the guard source of truth; bump `CLAUDE_DOCKERIZED_GUARD_VERSION` when changing its behavior so installs refresh (previous copy backed up to `.bak`)
 - Prefer `policies/allow-patterns.json` or a policy mode over editing the vendored `policies/*.json`
 - In `balanced` mode the guard drops broad, whole-string false positives via the excluded-ID list in `hooks/guard-eval.js`; `strict` keeps them all; `none` keeps only the built-in backstops
-- Writes are allowed only inside the project directory and `/tmp/claude` (the advertised scratch dir); the managed `settings.json` sandbox allowlists `/tmp/claude` and the file hook mirrors that root
+- Writes are allowed only inside the project directory and `/tmp/claude` (the advertised scratch dir); the file hook confines Edit/Write to those roots (the Claude Code sandbox stays off until the image ships `bubblewrap`)
 - `disableBypassPermissionsMode: disable` is always set in the managed settings; never set `disableAllHooks`
 - Run as non-root `coder` inside container; the wrapper maps the host user with `--user <host uid>:<host gid>` so no root process runs
 - Use `--rm` for automatic container cleanup; `--network host` for simplicity
@@ -240,12 +242,10 @@ Removed settings (`websearch_provider`, `theme`) warn and are ignored. Secrets o
 | Host Path | Container Path | Mode | Purpose |
 |-----------|---------------|------|---------|
 | `$PROJECT_DIR` | `$PROJECT_DIR` (with `$HOME` stripped) | rw | Project files |
-| `~/.config/claude-dockerized/home/.claude/settings.json` | `/home/coder/.claude/settings.json` | **read-only** | Managed settings: permissions, hooks, sandbox, `DISABLE_AUTOUPDATER`. Generated by the wrapper; edit via `config edit` |
-| `~/.config/claude-dockerized/home/.claude/hooks-guard/` | `/home/coder/.claude/hooks-guard/` | **read-only** | Native `PreToolUse` hooks + policy data |
-| `~/.config/claude-dockerized/home/.claude/CLAUDE.md` | `/home/coder/.claude/CLAUDE.md` | **read-only** | Managed session rules |
-| `~/.config/claude-dockerized/home/.claude/.credentials.json` | `/home/coder/.claude/.credentials.json` | rw (`0600`) | Login (`claude auth login`), persists across rebuilds |
-| `~/.config/claude-dockerized/home/.claude/plugins/` `skills/` `agents/` `commands/` | same under `/home/coder/.claude/` | rw | User plugins, skills, agents, commands |
-| `~/.config/claude-dockerized/home/.claude/.lsp.json` | `/home/coder/.claude/.lsp.json` | rw | LSP config (generated when `setting.lsp=true`) |
+| `~/.config/claude-dockerized/home/etc/claude-code/` | `/etc/claude-code/` | **read-only** | Managed policy `managed-settings.json`: permissions, hooks, `allowManagedHooksOnly`, `DISABLE_AUTOUPDATER`. Rendered by the wrapper; change via `config edit` + `config sync` |
+| `~/.config/claude-dockerized/home/.claude/` | `/home/coder/.claude/` | rw | User `settings.json` (`/model`, `/config`), `.credentials.json` (`0600`), plugins, skills, agents, commands, `.lsp.json`, memory |
+| `~/.config/claude-dockerized/home/.claude/hooks-guard/` | `/home/coder/.claude/hooks-guard/` | **read-only** | Native `PreToolUse` hooks + policy data (overlay) |
+| `~/.config/claude-dockerized/home/.claude/CLAUDE.md` | `/home/coder/.claude/CLAUDE.md` | **read-only** | Managed session rules (overlay) |
 | `~/.config/claude-dockerized/home/.claude.json` | `/home/coder/.claude.json` | rw | MCP user-scope state |
 | `~/.config/claude-dockerized/home/.local/bin/` | `/home/coder/.local/bin/` | rw | LSP/formatter binaries (generated home) |
 | `~/.config/claude-dockerized/home/.local/share/claude/` | `/home/coder/.local/share/claude/` | rw | Sessions, transcripts |
@@ -257,4 +257,4 @@ Removed settings (`websearch_provider`, `theme`) warn and are ignored. Secrets o
 | `~/.config/claude-dockerized/home/.gnupg/` | `/home/coder/.gnupg/` | rw (opt-in) | Mirrored **public** GnuPG material (pubring/trustdb/gpg.conf) + agent socket, only when `setting.gpg_agent_support=true`; `private-keys-v1.d/` is never copied |
 | `/var/run/docker.sock` | `/var/run/docker.sock` | rw (opt-in) | Docker socket, only when `setting.docker_socket=true` |
 
-The wrapper's own directory (`~/.config/claude-dockerized/`, i.e. `$CONFIG_DIR`) is **never** mounted. Its `CLAUDE.md`, hooks and policies are sourced from there and mirrored into the generated home; `settings.json` is generated from the wrapper config.
+The wrapper's own directory (`~/.config/claude-dockerized/`, i.e. `$CONFIG_DIR`) is **never** mounted. Its `CLAUDE.md`, hooks and policies are sourced from there and mirrored into the generated home; `managed-settings.json` is rendered from `config/managed-settings.json` and the wrapper config.
