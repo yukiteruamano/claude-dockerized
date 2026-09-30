@@ -51,6 +51,11 @@ bash tests/run-all.sh --integration  # + container runtime checks (needs Docker)
 
 ## Security layer changes
 
+Read [docs/security/YELLOW.md](docs/security/YELLOW.md) first: it holds the
+non-negotiable rules for the guard, the wrapper and the supply chain, the
+PR checklist and the release process. New attacks follow its "Adding an
+attack" workflow ([RED](docs/security/RED.md) / [BLUE](docs/security/BLUE.md)).
+
 - **`hooks/claude-guard-bash.sh` + `hooks/claude-guard-file.sh` are the source
   of truth.** They are copied into `~/.config/claude-dockerized/hooks/` by
   `lib/config-lib.sh`; when you change their behavior, bump

@@ -548,14 +548,18 @@ Your login lives in `~/.config/claude-dockerized/home/.claude/.credentials.json`
 
 ### User Scripts
 
-- **`bin/claude-dockerized`** - Main wrapper, no extension (build, run, auth, install, upgrade, update, version, config, clean, help). Reached via `<install>/bin` on `PATH`; `bin/` holds only this binary
+- **`bin/claude-dockerized`** - Main wrapper, no extension (run, exec, auth, mcp, plugin, build, update, rollback, doctor, version, config, clean, help, ...). Reached via `<install>/bin` on `PATH`; `bin/` holds only this binary
 - **`install.sh`** - Curl-able bootstrap (runs the local `bin/claude-dockerized install`, or clones to `~/.local/share/claude-dockerized` first; full setup in one shot)
 - **`run-simple.sh`** - Simplified runner script (delegates to `claude-dockerized run`)
 
 ### Shared Modules
 
-- **`lib/config-lib.sh`** - Shared configuration library (sourced by other scripts, handles mounts, env vars, settings generation, sync)
+- **`lib/config-lib.sh`** - Shared configuration library (mounts and their validation, env, managed policy and settings generation, sync, hardening profiles, LSP installs)
 - **`lib/install-lib.sh`** - Install wizard library sourced by the wrapper's `install` command
+- **`lib/update-lib.sh`** - Verified self-update (trust store, signature checks, origin pin, rollback)
+- **`lib/integrity-lib.sh`** - Session integrity check and audit log
+- **`lib/ui-lib.sh`**, **`lib/help-lib.sh`**, **`lib/diag-lib.sh`** - Output helpers, help texts, Docker preflight / doctor / version
+- **`lib/doctor-container.sh`** - Diagnostics run inside the container by `doctor`
 
 ### Security Layer
 
@@ -567,8 +571,10 @@ Your login lives in `~/.config/claude-dockerized/home/.claude/.credentials.json`
 
 ### Tests
 
-- **`tests/claude-guard.test.mjs`** - Hook regression tests (`node tests/claude-guard.test.mjs`)
-- **`tests/wrapper-args.test.sh`** - Wrapper mount/env contract test (no Docker)
+- **`tests/run-all.sh`** - Runs every suite (`--integration` adds the Docker runtime checks, `--verbose` lists known gaps)
+- **`tests/*.test.mjs`** - Guard: regression cases, bypass corpus (`tests/fixtures/guard-corpus.json`), fail-closed behavior, policy data, hook wiring, settings merge
+- **`tests/*.test.sh`** - Wrapper: docker argv, mounts, config, hardening, integrity, self-update, supply chain, LSP installs, CLI/UI contract, threat-matrix traceability
+- **`tests/integration/container.test.sh`** - Runtime contract inside the real image (skips without Docker)
 
 ### Shell Completion (`completions/`)
 
@@ -581,7 +587,8 @@ Your login lives in `~/.config/claude-dockerized/home/.claude/.credentials.json`
 
 ### Documentation & Meta
 
-- **`SECURITY.md`** - Security model, enforced controls and known limitations
+- **`SECURITY.md`** - Security overview, known limitations, vulnerability reporting
+- **`docs/security/`** - Threat model (T-01…T-30) and the Red (attacks), Blue (controls, detection, response) and Yellow (secure development) playbooks
 - **`CONTRIBUTING.md`** - Contribution workflow and local checks (CI parity)
 - **`.shellcheckrc`**, **`.hadolint.yaml`**, **`.editorconfig`** - Linter/formatter configuration
 

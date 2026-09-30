@@ -1,5 +1,11 @@
 # PLAN — `claude-dockerized` (Claude Code dockerizado)
 
+> **Nota (2026-09-30):** registro histórico del port. El modelo de seguridad
+> vigente (política gestionada en `/etc/claude-code/managed-settings.json`,
+> guard fail-closed, perfiles de hardening, updates firmados, integridad de
+> sesión) está en `SECURITY.md` y `docs/security/`; donde este plan difiera,
+> manda la documentación actual.
+
 > **Estado de implementación (2026-09-29): IMPLEMENTADO.** El port completo
 > está aplicado en este checkout: `bin/claude-dockerized`, `lib/` (CCODE_*),
 > `hooks/` nativos, `Dockerfile` con binario nativo v2.1.284, montajes finos
