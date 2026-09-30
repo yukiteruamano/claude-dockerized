@@ -42,6 +42,14 @@ for f in "$managed" /home/coder/.claude/settings.json "${CLAUDE_DOCKERIZED_WORKD
         note "disableAllHooks: PRESENT in $f"; status=1
     fi
 done
+us=/home/coder/.claude/settings.json
+if [ ! -f "$us" ]; then
+    note "MISSING user settings.json"; status=1
+elif [ -w "$us" ]; then
+    note "user settings: writable (/model and /config persist)"
+else
+    note "user settings: NOT writable (/model cannot save)"; status=1
+fi
 note "policy mode: $(cat /home/coder/.claude/hooks-guard/policy-mode 2>/dev/null || echo "MISSING")"
 echo "== claude =="
 claude --version 2>&1 || { note "claude binary: FAILED"; status=1; }

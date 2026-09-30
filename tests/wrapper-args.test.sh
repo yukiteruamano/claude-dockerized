@@ -81,10 +81,11 @@ grep -q 'Security Rules' "$CLAUDE_DIR/CLAUDE.md" ||
 [ "$(cat "$CONFIG_DIR/hooks/policies/VERSION")" = "$(cat "$REPO_DIR/policies/VERSION")" ] ||
     fail "policy VERSION marker does not match the repo"
 
-# Managed policy (managed-settings.json, mounted at the highest-precedence
-# /etc/claude-code path): auto-updates off, bypass disabled, hooks wired,
-# policy mode pinned. The user settings.json keeps preferences only.
-MANAGED="$CLAUDE_DIR/managed-settings.json"
+# Managed policy (rendered into etc/claude-code, mounted at the
+# highest-precedence /etc/claude-code path): auto-updates off, bypass
+# disabled, hooks wired, managed hooks only, policy mode pinned, the inert
+# sandbox off (T-30), and never a null model (the schema rejects it).
+MANAGED="$CCODE_HOME/etc/claude-code/managed-settings.json"
 [ -f "$MANAGED" ] ||
     fail "managed-settings.json was not generated"
 grep -q 'DISABLE_AUTOUPDATER' "$MANAGED" ||
@@ -99,12 +100,27 @@ grep -q 'Read(./.env)' "$MANAGED" ||
     fail "managed policy must deny .env reads"
 grep -q '"CLAUDE_DOCKERIZED_POLICY": "balanced"' "$MANAGED" ||
     fail "managed policy must pin the policy mode in env"
+grep -q '"allowManagedHooksOnly": true' "$MANAGED" ||
+    fail "managed policy must allow managed hooks only"
+grep -q 'Read(~/.claude/.credentials.json)' "$MANAGED" ||
+    fail "managed policy must deny reading the OAuth credentials"
+grep -qF '"matcher": "Read|Edit|MultiEdit|Write|NotebookEdit|Glob|Grep"' "$MANAGED" ||
+    fail "managed policy must route every file tool through the file guard"
+tr -d ' \n' <"$MANAGED" | grep -qF '"sandbox":{"enabled":false}' ||
+    fail "managed policy must keep the inert sandbox off (T-30)"
+if grep -q '"model"' "$MANAGED"; then
+    fail "managed policy must not carry a model key"
+fi
 [ "$(cat "$CLAUDE_DIR/hooks-guard/policy-mode")" = balanced ] ||
     fail "policy mode must be pinned next to the hooks"
+
+# User settings: seeded from the repo defaults, writable, policy-free.
 [ -f "$CLAUDE_DIR/settings.json" ] ||
-    fail "user settings.json was not generated"
-if grep -qE '"(hooks|env|sandbox|deny)"' "$CLAUDE_DIR/settings.json"; then
-    fail "user settings.json must not carry policy keys (hooks/env/sandbox/deny)"
+    fail "user settings.json was not seeded"
+cmp -s "$REPO_DIR/config/user-settings.default.json" "$CLAUDE_DIR/settings.json" ||
+    fail "user settings.json must be seeded from config/user-settings.default.json"
+if grep -qE 'claude-guard|DISABLE_AUTOUPDATER|"model"|"(hooks|env|sandbox|deny)"' "$CLAUDE_DIR/settings.json"; then
+    fail "user settings.json must not carry policy or model keys"
 fi
 
 # GnuPG private keys must be denied by the managed settings and listed as
@@ -148,12 +164,10 @@ build_common_docker_args
 volumes="$(printf '%s\n' "${VOLUME_ARGS[@]}")"
 common="$(printf '%s\n' "${DOCKER_COMMON_ARGS[@]}")"
 
-# Managed policy at the managed-settings path, user settings.json alongside,
-# both read-only single-file mounts (option A).
-grep -qx -- "$CCODE_HOME/.claude/managed-settings.json:/etc/claude-code/managed-settings.json:ro" <<<"$volumes" ||
-    fail "managed policy must be mounted read-only at /etc/claude-code/managed-settings.json"
-grep -qx -- "$CCODE_HOME/.claude/settings.json:/home/coder/.claude/settings.json:ro" <<<"$volumes" ||
-    fail "user settings.json must be mounted read-only (file mount)"
+# Managed policy dir must be mounted read-only at /etc/claude-code (a
+# directory, so no drop-in can be added next to it).
+grep -qx -- "$CCODE_HOME/etc/claude-code:/etc/claude-code:ro" <<<"$volumes" ||
+    fail "managed policy must be mounted read-only at /etc/claude-code"
 
 # ~/.claude comes from the generated home read-write (a single-file bind
 # would make /model fail with EBUSY); the guard and rules overlay it ro.
@@ -800,44 +814,94 @@ sync_security_layer >/dev/null 2>&1 || fail "sync must re-mirror the policies"
 cmp -s "$REPO_DIR/policies/unsafe-tool-patterns.json" "$CLAUDE_DIR/hooks-guard/policies/unsafe-tool-patterns.json" ||
     fail "sync must restore the mirrored deny set"
 
-# Merge: a user settings.json with extras keeps them, drops policy keys the
-# template no longer carries (deny/hooks live in the managed policy; a stray
-# disableAllHooks would silence it) and stays valid JSON.
+# Render variants: empty cleanup drops the key, strict locks permission
+# rules to the managed ones and pins the mode, formatters enable plugins
+# (and their hooks).
+CLEANUP_DAYS="" SECURITY_POLICY=strict FORMATTERS_ENABLED=true write_managed_settings "$TMP/managed.variant" ||
+    fail "managed policy must render with strict + formatters"
+if grep -q 'cleanupPeriodDays' "$TMP/managed.variant"; then
+    fail "empty cleanup_days must drop cleanupPeriodDays"
+fi
+grep -q '"allowManagedPermissionRulesOnly": true' "$TMP/managed.variant" ||
+    fail "strict must set allowManagedPermissionRulesOnly"
+grep -q '"CLAUDE_DOCKERIZED_POLICY": "strict"' "$TMP/managed.variant" ||
+    fail "strict must be pinned in the managed env"
+grep -q '"prettier@claude": true' "$TMP/managed.variant" ||
+    fail "formatters must enable the formatter plugins"
+if grep -q 'allowManagedHooksOnly' "$TMP/managed.variant"; then
+    fail "formatters need plugin hooks, so allowManagedHooksOnly must be dropped"
+fi
+SECURITY_POLICY=bogus write_managed_settings "$TMP/managed.bogus" ||
+    fail "managed policy must render with an unknown mode"
+grep -q '"CLAUDE_DOCKERIZED_POLICY": "balanced"' "$TMP/managed.bogus" ||
+    fail "an unknown mode must never reach the managed env"
 user_settings="$CLAUDE_DIR/settings.json"
-node -e '
+if command -v node >/dev/null 2>&1; then
+    for f in "$MANAGED" "$TMP/managed.variant" "$TMP/managed.bogus" "$user_settings"; do
+        node -e 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))' "$f" ||
+            fail "$f must be valid JSON"
+    done
+fi
+
+# A legacy settings.json (old wrapper policy + user extras) is migrated to
+# user scope: extras kept, policy and the null model dropped, backup kept.
+cat >"$user_settings" <<'LEGACY'
+{
+  "env": { "DISABLE_AUTOUPDATER": "1", "MY_FLAG": "1" },
+  "model": null,
+  "theme": "dark",
+  "permissions": {
+    "allow": ["Bash(mycmd *)"],
+    "deny": ["Read(./secret.txt)"],
+    "disableBypassPermissionsMode": "disable"
+  },
+  "hooks": { "PreToolUse": [{ "matcher": "Bash", "hooks": [{ "type": "command", "command": "/home/coder/.claude/hooks-guard/claude-guard-bash.sh" }] }] }
+}
+LEGACY
+if sync_security_layer --check >/dev/null 2>&1; then
+    fail "--check must flag a legacy user settings.json"
+fi
+sync_security_layer >/dev/null 2>&1 || fail "sync must migrate a legacy settings.json"
+[ -f "$user_settings.bak" ] || fail "legacy settings.json must be backed up"
+if grep -qE 'claude-guard|DISABLE_AUTOUPDATER|"model"|"deny"' "$user_settings"; then
+    fail "migration must drop the legacy policy and the null model"
+fi
+if command -v node >/dev/null 2>&1; then
+    grep -q '"theme": "dark"' "$user_settings" || fail "migration must keep user keys"
+    grep -q '"MY_FLAG": "1"' "$user_settings" || fail "migration must keep user env"
+    grep -qF 'Bash(mycmd *)' "$user_settings" || fail "migration must keep user allow rules"
+fi
+rm -f "$user_settings.bak"
+
+# A stray disableAllHooks (T-16) is drift: --check flags it and sync drops
+# it while keeping the user's own keys.
+if command -v node >/dev/null 2>&1; then
+    node -e '
 const fs = require("node:fs");
 const p = process.argv[1];
 const s = JSON.parse(fs.readFileSync(p, "utf8"));
-s.permissions.allow.push("Bash(mycmd *)");
-s.permissions.deny = ["Bash(everything *)"];
 s.disableAllHooks = true;
 s.customUserKey = { keep: true };
 fs.writeFileSync(p, JSON.stringify(s, null, 2));
 ' "$user_settings"
-sync_out=$(sync_security_layer 2>&1) || fail "sync with user extras must succeed"
-grep -qF -- 'Bash(mycmd *)' "$user_settings" ||
-    fail "merge must preserve custom allow entries"
-grep -qF -- 'customUserKey' "$user_settings" ||
-    fail "merge must preserve unknown user keys"
-if grep -qF -- 'Bash(everything *)' "$user_settings"; then
-    fail "merge must drop user deny rules (policy lives in the managed file)"
+    if sync_security_layer --check >/dev/null 2>&1; then
+        fail "--check must flag disableAllHooks in the user settings"
+    fi
+    sync_security_layer >/dev/null 2>&1 || fail "sync must drop disableAllHooks"
+    if grep -q 'disableAllHooks' "$user_settings"; then
+        fail "sync must drop disableAllHooks from the user settings"
+    fi
+    grep -qF -- 'customUserKey' "$user_settings" ||
+        fail "dropping disableAllHooks must keep unknown user keys"
+    rm -f "$user_settings.bak"
 fi
-if grep -q 'disableAllHooks' "$user_settings"; then
-    fail "merge must drop disableAllHooks"
-fi
-grep -q 'overrode' <<<"$sync_out" ||
-    fail "merge must report overridden keys"
-if command -v node >/dev/null 2>&1; then
-    node -e 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))' "$user_settings" ||
-        fail "merged settings.json must be valid JSON"
-fi
-rm -f "$user_settings.bak"
 
 # Broken settings.json is backed up and reseeded, never silently dropped.
 printf 'not json{{{' >"$user_settings"
 sync_security_layer >/dev/null 2>&1 || fail "sync must survive broken settings.json"
 [ -f "$user_settings.bak" ] || fail "broken settings.json must be backed up"
-grep -q 'enabledPlugins' "$user_settings" || fail "settings.json must be reseeded"
+cmp -s "$REPO_DIR/config/user-settings.default.json" "$user_settings" ||
+    fail "broken settings.json must be reseeded from the defaults"
 
 # --check must not write anything.
 before_hashes=$(find "$CONFIG_DIR" "$CCODE_HOME" -type f -exec md5sum {} + 2>/dev/null | sort)

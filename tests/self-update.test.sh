@@ -178,7 +178,7 @@ assert_eq "$(head_of "$INSTALL")" "$(git -C "$SEED" rev-parse 'v0.2.0^{commit}')
 check "rollback point recorded" grep -qx "$before" "$CONFIG_DIR/state/last-good"
 check "image rebuilt" built_image
 check "previous image tagged for rollback" docker_called_with "claude-dockerized:prev"
-check "the new code re-synced the security layer" [ -f "$CCODE_HOME/.claude/managed-settings.json" ]
+check "the new code re-synced the security layer" [ -f "$CCODE_HOME/etc/claude-code/managed-settings.json" ]
 
 # --- Claude version pin: rebuild even when up to date, kept for later builds --------------------------------
 DOCKER_STUB_CLAUDE_VERSION=2.1.300 up update --yes --claude-version 2.1.300
