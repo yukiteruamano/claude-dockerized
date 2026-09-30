@@ -100,13 +100,11 @@ jobs:
           ! command -v jq
           ! command -v python3
 
-      # The bypass corpus joins this job once the file hook stops depending
-      # on jq (T-11): today write confinement is off without it, which
-      # guard-failure-modes records as a known gap.
       - name: Guard suites
         run: |
           node tests/claude-guard.test.mjs
           node tests/guard-failure-modes.test.mjs
+          node tests/guard-bypass-corpus.test.mjs
 
   integration:
     name: Container runtime (Docker)
