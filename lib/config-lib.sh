@@ -485,7 +485,7 @@ ensure_claude_dockerized_config() {
 
     # (Re)generate the managed session rules when missing or predating the
     # current template (markers below). A pre-existing file is backed up first.
-    if [ ! -f "$CONFIG_DIR/CLAUDE.md" ] || ! grep -q "Language Tooling" "$CONFIG_DIR/CLAUDE.md" 2>/dev/null || ! grep -q "## Tool Usage" "$CONFIG_DIR/CLAUDE.md" 2>/dev/null || ! grep -q "## Core Workflow" "$CONFIG_DIR/CLAUDE.md" 2>/dev/null || ! grep -q "private-keys-v1.d" "$CONFIG_DIR/CLAUDE.md" 2>/dev/null || ! grep -q "id_ed25519" "$CONFIG_DIR/CLAUDE.md" 2>/dev/null || ! grep -q "setting.env_file" "$CONFIG_DIR/CLAUDE.md" 2>/dev/null || ! grep -q "Manejo remoto" "$CONFIG_DIR/CLAUDE.md" 2>/dev/null; then
+    if [ ! -f "$CONFIG_DIR/CLAUDE.md" ] || ! grep -q "Language Tooling" "$CONFIG_DIR/CLAUDE.md" 2>/dev/null || ! grep -q "## Tool Usage" "$CONFIG_DIR/CLAUDE.md" 2>/dev/null || ! grep -q "## Core Workflow" "$CONFIG_DIR/CLAUDE.md" 2>/dev/null || ! grep -q "private-keys-v1.d" "$CONFIG_DIR/CLAUDE.md" 2>/dev/null || ! grep -q "id_ed25519" "$CONFIG_DIR/CLAUDE.md" 2>/dev/null || ! grep -q "setting.env_file" "$CONFIG_DIR/CLAUDE.md" 2>/dev/null || ! grep -q "Manejo remoto" "$CONFIG_DIR/CLAUDE.md" 2>/dev/null || ! grep -q "managed-settings.json" "$CONFIG_DIR/CLAUDE.md" 2>/dev/null; then
         if [ -f "$CONFIG_DIR/CLAUDE.md" ]; then
             cp "$CONFIG_DIR/CLAUDE.md" "$CONFIG_DIR/CLAUDE.md.bak" 2>/dev/null || true
             config_warning "Backed up previous CLAUDE.md to CLAUDE.md.bak"
@@ -547,7 +547,10 @@ commit messages, heredocs and `grep` patterns. Keep that in mind:
 - Do not reference `/var/run/docker.sock` directly; Docker access is opt-in.
 - Do not set `disableAllHooks`: it would silence the security hooks and break
   the `config sync --check` contract.
-- Never edit `~/.claude/settings.json` from inside the container (read-only);
+- The security policy lives in `/etc/claude-code/managed-settings.json`
+  (read-only, highest precedence). `~/.claude/settings.json` holds user
+  preferences: change them only through `/model`, `/config` or `/permissions`,
+  never by editing settings files directly.
   MCP `add`/`remove` and plugin `install`/`update`/`remove` are host-only.
   `mcp login`/`logout`/`list` keep working (tokens live in a read-write dir).
 - Prefer small, single-purpose commands; the full string is inspected.
