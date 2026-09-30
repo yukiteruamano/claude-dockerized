@@ -1,0 +1,44 @@
+name: Release signature
+
+# Every published release tag must be signed by a maintainer key committed in
+# .github/release-keys/. Users do NOT trust these files automatically: the
+# wrapper verifies updates against keys they pinned locally with
+# `claude-dockerized update --trust-key` (see docs/security/YELLOW.md). This
+# job only guarantees that no unsigned or wrongly signed tag is published.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  verify-tag:
+    name: Verify ${{ github.ref_name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Import maintainer release keys
+        run: |
+          shopt -s nullglob
+          keys=(.github/release-keys/*.asc)
+          if [ "${#keys[@]}" -eq 0 ]; then
+            echo "::error::No release keys in .github/release-keys/ (add the maintainer's public key)"
+            exit 1
+          fi
+          gpg --batch --import "${keys[@]}"
+
+      - name: Verify the tag signature
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          [ "$(git cat-file -t "$TAG")" = tag ] || { echo "::error::$TAG is not an annotated, signed tag"; exit 1; }
+          git verify-tag --raw "$TAG" 2>&1 | tee verify.log
+          grep -q '^\[GNUPG:\] VALIDSIG' verify.log
