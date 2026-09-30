@@ -1008,14 +1008,14 @@ sync_security_layer() {
     config_info "Refreshing security layer from the repo..."
     ensure_claude_dirs
     ensure_claude_dockerized_config
-    # Repair an unparsable managed settings.json (user extras are only lost
+    # Repair an unparsable user settings.json (preferences are only lost
     # when the file is already broken; the broken copy is kept as .bak).
-    local managed="$CCODE_HOME/.claude/settings.json" v
-    if [ -f "$managed" ]; then
-        v=0; json_valid "$managed" || v=$?
+    local user_settings="$CCODE_HOME/.claude/settings.json" v
+    if [ -f "$user_settings" ]; then
+        v=0; json_valid "$user_settings" || v=$?
         if [ "$v" -eq 1 ]; then
-            cp "$managed" "$managed.bak" 2>/dev/null || true
-            ensure_claude_dockerized_config
+            mv "$user_settings" "$user_settings.bak" 2>/dev/null || true
+            ensure_user_settings "$user_settings"
             config_warning "Backed up broken settings.json to settings.json.bak and reseeded it"
         fi
     fi
