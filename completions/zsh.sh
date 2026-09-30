@@ -55,7 +55,7 @@ _claude_dockerized() {
                         'edit:Edit wrapper config file in $EDITOR'
                         'path:Print wrapper config file path'
                         'sync:Refresh security layer from repo (--check for drift only)'
-                        'claude:Managed Claude settings (path|edit)'
+                        'claude:Claude settings (path|edit|policy)'
                         'credentials:Credentials file path (path only)'
                     )
                     _describe -t config_cmds 'config subcommand' config_cmds
