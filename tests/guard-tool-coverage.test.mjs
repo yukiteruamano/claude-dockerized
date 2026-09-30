@@ -19,13 +19,13 @@ const home = mkdtempSync(join(tmpdir(), "coverage-home-"));
 const out = join(home, "managed-settings.json");
 const userOut = join(home, "settings.json");
 
-// Render both templates exactly as the wrapper does (defaults: no model, no
-// cleanup override, formatters off, balanced policy).
+// Render the managed policy and seed the user settings exactly as the wrapper
+// does (defaults: no cleanup override, formatters off, balanced policy).
 const res = spawnSync(
   "bash",
   [
     "-c",
-    'source "$1/lib/config-lib.sh" >/dev/null 2>&1; CLAUDE_MODEL=""; CLEANUP_DAYS=""; FORMATTERS_ENABLED=false; SECURITY_POLICY=balanced; write_claude_managed_settings "$2" && write_claude_settings_template "$3"',
+    'source "$1/lib/config-lib.sh" >/dev/null 2>&1; CLEANUP_DAYS=""; FORMATTERS_ENABLED=false; SECURITY_POLICY=balanced; write_managed_settings "$2" && ensure_user_settings "$3"',
     "_",
     repo,
     out,

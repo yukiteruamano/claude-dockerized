@@ -49,7 +49,8 @@ _claude_dockerized() {
             else
                 case "${COMP_WORDS[2]}" in
                     sync) mapfile -t COMPREPLY < <(compgen -W "--check" -- "${cur}") ;;
-                    credentials | claude) mapfile -t COMPREPLY < <(compgen -W "path" -- "${cur}") ;;
+                    claude) mapfile -t COMPREPLY < <(compgen -W "path edit policy" -- "${cur}") ;;
+                    credentials) mapfile -t COMPREPLY < <(compgen -W "path" -- "${cur}") ;;
                 esac
             fi
             ;;

@@ -110,12 +110,14 @@ EOF
     rollback) echo "Usage: $CCD_NAME rollback [--yes]   (restore the checkout and image from before the last update)" ;;
     config)
         cat <<EOF
-Usage: $CCD_NAME config [show|edit|path|sync [--check]|credentials path]
+Usage: $CCD_NAME config [show|edit|path|sync [--check]|claude [path|edit|policy]|credentials path]
 
     show               parsed configuration
     edit               open the config in \$EDITOR (created if missing)
     path               config file path
     sync [--check]     refresh (or only verify) the security layer from the repo
+    claude [path|edit|policy]
+                       user settings.json (writable preferences) / managed policy path
     credentials path   credentials file path (values are never printed)
 EOF
         ;;

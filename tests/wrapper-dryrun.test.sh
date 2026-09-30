@@ -97,7 +97,8 @@ check "--cap-drop=ALL" argv_has --cap-drop=ALL
 check "no-new-privileges" argv_pair --security-opt no-new-privileges:true
 check "--group-add coder" argv_pair --group-add coder
 check "policy mode passed" argv_has "CLAUDE_DOCKERIZED_POLICY=balanced"
-check "managed settings mounted read-only" argv_has_text "/.claude/settings.json:/home/coder/.claude/settings.json:ro"
+check "generated ~/.claude mounted read-write" argv_has_text "/.claude:/home/coder/.claude:rw"
+check_not "user settings.json never a single-file bind (EBUSY)" argv_has_text ":/home/coder/.claude/settings.json"
 check "guard hooks mounted read-only" argv_has_text "/.claude/hooks-guard:/home/coder/.claude/hooks-guard:ro"
 check "managed CLAUDE.md mounted read-only" argv_has_text "/.claude/CLAUDE.md:/home/coder/.claude/CLAUDE.md:ro"
 check "project mounted at its home-relative path" argv_has_text "$PROJECT:/work/proj"
@@ -108,7 +109,7 @@ check_not "wrapper CONFIG_DIR never mounted" argv_has_text "$CONFIG_DIR:"
 check_not "~/.ssh never mounted" argv_has_text "$HOME/.ssh:"
 check_not "privileged never used" argv_has --privileged
 
-check "managed policy mounted at the managed-settings path" argv_has_text "/.claude/managed-settings.json:/etc/claude-code/managed-settings.json:ro"
+check "managed policy dir mounted read-only at /etc/claude-code" argv_has_text "/etc/claude-code:/etc/claude-code:ro"
 
 # The configured policy is what gets pinned, and a configured model does not
 # trigger the old "template overrode" noise (config is parsed before the
@@ -117,7 +118,7 @@ mkdir -p "$CONFIG_DIR"
 printf 'setting.security_policy=strict\nsetting.model=sonnet\n' >"$CONFIG_DIR/config"
 wrapper run "$PROJECT"
 assert_eq "$(cat "$CCODE_HOME/.claude/hooks-guard/policy-mode")" strict "configured policy pinned next to the hooks"
-check "configured policy pinned in the managed env" grep -q '"CLAUDE_DOCKERIZED_POLICY": "strict"' "$CCODE_HOME/.claude/managed-settings.json"
+check "configured policy pinned in the managed env" grep -q '"CLAUDE_DOCKERIZED_POLICY": "strict"' "$CCODE_HOME/etc/claude-code/managed-settings.json"
 check_not "no 'template overrode' warning on a normal run" has_text "overrode" "$OUT"
 check "model flag passed" argv_pair claude --model
 rm -f "$CONFIG_DIR/config"
