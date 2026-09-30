@@ -710,15 +710,15 @@ printf 'setting.websearch_provider=exa\nsetting.theme=catppuccin\n' >"$CONFIG_FI
 removed_out=$(load_config 2>&1) || true
 grep -q 'Ignoring removed setting' <<<"$removed_out" || fail "removed settings must warn"
 
-# Inline secrets in the managed settings must block the run.
-managed_settings="$CLAUDE_DIR/settings.json"
-cp "$managed_settings" "$TMP/settings.json.orig"
-printf '{"permissions":{"deny":[]},"env":{"ANTHROPIC_API_KEY":"live-secret"}}' >"$managed_settings"
+# Inline secrets in the user settings must block the run.
+user_settings="$CLAUDE_DIR/settings.json"
+cp "$user_settings" "$TMP/settings.json.orig"
+printf '{"permissions":{"deny":[]},"env":{"ANTHROPIC_API_KEY":"live-secret"}}' >"$user_settings"
 if (validate_claude_config) >/dev/null 2>&1; then
-    cp "$TMP/settings.json.orig" "$managed_settings"
+    cp "$TMP/settings.json.orig" "$user_settings"
     fail "inline secrets must block the run"
 fi
-cp "$TMP/settings.json.orig" "$managed_settings"
+cp "$TMP/settings.json.orig" "$user_settings"
 
 # Optional resource limits are honored.
 MEMORY="4g"
@@ -759,36 +759,87 @@ sync_security_layer >/dev/null 2>&1 || fail "sync must refresh a stale guard cop
     fail "sync must back up the stale guard copy"
 sync_security_layer --check >/dev/null 2>&1 || fail "must be in sync after refresh"
 
-# Merge: a managed settings.json with user extras keeps the extras,
-# refreshes managed keys (template wins) and stays valid JSON.
+# User preferences (what /model, /config and /permissions write) survive
+# every sync untouched.
 node -e '
 const fs = require("node:fs");
 const p = process.argv[1];
 const s = JSON.parse(fs.readFileSync(p, "utf8"));
 s.permissions.allow.push("Bash(mycmd *)");
-s.permissions.deny = ["Bash(everything *)"];
+s.model = "opus";
 s.customUserKey = { keep: true };
 fs.writeFileSync(p, JSON.stringify(s, null, 2));
-' "$managed_settings"
-sync_out=$(sync_security_layer 2>&1) || fail "sync with user extras must succeed"
-grep -qF -- 'Bash(mycmd *)' "$managed_settings" ||
-    fail "merge must preserve custom allow entries"
-grep -qF -- 'Read(./.env)' "$managed_settings" ||
-    fail "merge must restore the template deny rules"
-grep -q 'DISABLE_AUTOUPDATER' "$managed_settings" ||
-    fail "merge must restore managed markers"
-grep -q 'overrode' <<<"$sync_out" ||
-    fail "merge must report overridden keys"
+' "$user_settings"
+cp "$user_settings" "$TMP/user.edited"
+sync_security_layer >/dev/null 2>&1 || fail "sync with user preferences must succeed"
+cmp -s "$TMP/user.edited" "$user_settings" ||
+    fail "sync must never rewrite the user preferences"
+
+# A tampered managed policy is detected by --check and restored by sync.
+printf '{}\n' >"$MANAGED"
+if sync_security_layer --check >/dev/null 2>&1; then
+    fail "--check must detect a tampered managed policy"
+fi
+sync_security_layer >/dev/null 2>&1 || fail "sync must restore the managed policy"
+grep -q 'claude-guard-bash.sh' "$MANAGED" || fail "sync must re-render the managed policy"
+
+# Render variants: empty cleanup drops the key, strict locks permission
+# rules to the managed ones, formatters enable plugins (and their hooks).
+CLEANUP_DAYS="" SECURITY_POLICY=strict FORMATTERS_ENABLED=true write_managed_settings "$TMP/managed.variant" ||
+    fail "managed policy must render with strict + formatters"
+if grep -q 'cleanupPeriodDays' "$TMP/managed.variant"; then
+    fail "empty cleanup_days must drop cleanupPeriodDays"
+fi
+grep -q '"allowManagedPermissionRulesOnly": true' "$TMP/managed.variant" ||
+    fail "strict must set allowManagedPermissionRulesOnly"
+grep -q '"prettier@claude": true' "$TMP/managed.variant" ||
+    fail "formatters must enable the formatter plugins"
+if grep -q 'allowManagedHooksOnly' "$TMP/managed.variant"; then
+    fail "formatters need plugin hooks, so allowManagedHooksOnly must be dropped"
+fi
 if command -v node >/dev/null 2>&1; then
-    node -e 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))' "$managed_settings" ||
-        fail "merged settings.json must be valid JSON"
+    for f in "$MANAGED" "$TMP/managed.variant" "$user_settings"; do
+        node -e 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))' "$f" ||
+            fail "$f must be valid JSON"
+    done
 fi
 
+# A legacy settings.json (old wrapper policy + user extras) is migrated to
+# user scope: extras kept, policy and the null model dropped, backup kept.
+cat >"$user_settings" <<'LEGACY'
+{
+  "env": { "DISABLE_AUTOUPDATER": "1", "MY_FLAG": "1" },
+  "model": null,
+  "theme": "dark",
+  "permissions": {
+    "allow": ["Bash(mycmd *)"],
+    "deny": ["Read(./.env)"],
+    "disableBypassPermissionsMode": "disable"
+  },
+  "hooks": { "PreToolUse": [{ "matcher": "Bash", "hooks": [{ "type": "command", "command": "/home/coder/.claude/hooks-guard/claude-guard-bash.sh" }] }] }
+}
+LEGACY
+if sync_security_layer --check >/dev/null 2>&1; then
+    fail "--check must flag a legacy user settings.json"
+fi
+sync_security_layer >/dev/null 2>&1 || fail "sync must migrate a legacy settings.json"
+[ -f "$user_settings.bak" ] || fail "legacy settings.json must be backed up"
+if grep -qE 'claude-guard|DISABLE_AUTOUPDATER|"model"|"deny"' "$user_settings"; then
+    fail "migration must drop the legacy policy and the null model"
+fi
+if command -v node >/dev/null 2>&1; then
+    grep -q '"theme": "dark"' "$user_settings" || fail "migration must keep user keys"
+    grep -q '"MY_FLAG": "1"' "$user_settings" || fail "migration must keep user env"
+    grep -qF 'Bash(mycmd *)' "$user_settings" || fail "migration must keep user allow rules"
+fi
+rm -f "$user_settings.bak"
+
 # Broken settings.json is backed up and reseeded, never silently dropped.
-printf 'not json{{{' >"$managed_settings"
+printf 'not json{{{' >"$user_settings"
 sync_security_layer >/dev/null 2>&1 || fail "sync must survive broken settings.json"
-[ -f "$managed_settings.bak" ] || fail "broken settings.json must be backed up"
-grep -q 'DISABLE_AUTOUPDATER' "$managed_settings" || fail "settings.json must be reseeded"
+[ -f "$user_settings.bak" ] || fail "broken settings.json must be backed up"
+cmp -s "$REPO_DIR/config/user-settings.default.json" "$user_settings" ||
+    fail "broken settings.json must be reseeded from the defaults"
 
 # --check must not write anything.
 before_hashes=$(find "$CONFIG_DIR" "$CCODE_HOME" -type f -exec md5sum {} + 2>/dev/null | sort)
