@@ -129,5 +129,8 @@ _integrity_json_array() {
 # Print the most recent audit record (or nothing). Usage: integrity_last_report
 integrity_last_report() {
     local log="$CONFIG_DIR/audit/sessions.jsonl"
-    [ -s "$log" ] && tail -n 1 "$log"
+    if [ -s "$log" ]; then
+        tail -n 1 "$log"
+    fi
+    return 0
 }
