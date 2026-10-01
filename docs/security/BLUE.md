@@ -44,7 +44,7 @@ reduces noise and blocks the obvious.
 | Docker socket off by default | T-20 | `wrapper-dryrun` |
 | `~/.local/bin` last on PATH | T-04 | `entrypoint`, integration |
 | `setting.hardening=standard`: `--init`, `--pids-limit`, private IPC | T-23 | `hardening` |
-| `setting.hardening=strict`: read-only rootfs + tmpfs; read-only plugins/skills/agents/commands/`~/.local/bin`; read-only `.git` hooks/config overlays; bridge network | T-01, T-05, T-06, T-22 | `hardening`, integration |
+| `setting.hardening=strict`: read-only rootfs + tmpfs; read-only plugins/agents/commands/`~/.local/bin` (skills stay writable); read-only `.git` hooks/config overlays; bridge network | T-01, T-05, T-06, T-22 | `hardening`, integration |
 
 ### Policy (`config/managed-settings.json`, rendered by `write_managed_settings`)
 

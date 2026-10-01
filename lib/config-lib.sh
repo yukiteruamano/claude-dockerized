@@ -1957,17 +1957,23 @@ build_standard_volume_args() {
     fi
 
     # Paths that later sessions (or the host) execute: read-write by default,
-    # read-only under setting.hardening=strict (T-05; install plugins, skills
-    # and LSP binaries from the host then).
+    # read-only under setting.hardening=strict (T-05; install plugins and LSP
+    # binaries from the host then).
     local persist="rw"
     [ "$HARDENING" = strict ] && persist="ro"
 
-    # User plugins / skills / agents / commands.
-    for d in plugins skills agents commands; do
+    # User plugins / agents / commands.
+    for d in plugins agents commands; do
         if [ -d "$chome/.claude/$d" ]; then
             VOLUME_ARGS+=(-v "$chome/.claude/$d:/home/coder/.claude/$d:$persist")
         fi
     done
+
+    # User skills: always read-write, so the session can improve a skill even
+    # under strict; changes are still reported by the integrity check (T-05).
+    if [ -d "$chome/.claude/skills" ]; then
+        VOLUME_ARGS+=(-v "$chome/.claude/skills:/home/coder/.claude/skills:rw")
+    fi
 
     # LSP config (regenerated when setting.lsp=true).
     if [ -f "$chome/.claude/.lsp.json" ]; then
@@ -3192,7 +3198,7 @@ prompt_hardening() {
     config_info "Runtime Hardening (opt-in)"
     echo "  off      = today's runtime (default)"
     echo "  standard = + init process, pids limit, private IPC"
-    echo "  strict   = + read-only root filesystem, read-only plugins/skills/~/.local/bin"
+    echo "  strict   = + read-only root filesystem, read-only plugins/~/.local/bin"
     echo "             and project .git hooks/config, bridge network (install plugins"
     echo "             and LSP binaries from the host)"
     echo ""

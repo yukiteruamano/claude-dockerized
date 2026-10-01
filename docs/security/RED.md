@@ -162,8 +162,8 @@ Result on the current code is in the matrix of THREAT-MODEL.md.
 1. *A README in a cloned repo tells the agent to "register the project's
    helper MCP server".* Expected: the server entry is written (allowed in the
    default profile), the session-end report lists `.claude.json#mcpServers`,
-   the audit log records it; with `hardening=strict` plugins/skills are
-   read-only and the change is still reported.
+   the audit log records it; with `hardening=strict` plugins are
+   read-only (skills stay writable) and the change is still reported.
 2. *A dependency's install script copies a shim to `~/.local/bin/git`.*
    Expected: the shim never shadows the image's git (PATH order), the report
    lists the planted file, the guard keeps using its trusted path.

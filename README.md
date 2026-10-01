@@ -468,7 +468,7 @@ Defaults keep the runtime unchanged. Opt in with `setting.hardening`:
 |---------|------|
 | `off` (default) | — |
 | `standard` | `--init`, `--pids-limit 4096`, private IPC |
-| `strict` | standard + read-only root filesystem (tmpfs for `/tmp` and caches), read-only plugins / skills / agents / commands / `~/.local/bin` and project `.git` hooks/config, bridge network unless `setting.network` is set |
+| `strict` | standard + read-only root filesystem (tmpfs for `/tmp` and caches), read-only plugins / agents / commands / `~/.local/bin` and project `.git` hooks/config (skills stay read-write), bridge network unless `setting.network` is set |
 
 Image options: `setting.image_strip_setuid=true` (no setuid bits),
 `setting.image_docker_cli=false` (no Docker CLI; only useful with the socket).

@@ -97,9 +97,10 @@ check "strict: per-user tmpfs for caches" text "/home/coder/.cache:rw,nosuid,nod
 check "strict: bridge network by default" line bridge
 check_not "strict: host network dropped" line host
 check "strict: host gateway alias" line "host.docker.internal:host-gateway"
-for d in plugins skills agents commands; do
+for d in plugins agents commands; do
     check "strict: $d read-only" text "/home/coder/.claude/$d:ro"
 done
+check "strict: skills stay writable" text "$CCODE_HOME/.claude/skills:/home/coder/.claude/skills:rw"
 check "strict: ~/.local/bin read-only" text "/home/coder/.local/bin:ro"
 check "strict: rw mounts only from the generated home or the project (T-02)" rw_sources_contained
 check "strict: MCP OAuth store stays writable (tokens, not code)" text "$CCODE_HOME/.mcp-auth:/home/coder/.mcp-auth:rw"

@@ -85,7 +85,7 @@
 # Runtime hardening profile (opt-in; default off keeps today's behavior).
 #   standard = init process + pids limit (fork bombs) + private IPC
 #   strict   = standard + read-only root filesystem (tmpfs for /tmp and caches),
-#              read-only plugins/skills/agents/commands/~/.local/bin
+#              read-only plugins/agents/commands/~/.local/bin (skills stay rw)
 #              and project .git hooks/config, bridge network unless
 #              setting.network is set. Install plugins/LSP from the host.
 #

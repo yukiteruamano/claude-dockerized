@@ -1143,15 +1143,15 @@ CCODE_BIN_DIR="$CCODE_BIN_DIR_SAVED"
     fail "sync must remove the obsolete install binary"
 
 # No previous-generation names anywhere except marked migration lines and
-# vendored-policy attribution (see PLAN.md acceptance).
-if grep -rniE 'opencode|OCODE|OPENCODE' --exclude-dir=.git --exclude=PLAN.md "$REPO_DIR" 2>/dev/null \
+# vendored-policy attribution (rename acceptance).
+if grep -rniE 'opencode|OCODE|OPENCODE' --exclude-dir=.git "$REPO_DIR" 2>/dev/null \
     | grep -v 'policies/LICENSE.opencode-policy' \
     | grep -v 'policies/README.md' \
     | grep -v 'tests/security-guard.test.mjs' \
     | grep -v 'tests/wrapper-args.test.sh' \
     | grep -v 'legacy-migration' \
     | grep -q .; then
-    grep -rniE 'opencode|OCODE|OPENCODE' --exclude-dir=.git --exclude=PLAN.md "$REPO_DIR" 2>/dev/null \
+    grep -rniE 'opencode|OCODE|OPENCODE' --exclude-dir=.git "$REPO_DIR" 2>/dev/null \
         | grep -v 'policies/LICENSE.opencode-policy' \
         | grep -v 'policies/README.md' \
         | grep -v 'tests/security-guard.test.mjs' \
