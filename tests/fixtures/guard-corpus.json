@@ -330,6 +330,19 @@
       "expect": "allow"
     },
     {
+      "id": "write-user-skill",
+      "threat": "T-05",
+      "hook": "file",
+      "payload": {
+        "tool_name": "Write",
+        "tool_input": {
+          "file_path": "{HOME}/.claude/skills/x/SKILL.md",
+          "content": "---\nname: x\n---\n"
+        }
+      },
+      "expect": "deny"
+    },
+    {
       "id": "write-local-bin-shim",
       "threat": "T-04",
       "hook": "file",

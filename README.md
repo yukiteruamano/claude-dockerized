@@ -222,7 +222,8 @@ mapping is needed.
 |-----------|---------------|------|---------|
 | `$PROJECT_DIR` | `$PROJECT_DIR` (with `$HOME` stripped) | read-write | Your project files |
 | `~/.config/claude-dockerized/home/etc/claude-code/` | `/etc/claude-code/` | **read-only** | Managed policy `managed-settings.json` (permissions, hooks, no-autoupdate), highest precedence |
-| `~/.config/claude-dockerized/home/.claude/` | `/home/coder/.claude/` | read-write | User settings (`/model`, `/config`), credentials (`0600`), plugins, skills, agents, commands, `.lsp.json`, memory |
+| `~/.config/claude-dockerized/home/.claude/` | `/home/coder/.claude/` | read-write | User settings (`/model`, `/config`), credentials (`0600`), plugins, agents, commands, `.lsp.json`, memory |
+| `~/.config/claude-dockerized/home/.claude/skills/` | `/home/coder/.claude/skills/` | **read-only** | User skills (overlay); install and edit them from the host |
 | `~/.config/claude-dockerized/home/.claude/hooks-guard/` | `/home/coder/.claude/hooks-guard/` | **read-only** | Native `PreToolUse` hooks + policy data (overlay) |
 | `~/.config/claude-dockerized/home/.claude/CLAUDE.md` | `/home/coder/.claude/CLAUDE.md` | **read-only** | Managed session rules (overlay) |
 | `~/.config/claude-dockerized/home/.claude.json` | `/home/coder/.claude.json` | read-write | MCP user-scope state |
@@ -258,7 +259,8 @@ that one directory and the whole setup travels with it. The host XDG dirs
     │   │   .credentials.json        ← login, 0600, rw
     │   │   hooks-guard/             ← mirrored hooks + policies, ro mount
     │   │   CLAUDE.md                ← mirrored rules, ro mount
-    │   │   plugins/ skills/ agents/ commands/ ← yours, rw
+    │   │   plugins/ agents/ commands/ ← yours, rw
+    │   │   skills/                  ← yours, ro mount (edit from the host)
     │   │   .lsp.json                ← generated when setting.lsp=true, rw
     ├── .claude.json                 ← MCP state, rw
     ├── .local/bin/                  ← LSP/formatter binaries, rw
@@ -468,7 +470,7 @@ Defaults keep the runtime unchanged. Opt in with `setting.hardening`:
 |---------|------|
 | `off` (default) | — |
 | `standard` | `--init`, `--pids-limit 4096`, private IPC |
-| `strict` | standard + read-only root filesystem (tmpfs for `/tmp` and caches), read-only plugins / agents / commands / `~/.local/bin` and project `.git` hooks/config (skills stay read-write), bridge network unless `setting.network` is set |
+| `strict` | standard + read-only root filesystem (tmpfs for `/tmp` and caches), read-only plugins / agents / commands / `~/.local/bin` and project `.git` hooks/config (skills are read-only in every profile), bridge network unless `setting.network` is set |
 
 Image options: `setting.image_strip_setuid=true` (no setuid bits),
 `setting.image_docker_cli=false` (no Docker CLI; only useful with the socket).

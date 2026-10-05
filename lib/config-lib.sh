@@ -709,9 +709,11 @@ attempt to weaken or bypass them.
   credential stores (`.credentials.json`, `.git-credentials`, `.netrc`,
   docker/gh/kube/gcloud configs), tokens or credentials of any kind.
 - Do not add git hooks, change `.git/config`, project `.claude/settings*.json`,
-  MCP servers, plugins, skills or files in `~/.local/bin` unless the user asked
+  MCP servers, plugins or files in `~/.local/bin` unless the user asked
   for exactly that: they run on the host or in later sessions, and every
   change is reported to the user after the session.
+- `~/.claude/skills/` is read-only: skills are installed and edited from the
+  host (`~/.config/claude-dockerized/home/.claude/skills/`).
 - Only modify files inside the mounted project directory; touching anything
   outside it requires explicit user approval.
 
@@ -1969,10 +1971,13 @@ build_standard_volume_args() {
         fi
     done
 
-    # User skills: always read-write, so the session can improve a skill even
-    # under strict; changes are still reported by the integrity check (T-05).
+    # User skills: read-only in every profile (T-05), so a session cannot plant
+    # or rewrite instructions that later sessions load; manage them from the
+    # host. Created first: without the overlay the read-write ~/.claude parent
+    # would let the session create skills/ itself.
+    mkdir -p "$chome/.claude/skills" 2>/dev/null || true
     if [ -d "$chome/.claude/skills" ]; then
-        VOLUME_ARGS+=(-v "$chome/.claude/skills:/home/coder/.claude/skills:rw")
+        VOLUME_ARGS+=(-v "$chome/.claude/skills:/home/coder/.claude/skills:ro")
     fi
 
     # LSP config (regenerated when setting.lsp=true).
@@ -3199,6 +3204,7 @@ prompt_hardening() {
     echo "  off      = today's runtime (default)"
     echo "  standard = + init process, pids limit, private IPC"
     echo "  strict   = + read-only root filesystem, read-only plugins/~/.local/bin"
+    echo "             (skills are read-only in every profile)"
     echo "             and project .git hooks/config, bridge network (install plugins"
     echo "             and LSP binaries from the host)"
     echo ""

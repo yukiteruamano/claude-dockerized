@@ -43,8 +43,9 @@ reduces noise and blocks the obvious.
 | Read-write binds only from the generated home and the project: no host CLI or token directory (the MCP OAuth store is `$CCODE_HOME/.mcp-auth`, `0700`) | T-02 | `hardening`, `wrapper-args` |
 | Docker socket off by default | T-20 | `wrapper-dryrun` |
 | `~/.local/bin` last on PATH | T-04 | `entrypoint`, integration |
+| User skills (`~/.claude/skills/`) read-only in every profile, plus `Edit(~/.claude/skills/**)` deny | T-05 | `hardening`, corpus `write-user-skill` |
 | `setting.hardening=standard`: `--init`, `--pids-limit`, private IPC | T-23 | `hardening` |
-| `setting.hardening=strict`: read-only rootfs + tmpfs; read-only plugins/agents/commands/`~/.local/bin` (skills stay writable); read-only `.git` hooks/config overlays; bridge network | T-01, T-05, T-06, T-22 | `hardening`, integration |
+| `setting.hardening=strict`: read-only rootfs + tmpfs; read-only plugins/agents/commands/`~/.local/bin`; read-only `.git` hooks/config overlays; bridge network | T-01, T-05, T-06, T-22 | `hardening`, integration |
 
 ### Policy (`config/managed-settings.json`, rendered by `write_managed_settings`)
 

@@ -70,6 +70,7 @@ done
 check "off keeps host networking" line host
 check "off keeps plugins read-write" text "/home/coder/.claude/plugins:rw"
 check "off keeps ~/.local/bin read-write" text "/home/coder/.local/bin:rw"
+check "off: skills read-only (T-05)" text "$CCODE_HOME/.claude/skills:/home/coder/.claude/skills:ro"
 check_not "off adds no .git overlay" text "/.git/hooks:ro"
 check "off: rw mounts only from the generated home or the project (T-02)" rw_sources_contained
 check "off: MCP OAuth store from the generated home" text "$CCODE_HOME/.mcp-auth:/home/coder/.mcp-auth:rw"
@@ -100,7 +101,7 @@ check "strict: host gateway alias" line "host.docker.internal:host-gateway"
 for d in plugins agents commands; do
     check "strict: $d read-only" text "/home/coder/.claude/$d:ro"
 done
-check "strict: skills stay writable" text "$CCODE_HOME/.claude/skills:/home/coder/.claude/skills:rw"
+check "strict: skills read-only (T-05)" text "$CCODE_HOME/.claude/skills:/home/coder/.claude/skills:ro"
 check "strict: ~/.local/bin read-only" text "/home/coder/.local/bin:ro"
 check "strict: rw mounts only from the generated home or the project (T-02)" rw_sources_contained
 check "strict: MCP OAuth store stays writable (tokens, not code)" text "$CCODE_HOME/.mcp-auth:/home/coder/.mcp-auth:rw"
