@@ -733,14 +733,8 @@ build_env_file_args() {
     # Expand a leading ~, then canonicalize so `..` segments cannot escape the
     # containment check below (readlink -m needs no existing file; fall back to
     # the literal path where it is unavailable, e.g. macOS).
-    local env_file="$ENV_FILE"
-    if [[ "$env_file" == "~"* ]]; then
-        env_file="$HOME${env_file#"~"}"
-    fi
-    local canonical
-    if canonical=$(readlink -m "$env_file" 2>/dev/null) && [ -n "$canonical" ]; then
-        env_file="$canonical"
-    fi
+    local env_file
+    env_file=$(canonical_host_path "$ENV_FILE")
 
     case "$env_file" in
     "$CONFIG_DIR" | "$CONFIG_DIR"/*) ;;

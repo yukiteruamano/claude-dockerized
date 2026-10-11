@@ -669,9 +669,10 @@ print_config() {
     echo "  Memory limit: ${MEMORY:-(none)}"
     echo "  CPU limit: ${CPUS:-(none)}"
     if [ -n "$ENV_FILE" ]; then
-        local env_key_count="?"
-        if [ -f "$ENV_FILE" ]; then
-            env_key_count=$(grep -cE '^[A-Za-z_][A-Za-z0-9_]*=' "$ENV_FILE" 2>/dev/null || true)
+        local env_key_count="?" env_file_path
+        env_file_path=$(canonical_host_path "$ENV_FILE")
+        if [ -f "$env_file_path" ]; then
+            env_key_count=$(grep -cE '^[A-Za-z_][A-Za-z0-9_]*=' "$env_file_path" 2>/dev/null || true)
         fi
         echo "  Env file: $ENV_FILE ($env_key_count keys)"
     else
