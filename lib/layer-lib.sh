@@ -556,12 +556,15 @@ check_security_layer() {
 
     # The secrets file is never read for values here; only its permissions.
     if [ -n "${ENV_FILE:-}" ]; then
-        if [ ! -f "$ENV_FILE" ]; then
+        # setting.env_file may start with ~: resolve it like build_env_file_args does
+        local env_file_path
+        env_file_path=$(canonical_host_path "$ENV_FILE")
+        if [ ! -f "$env_file_path" ]; then
             config_warning "env file not found: $ENV_FILE"
             stale=true
         else
             local mode=""
-            mode=$(stat -c '%a' "$ENV_FILE" 2>/dev/null || stat -f '%Lp' "$ENV_FILE" 2>/dev/null || true)
+            mode=$(stat -c '%a' "$env_file_path" 2>/dev/null || stat -f '%Lp' "$env_file_path" 2>/dev/null || true)
             if [ -n "$mode" ] && [ $((8#$mode & 8#044)) -ne 0 ]; then
                 config_warning "env file is readable by group/others ($ENV_FILE); run: chmod 600"
             else

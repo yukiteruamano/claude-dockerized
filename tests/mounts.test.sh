@@ -159,6 +159,20 @@ check "T-18 env file readable by others refused" env_file_refused "$CONFIG_DIR/e
 chmod 600 "$CONFIG_DIR/env-open"
 check "the same env file accepted once it is 0600" env_file_ok "$CONFIG_DIR/env-open"
 
+# setting.env_file may be written with a leading ~: the layer check and the config
+# summary must resolve it exactly like the run path does (they used to look for a
+# literal "~" directory and report "env file not found").
+tilde_env_report() {
+    (
+        ENV_FILE="~/.config/claude-dockerized/env"
+        check_security_layer 2>&1
+    )
+}
+check_not "layer check finds an env file written with ~" has_text "env file not found" "$(tilde_env_report)"
+check "layer check accepts its permissions" has_text "env file permissions ok" "$(tilde_env_report)"
+tilde_summary() { (ENV_FILE="~/.config/claude-dockerized/env"; print_config 2>&1); }
+check "config summary counts the keys of a ~ env file" has_text "(1 keys)" "$(tilde_summary)"
+
 # --- relay dir: stale relays are removed with rm -rf, so the override is constrained ------
 relay_ok() { (GPG_RELAY_DIR="$1"; relay_dir_ok); }
 check "relay dir inside CONFIG_DIR accepted" relay_ok "$CONFIG_DIR/gnupg-relay"
