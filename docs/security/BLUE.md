@@ -32,7 +32,7 @@ reduces noise and blocks the obvious.
 | Root-owned node copy for the guard (`/usr/local/lib/claude-dockerized/bin`) | T-04 | integration |
 | Opt-in `STRIP_SETUID=1`, `DOCKER_CLI=0` | T-21, T-20 | CI hardened image |
 
-### Runtime (`lib/config-lib.sh`: `build_common_docker_args`, `build_standard_volume_args`)
+### Runtime (`lib/mounts-lib.sh`: `build_common_docker_args`, `build_standard_volume_args`)
 
 | Control | Threat | Verified by |
 |---------|--------|-------------|

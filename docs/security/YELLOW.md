@@ -90,6 +90,9 @@
 Releases are **signed annotated tags** `vX.Y.Z`; `update` refuses anything
 else by default.
 
+Bump `WRAPPER_VERSION` in `bin/claude-dockerized` first (`tests/supply-chain.test.sh`
+fails when it is behind the latest tag), then tag the release commit:
+
 ```bash
 git tag -s vX.Y.Z -m "claude-dockerized vX.Y.Z"
 git push origin vX.Y.Z      # release-verify.yml checks the signature

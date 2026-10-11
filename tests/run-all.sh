@@ -3,19 +3,25 @@
 # The Docker integration suite runs with --integration (it skips by itself
 # when no daemon is reachable). Exits non-zero when any suite fails.
 #
-# Usage: bash tests/run-all.sh [--integration] [--verbose]
+# A suite that skips itself (missing gpg or Docker) is counted and listed, so a
+# green run never hides coverage that did not execute.
+#
+# Usage: bash tests/run-all.sh [--integration] [--verbose] [--no-skip]
 #   --verbose  also list every known gap (GUARD_TEST_VERBOSE=1)
+#   --no-skip  fail when any suite skipped itself
 set -e
 
 TESTS_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 
 integration=false
+no_skip=false
 for arg in "$@"; do
     case "$arg" in
     --integration) integration=true ;;
     --verbose) export GUARD_TEST_VERBOSE=1 ;;
+    --no-skip) no_skip=true ;;
     -h | --help)
-        sed -n '2,8p' "${BASH_SOURCE[0]}"
+        sed -n '2,12p' "${BASH_SOURCE[0]}"
         exit 0
         ;;
     *)
@@ -31,7 +37,10 @@ for f in "$TESTS_DIR"/*.test.mjs "$TESTS_DIR"/*.test.sh; do
 done
 [ "$integration" = true ] && suites+=("$TESTS_DIR/integration/container.test.sh")
 
+out="$(mktemp)"
+trap 'rm -f "$out"' EXIT
 failed=()
+skipped=()
 for suite in "${suites[@]}"; do
     name="${suite#"$TESTS_DIR"/}"
     printf '==> %s\n' "$name"
@@ -39,8 +48,12 @@ for suite in "${suites[@]}"; do
     *.mjs) runner=(node "$suite") ;;
     *) runner=(bash "$suite") ;;
     esac
-    if ! "${runner[@]}"; then
-        failed+=("$name")
+    rc=0
+    "${runner[@]}" 2>&1 | tee "$out"
+    rc=${PIPESTATUS[0]}
+    [ "$rc" -eq 0 ] || failed+=("$name")
+    if grep -Eq '^[A-Za-z0-9_-]+: skipped' "$out"; then
+        skipped+=("$name")
     fi
 done
 
@@ -50,4 +63,11 @@ if [ "${#failed[@]}" -gt 0 ]; then
     printf '  %s\n' "${failed[@]}"
     exit 1
 fi
-printf 'All %d suites passed.\n' "${#suites[@]}"
+if [ "${#skipped[@]}" -gt 0 ]; then
+    printf 'SKIPPED suites (%d/%d), their checks did not run:\n' "${#skipped[@]}" "${#suites[@]}"
+    printf '  %s\n' "${skipped[@]}"
+    if [ "$no_skip" = true ]; then
+        exit 1
+    fi
+fi
+printf 'All %d suites passed (%d skipped).\n' "${#suites[@]}" "${#skipped[@]}"
