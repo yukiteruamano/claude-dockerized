@@ -52,6 +52,7 @@ for (const tool of ["MultiEdit", "NotebookEdit"]) {
 }
 report.check("managed policy pins the policy mode", settings.env?.CLAUDE_DOCKERIZED_POLICY, "balanced");
 report.check("managed policy disables auto-updates", settings.env?.DISABLE_AUTOUPDATER, "1");
+report.check("managed policy pins the preload variable empty", settings.env?.LD_PRELOAD, "");
 report.check("managed policy disables bypass mode", settings.permissions?.disableBypassPermissionsMode, "disable");
 report.check("managed policy keeps the inert sandbox off (T-30)", settings.sandbox?.enabled, false);
 for (const key of ["hooks", "env", "sandbox", "disableAllHooks"]) {

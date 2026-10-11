@@ -77,11 +77,13 @@ export function which(tool) {
   return null;
 }
 
-// Run one hook. `payload` is serialized to JSON unless `raw` (a string) is
-// given. Returns { code, stderr, verdict }.
+// Run one hook the way Claude Code does: the script itself is executed, so its
+// shebang (and what it does about BASH_ENV) is part of what is tested.
+// `payload` is serialized to JSON unless `raw` (a string) is given.
+// Returns { code, stderr, verdict }.
 export function runHook(stage, script, { mode = "balanced", payload, raw, env = {}, cwd } = {}) {
   const input = raw ?? JSON.stringify(payload ?? {});
-  const res = spawnSync("bash", [join(stage, script)], {
+  const res = spawnSync(join(stage, script), [], {
     input,
     encoding: "utf8",
     cwd,

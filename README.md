@@ -211,8 +211,9 @@ The wrapper is configured through `~/.config/claude-dockerized/config`
 (INI-style, created by `./install.sh`).
 
 There is **no `.env` file**: secrets live in `setting.env_file` (a dotenv file
-under `~/.config/claude-dockerized/`, loaded with `docker --env-file`), and
-`TERM` is forwarded automatically. The
+under `~/.config/claude-dockerized/`, loaded with `docker --env-file`; the
+wrapper refuses to start while the file is readable by group/others, so keep it
+at `chmod 600`), and `TERM` is forwarded automatically. The
 container runs as your host UID/GID (`--user`), so no `HOST_UID`/`HOST_GID`
 mapping is needed.
 
@@ -555,7 +556,12 @@ Your login lives in `~/.config/claude-dockerized/home/.claude/.credentials.json`
 
 ### Shared Modules
 
-- **`lib/config-lib.sh`** - Shared configuration library (mounts and their validation, env, managed policy and settings generation, sync, hardening profiles, LSP installs)
+- **`lib/config-lib.sh`** - Entry point of the shared library: constants, config parsing/saving and image helpers; sources the modules below
+- **`lib/mounts-lib.sh`** - Docker arguments: mounts and their validation, env, hardening profiles, project path checks
+- **`lib/layer-lib.sh`** - Security layer: managed policy and settings generation, hooks mirror, sync and checks
+- **`lib/agent-lib.sh`** - Forwarded GnuPG/SSH agents and the socket relay
+- **`lib/lsp-lib.sh`** - Opt-in LSP servers and formatters
+- **`lib/wizard-lib.sh`** - Interactive configuration prompts
 - **`lib/install-lib.sh`** - Install wizard library sourced by the wrapper's `install` command
 - **`lib/update-lib.sh`** - Verified self-update (trust store, signature checks, origin pin, rollback)
 - **`lib/integrity-lib.sh`** - Session integrity check and audit log

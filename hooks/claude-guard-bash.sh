@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/bash -p
 # claude-guard-bash.sh - Claude Code PreToolUse hook (matcher: Bash).
 #
 # Native security enforcement for claude-dockerized. Mounted read-only into the
@@ -12,7 +12,11 @@
 # normal permissions flow applies. Any other exit is a non-blocking error for
 # Claude Code (the tool still runs), so every failure path here exits 2.
 #
-# CLAUDE_DOCKERIZED_GUARD_VERSION=3
+# The shebang is `bash -p`: privileged mode never sources $BASH_ENV/$ENV, which
+# a project's settings `env` could otherwise point at a script that exits 0
+# before this file runs. The managed policy also pins those variables empty.
+#
+# CLAUDE_DOCKERIZED_GUARD_VERSION=4
 #
 # Policy modes (./policy-mode, written by the wrapper next to this hook on the
 # read-only mount; CLAUDE_DOCKERIZED_POLICY is only a fallback because project
@@ -41,6 +45,8 @@ if [ -r "$HOOK_DIR/hook-path" ]; then
     IFS= read -r TRUSTED_PATH <"$HOOK_DIR/hook-path" || true
 fi
 export PATH="$TRUSTED_PATH"
+# Nothing injected through settings `env` may reach the tools this hook spawns.
+unset BASH_ENV ENV NODE_OPTIONS NODE_PATH LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT
 
 deny_reason() {
     printf 'Blocked by claude-dockerized security policy: %s\n' "$1" >&2
@@ -91,9 +97,9 @@ CMD="$(extract_command)" || deny_reason "unparseable hook payload"
 [ -z "$CMD" ] && exit 0
 
 # Normalize shell word-separator obfuscation back to spaces before matching
-# (port of guard normalizeShell): ${IFS...}, $'\t', $'\n'.
+# (port of guard normalizeShell): ${IFS...}, $IFS, $IFS$9, $'\t', $'\n'.
 # shellcheck disable=SC2016 # the $'…' shapes are intentional sed literals, not expansions
-NORM="$(printf '%s' "$CMD" | sed -e 's/\${IFS[^}]*}/ /gI' -e "s/\\$'\\\\t'/ /g" -e "s/\\$'\\\\n'/ /g")"
+NORM="$(printf '%s' "$CMD" | sed -e 's/\${IFS[^}]*}/ /gI' -e 's/\$IFS\(\$[0-9@*]\)\{0,1\}/ /gI' -e "s/\\$'\\\\t'/ /g" -e "s/\\$'\\\\n'/ /g")"
 
 deny() {
     printf 'Blocked by claude-dockerized security policy: %s\n' "$CMD" >&2
@@ -126,6 +132,17 @@ if [ "$POLICY_MODE" != "none" ]; then
         # rule still fires on a plain `git clone ssh:` / registry curl / MCP
         # https URL, let the built-in backstops decide instead.
         if [ "$POLICY_MODE" != "strict" ]; then
+            # The override trusts a command prefix, so it only covers one plain
+            # command: anything chained, expanded, redirected or uploading is
+            # judged by the vendored rules like in strict.
+            case "$CMD" in
+            *\;* | *\&* | *\|* | *\`* | *\$* | *\<* | *\>* | *\(* | *\)* | *$'\n'* | *$'\r'*)
+                deny_policy "$_rid" "$_reason"
+                ;;
+            *" -d"* | *" -F"* | *" -T"* | *--data* | *--form* | *--upload-file* | *--post-*)
+                deny_policy "$_rid" "$_reason"
+                ;;
+            esac
             case "$CMD" in
             git\ clone\ git@*|git\ ls-remote\ git@*|git\ fetch\ git@*|git\ pull\ git@*|git\ push\ git@*)
                 ;;
@@ -156,6 +173,8 @@ match 'rm[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*-[a-zA-Z]*[rf][a-zA-Z]*[[:space:]]
 match 'rm[[:space:]]+.*[[:space:]]+/[[:space:]]*$' && deny
 match 'rm[[:space:]]+[^|;&]*[[:space:]]/\*([[:space:];|&]|$)' && deny
 match 'rm[[:space:]]+[^|;&]*/\.\.(/|$)' && deny
+# recursive rm of the home or the working tree itself (~, $HOME, ., ..)
+match 'rm[[:space:]]+[^|;&]*-[a-zA-Z]*[rR][a-zA-Z]*[[:space:]]+([^|;&]*[[:space:]])?["'"'"']?(~|\$HOME|\$\{HOME\}|\.\.?)["'"'"']?/?["'"'"']?([[:space:];|&]|$)' && deny
 match '(^|[^[:alnum:]_])mkfs(\.[[:alnum:]_]+)?([^[:alnum:]_]|$)' && deny
 match '(^|[^[:alnum:]_])dd([^[:alnum:]_]|$)[^|;&]*of=/(dev/)?[a-z]' && deny
 match '(^|[^[:alnum:]_])(shutdown|reboot|halt|poweroff)([^[:alnum:]_]|$)' && deny
@@ -166,7 +185,7 @@ match 'chown[[:space:]]+[^|;&]*[[:space:]]/([[:space:];|&*]|$)' && deny
 match 'chown[[:space:]]+[^|;&]*/\.\.(/|$)' && deny
 match '>[[:space:]]*/dev/(sd|nvme|hd)' && deny
 # proc environ + cloud metadata (literal + decimal/hex/octal forms)
-match '/proc/[^/[:space:]]*/environ' && deny
+match '/proc/[^[:space:]]*/environ' && deny
 match '169\.254\.169\.254' && deny
 match '(^|[^[:alnum:]])2852039166([^[:alnum:]]|$)' && deny
 match '0x[aA]9[fF][eE][aA]9[fF][eE]' && deny
@@ -182,8 +201,8 @@ match '(^|[^[:alnum:]_])docker([^[:alnum:]_]|$)[^|;&]*--mount[^|;&]*source[[:spa
 match '(^|[/[:space:]"'"'"'=:(])auth\.json([[:space:]"'"'"'/):;,]|$)' && deny
 match '(^|[/[:space:]"'"'"'=:(.-])credentials([[:space:]"'"'"'/.=:;,]|$)' && deny
 # other credential stores (T-10): netrc, git/pypi creds, docker/gh/kube/gcloud
-match '(^|[/[:space:]"'"'"'=:(])\.(netrc|git-credentials|pypirc)([[:space:]"'"'"'/):;,]|$)' && deny
-match '\.docker/config\.json|(^|[/[:space:]"'"'"'=:(])gh/hosts\.yml|\.kube/config([^[:alnum:]_.-]|$)|\.config/gcloud([/[:space:]"'"'"'):;,]|$)' && deny
+match '(^|[/[:space:]"'"'"'=:(])\.(netrc|git-credentials|pypirc|pgpass)([[:space:]"'"'"'/):;,]|$)' && deny
+match '\.docker/config\.json|(^|[/[:space:]"'"'"'=:(])gh/hosts\.yml|\.kube/config([^[:alnum:]_.-]|$)|\.aws/(credentials|config)([^[:alnum:]_.-]|$)|\.config/gcloud([/[:space:]"'"'"'):;,]|$)' && deny
 match '(^|[/[:space:]"'"'"'=:(])\.npmrc([[:space:]"'"'"'/):;,]|$)' && deny
 match '(^|[/[:space:]"'"'"'=:(])\.mcp-auth([/[:space:]"'"'"'=:,;]|$)' && deny
 match '(^|[/[:space:]"'"'"'=:(])\.gitconfig([[:space:]"'"'"'/):;,]|$)' && deny
@@ -196,12 +215,21 @@ READV='cat|tac|less|more|head|tail|cp|mv|install|scp|rsync|tar|zip|gzip|bzip2|xz
 # still denies on server.key.
 P="$(printf '%s' "$T" | sed -E 's#[^[:space:]"'"'"'|;&<>]*(\.pub|public-keys\.d[^[:space:]"'"'"'|;&<>]*|authorized_keys)([[:space:]"'"'"'|;&<>]|$)#\2#g')"
 pmatch() { printf '%s' "$P" | grep -Eq "$1"; }
-pmatch "($LEAK)[^|;&]*\.pem([^[:alnum:]_.]|$)" && deny
-pmatch "($LEAK)[^|;&]*\.key([^[:alnum:]_.]|$)" && deny
+pmatchi() { printf '%s' "$P" | grep -Eiq "$1"; }
+pmatchi "($LEAK)[^|;&]*\.pem([^[:alnum:]_.]|$)" && deny
+pmatchi "($LEAK)[^|;&]*\.key([^[:alnum:]_.]|$)" && deny
+pmatchi "($LEAK)[^|;&]*\.(p12|pfx|jks)([^[:alnum:]_.]|$)" && deny
+pmatch "($LEAK)[^|;&]*(\.envrc|\.(bash|zsh)_history|\.claude\.json)([^[:alnum:]_.]|$)" && deny
 pmatch "($LEAK)[^|;&]*(_key|-key|_priv)([^[:alnum:]]|$)" && deny
 pmatch "($READV)[^|;&]*[[:alnum:]._-]*key([^[:alnum:]]|$)" && deny
 pmatch '(^|[;&|][[:space:]]*)(source|\.)[[:space:]]+[^[:space:]"'"'"'|;&<>]*\.(pem|key)([^[:alnum:]_.]|$)' && deny
 pmatch '<[[:space:]]*[^[:space:]"'"'"'|;&]*\.(pem|key)([^[:alnum:]_.]|$)' && deny
+# Writes into files the host executes or that relax the policy (T-01, T-03, T-04):
+# git hooks/config, project and user Claude settings, ~/.local/bin, skills. The
+# Edit deny rules do not cover Bash, so redirects and write verbs are matched here.
+WRITEV='(>>?|(^|[^[:alnum:]_.-])(tee|cp|mv|ln|install|truncate|touch|chmod|chown|rm|dd|rsync|sed[[:space:]]+-[a-zA-Z]*i[^|;&]*)[[:space:]])'
+PROTECTED='(\.git/hooks([/[:space:]'"'"';|&]|$)|\.git/config([^[:alnum:]_.-]|$)|\.claude/settings(\.local)?\.json|\.local/bin([/[:space:]'"'"']|$)|\.claude/skills([/[:space:]'"'"']|$))'
+match "${WRITEV}[^|;&]*${PROTECTED}" && deny
 # openssl reading a private key (generation stays allowed)
 match '(^|[^[:alnum:]_])openssl[[:space:]]+(rsa|pkey|ec|dsa|pkcs8|pkcs12|asn1parse)[^|;&]*(-inkey|-in|-text)([^[:alnum:]_]|$)' && deny
 # ssh-keygen -y -f (case-sensitive; -Y sign stays allowed)

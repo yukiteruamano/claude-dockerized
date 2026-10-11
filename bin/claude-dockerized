@@ -13,7 +13,7 @@ IMAGE_NAME="claude-dockerized:latest"
 
 # Wrapper release line, shown by the version command next to the Claude Code
 # version and the bundled guard version.
-WRAPPER_VERSION="0.1.0"
+WRAPPER_VERSION="0.3.0"
 
 
 
@@ -116,6 +116,7 @@ check_config() {
 
     if [ ${#missing_files[@]} -gt 0 ]; then
         print_warning "Some Claude Code configuration files are missing:"
+        local file
         for file in "${missing_files[@]}"; do
             echo "  - $file"
         done
@@ -127,6 +128,41 @@ check_config() {
     # the configured policy/model, never with defaults (then rewritten).
     parse_config
     ensure_claude_dirs
+}
+
+# Build every docker argument group a container needs (custom mounts, env,
+# env file, common flags, standard volumes): shared by `run` and the one-off
+# commands. Usage: build_session_args <project_dir> <docker_socket>
+build_session_args() {
+    build_mount_args
+    build_env_args
+    build_env_file_args
+    build_common_docker_args
+    build_standard_volume_args "$1" "$2"
+}
+
+# DRY_RUN: print the command (secrets redacted) and drop the GnuPG relay.
+# Usage: dry_run_session <docker_cmd...>
+dry_run_session() {
+    print_info "Dry run — would execute:"
+    dry_run_print "$@"
+    stop_gpg_relay "$GPG_RELAY_SOCKET"
+    GPG_RELAY_SOCKET=""
+}
+
+# Run a docker command and always stop the per-session GnuPG relay afterwards;
+# returns docker's own status. Only EXIT is trapped while docker owns the TTY:
+# trapping INT/TERM here would run the cleanup twice (trap + explicit call) and
+# could steal Ctrl-C from `docker run -it`, leaving the terminal looking hung.
+# Usage: run_docker_session <docker_cmd...>
+run_docker_session() {
+    local rc=0
+    trap 'stop_gpg_relay "$GPG_RELAY_SOCKET"' EXIT
+    "$@" || rc=$?
+    trap - EXIT
+    stop_gpg_relay "$GPG_RELAY_SOCKET"
+    GPG_RELAY_SOCKET=""
+    return "$rc"
 }
 
 # Run a one-off Claude Code CLI command inside the container.
@@ -151,11 +187,7 @@ run_cli_command() {
     parse_config
     ensure_claude_dirs
 
-    build_mount_args
-    build_env_args
-    build_env_file_args
-    build_common_docker_args
-    build_standard_volume_args "$project_dir" "$docker_socket"
+    build_session_args "$project_dir" "$docker_socket"
 
     # Allocate a TTY only when attached to one, so the command stays pipeable
     local -a tty_args=(-i)
@@ -179,20 +211,11 @@ run_cli_command() {
     )
 
     if [ "${DRY_RUN:-false}" = true ]; then
-        print_info "Dry run — would execute:"
-        dry_run_print "${docker_cmd[@]}"
-        stop_gpg_relay "$GPG_RELAY_SOCKET"
-        GPG_RELAY_SOCKET=""
+        dry_run_session "${docker_cmd[@]}"
         return 0
     fi
 
-    # Stop the per-session GnuPG relay when the container exits. Only EXIT is
-    # trapped while docker owns the TTY (see run_claude).
-    trap 'stop_gpg_relay "$GPG_RELAY_SOCKET"' EXIT
-    "${docker_cmd[@]}"
-    trap - EXIT
-    stop_gpg_relay "$GPG_RELAY_SOCKET"
-    GPG_RELAY_SOCKET=""
+    run_docker_session "${docker_cmd[@]}"
 }
 
 # Function to run Claude Code authentication
@@ -268,12 +291,8 @@ run_claude() {
 
     # Parse custom config and build docker arguments
     parse_config
-    build_mount_args
-    build_env_args
-    build_env_file_args
-    build_common_docker_args
     # Docker socket is opt-in: mounting it is root-equivalent on the host.
-    build_standard_volume_args "$project_dir" "$DOCKER_SOCKET"
+    build_session_args "$project_dir" "$DOCKER_SOCKET"
 
     # CONTAINER_WORKDIR is set by build_standard_volume_args (host path with $HOME stripped)
     local -a model_args=()
@@ -295,10 +314,7 @@ run_claude() {
     )
 
     if [ "$dry_run" = true ]; then
-        print_info "Dry run — would execute:"
-        dry_run_print "${docker_cmd[@]}"
-        stop_gpg_relay "$GPG_RELAY_SOCKET"
-        GPG_RELAY_SOCKET=""
+        dry_run_session "${docker_cmd[@]}"
         return 0
     fi
 
@@ -313,16 +329,8 @@ run_claude() {
         fi
     fi
 
-    # Stop the per-session GnuPG relay when the container exits. Only EXIT is
-    # trapped while docker owns the TTY: trapping INT/TERM here would run the
-    # cleanup twice (trap + explicit call below) and could steal Ctrl-C from
-    # `docker run -it`, leaving the terminal looking hung on exit.
-    trap 'stop_gpg_relay "$GPG_RELAY_SOCKET"' EXIT
     local rc=0
-    "${docker_cmd[@]}" || rc=$?
-    trap - EXIT
-    stop_gpg_relay "$GPG_RELAY_SOCKET"
-    GPG_RELAY_SOCKET=""
+    run_docker_session "${docker_cmd[@]}" || rc=$?
 
     if [ -n "$snap_before" ]; then
         if snap_after=$(mktemp 2>/dev/null); then
@@ -662,6 +670,7 @@ show_stats() {
     local state="$CCODE_HOME/.local/state/claude"
     local cache="$CCODE_HOME/.cache/claude"
     echo "Session storage (generated home: $CCODE_HOME):"
+    local d
     for d in "$share" "$state" "$cache"; do
         if [ -d "$d" ]; then
             echo "  $d: $(du -sh "$d" 2>/dev/null | cut -f1)"
@@ -795,6 +804,13 @@ exec_prompt() {
         print_error "A message is required: claude-dockerized exec \"<message>\" [OPTIONS]"
         exit 1
     fi
+    # The message comes first: a leading dash would be read as a claude option.
+    case "$1" in
+    -*)
+        print_error "The message must come before any option: claude-dockerized exec \"<message>\" [OPTIONS]"
+        exit 1
+        ;;
+    esac
     # Docker socket follows the opt-in config, as in 'run'. parse_config must run
     # first so DOCKER_SOCKET reflects setting.docker_socket before it is read.
     parse_config

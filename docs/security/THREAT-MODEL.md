@@ -102,17 +102,17 @@ Status legend: **mitigated** (control in place, test green) · **detected**
 
 | Id | Threat | Status | Evidence (tests) |
 |----|--------|--------|------------------|
-| T-01 | Host code execution via the project's `.git` (`hooks/`, `config`: `core.fsmonitor`, `core.hooksPath`, filters) and tool configs run by the host | detected (default) · prevented (strict policy / strict hardening) | integrity `git hook`, `git config`; hardening `.git overlays`; corpus `write-git-hook` (strict) |
+| T-01 | Host code execution via the project's `.git` (`hooks/`, `config`: `core.fsmonitor`, `core.hooksPath`, filters) and tool configs run by the host | mitigated for Bash writes (denied by the guard in every mode, also in `none`) · detected for any other route (default) · prevented for file tools (strict policy) and by strict hardening | integrity `git hook`, `git config`; hardening `.git overlays`; corpus `write-git-hook` (strict), `bash-redirect-into-git-hook`, `bash-tee-into-git-config`, `rm-rf-*`, `write-through-symlink-below-missing-dir` |
 | T-02 | Host binary replacement through a read-write mount of a host CLI or token directory | mitigated (no host CLI or token directory is mounted; read-write mounts come only from the generated home and the project) | hardening `rw mounts only from the generated home or the project (T-02)` (default and strict) |
-| T-03 | Managed policy override from the project: `.claude/settings.local.json`, or `env` relaxing `CLAUDE_DOCKERIZED_POLICY` | mitigated | managed policy at `/etc/claude-code/managed-settings.json` (tool-coverage, wrapper-args, dryrun); failure-modes `policy-mode file wins over env`; corpus `write-project-settings-local` (strict) |
-| T-04 | Helper hijack: writable `~/.local/bin` first on PATH shadows `jq` / `node` / `claude` used by the guard | mitigated | failure-modes `fake jq/node on PATH`; entrypoint PATH order; integration planted `~/.local/bin/claude`, root-owned guard node |
+| T-03 | Managed policy override from the project: `.claude/settings.local.json`, or `env` relaxing `CLAUDE_DOCKERIZED_POLICY` | mitigated | managed policy at `/etc/claude-code/managed-settings.json` (tool-coverage, wrapper-args, dryrun); failure-modes `policy-mode file wins over env`; corpus `write-project-settings-local` (strict), `bash-redirect-into-user-settings`, `bash-redirect-into-project-settings`, `write-root-widened-by-env`; integrity `executable-keys` of the user settings |
+| T-04 | Helper hijack: writable `~/.local/bin` first on PATH shadows `jq` / `node` / `claude` used by the guard | mitigated | failure-modes `fake jq/node on PATH`; entrypoint PATH order; integration planted `~/.local/bin/claude`, root-owned guard node; corpus `bash-env-startup-file`, `node-options-require` (the hooks run under `bash -p` and drop startup/preload variables), `bash-copy-into-local-bin` |
 | T-05 | Cross-session persistence via read-write `.claude.json` (MCP stdio), plugins, skills, agents, commands, `.lsp.json` | detected (default) · prevented (skills: read-only in every profile; plugins/agents/commands: strict hardening; `.claude.json` stays writable) | integrity `MCP server`, `skill`, `~/.local/bin`; hardening read-only skills, plugins/agents/commands; corpus `write-user-skill` |
 | T-06 | Host network exposure (`--network host`: loopback services, abstract sockets) | accepted (default) · opt-in bridge (strict hardening) | dryrun `default network is host`; hardening `strict: bridge network` |
 | T-07 | Custom mount / project-dir validation bypass (non-canonical paths, symlinks, `$HOME`, `/`, config dirs, docker socket, arbitrary modes, shadowed managed targets) | mitigated | `tests/mounts.test.sh` (canonical paths, sensitive dirs, modes, managed targets, project dir) |
-| T-08 | Guard allowlist token (`.env.example`, `*.pub`) short-circuits every backstop | mitigated | corpus `allow-token-*`, `pub-suffix-*`, `authorized-keys-*` |
+| T-08 | Guard allowlist token (`.env.example`, `*.pub`) short-circuits every backstop | mitigated | corpus `allow-token-*`, `pub-suffix-*`, `authorized-keys-*`, `exemption-dir-*` (the file hook exempts the final path component only), `bare-ifs-*` |
 | T-09 | Guard coverage gaps: `NotebookEdit` / `MultiEdit` not routed, `notebook_path` / `glob` fields ignored | mitigated | corpus `notebook-*`, `multiedit-*`, `grep-glob-*`; tool-coverage matcher |
-| T-10 | Credential stores missing from the deny rules (`.credentials.json`, `.git-credentials`, `.netrc`, docker/gh configs) | mitigated | corpus `*-credentials-*`, `netrc-*`, `docker-config-*`, `gh-hosts-*` |
-| T-11 | Guard fails open: malformed payload, missing jq/node, corrupt or empty policy data, unknown mode | mitigated | `tests/guard-failure-modes.test.mjs`; corpus `empty-policy-mode-file-*`; CI job without jq/python3 |
+| T-10 | Credential stores missing from the deny rules (`.credentials.json`, `.git-credentials`, `.netrc`, docker/gh configs) | mitigated | corpus `*-credentials-*`, `netrc-*`, `docker-config-*`, `gh-hosts-*`, `envrc-*`, `pgpass-*`, `aws-*`, `pkcs12-*`, `shell-history-*`, `claude-json-*`, `grep-claude-state-dir` |
+| T-11 | Guard fails open: malformed payload, missing jq/node, corrupt or empty policy data, unknown mode | mitigated | `tests/guard-failure-modes.test.mjs`; corpus `empty-policy-mode-file-*`, `remote-override-*` (the remote-flow override never carries a chained, expanded or uploading command past the vendored rules); CI job without jq/python3 |
 | T-12 | Unverified self-update: upstream compromise reaches host code, hooks and image | mitigated (after you pin a release key) | `tests/self-update.test.sh` (signed / impostor / unsigned / rewritten tags, origin pin, preview, confirmation); `install.sh` contract in supply-chain; release-verify workflow |
 | T-13 | No rollback point for a bad update or failed rebuild | mitigated | self-update rollback point, `:prev` image, `rollback`; failed rebuild prints recovery |
 | T-14 | Unpinned LSP/formatter installs executed on the host | mitigated | `tests/lsp-install.test.sh` (pinned, in-container, --ignore-scripts, no host npm/uv) |
@@ -120,14 +120,14 @@ Status legend: **mitigated** (control in place, test green) · **detected**
 | T-16 | User settings keep security-disabling keys (`disableAllHooks`) | mitigated | migrate-settings `disableAllHooks is dropped (T-16)`; wrapper-args `sync must drop disableAllHooks`; `config sync --check` flags it |
 | T-17 | Shared, predictable host temp dir (`/tmp/claude`) — race on multi-user hosts | mitigated | config-parse private temp dir (0700, symlink refused) |
 | T-18 | Env file placed inside the mounted generated home | mitigated | mounts `env file inside the mounted generated home` |
-| T-19 | Secrets visible through the process environment | accepted (mitigated by guard) | claude-guard env-dump cases |
+| T-19 | Secrets visible through the process environment | accepted (mitigated by guard) | claude-guard env-dump cases; corpus `proc-task-environ*`, `proc-dotdot-environ` |
 | T-20 | Docker socket is root-equivalent on the host | accepted (opt-in, off by default) | dryrun `docker socket not mounted by default` |
 | T-21 | Residual setuid/setgid binaries in the image | accepted (neutralized by no_new_privs) · opt-in `image_strip_setuid` | integration setuid inventory; CI hardened image build |
 | T-22 | Writable root filesystem and group-writable toolchain | accepted (default) · opt-in read-only rootfs (strict hardening) | hardening `strict: read-only rootfs`; integration strict profile |
 | T-23 | Resource exhaustion (no pids/memory limits by default) | accepted (default) · opt-in pids limit (standard/strict) | hardening `standard: pids limit` |
 | T-24 | Image supply chain (base by tag, piped installers, unpinned tools) | mitigated (TOFU for the Claude binary sha256) | `tests/supply-chain.test.sh` (base digest, NVM commit, Node/uv/Claude versions, apt key fingerprint) |
 | T-25 | Cloud metadata / link-local exfiltration | mitigated | claude-guard metadata cases |
-| T-26 | Secret file reads through tools (`.env`, keys, `auth.json`, symlink escapes) | mitigated | claude-guard read cases |
+| T-26 | Secret file reads through tools (`.env`, keys, `auth.json`, symlink escapes) | mitigated | claude-guard read cases; corpus `grep-home-root`, `grep-filesystem-root`, `glob-home-root` (recursive search roots over secret stores are refused) |
 | T-27 | Wrapper started as root on the host | mitigated | dryrun `root is refused` |
 | T-28 | Privilege escalation inside the container (capabilities, setuid) | mitigated | dryrun rootless flags; integration caps/no_new_privs |
 | T-29 | CI supply chain: mutable action tags (cf. CVE-2026-33634) | mitigated | `.github/workflows/ci.yml` SHA pins |
@@ -147,6 +147,13 @@ Status legend: **mitigated** (control in place, test green) · **detected**
 - **Provider credentials are visible to the session** (T-19): they configure
   the CLI. Keep unrelated secrets out of the env file.
 - **Forwarded agents are signing oracles** while a session runs (opt-in).
+- **Tools without a hook.** `mcp__*` tools and `WebFetch` are not covered by the
+  file/bash hooks (their payload has no common shape); `WebFetch` only has the
+  metadata-domain deny rules. A recursive Grep/Glob inside the project can
+  still read files the project itself holds; only roots that sweep the home or
+  credential stores are refused.
+- **Auto-allowed commands** (`config/user-settings.default.json`) are seeded
+  only into a new user settings file; an existing one keeps its own list.
 - **`--network host` by default** (T-06): loopback services on the host are
   reachable. Use `setting.network=bridge` or `setting.hardening=strict`.
 - **First-use trust.** The release key and the Claude binary hash are

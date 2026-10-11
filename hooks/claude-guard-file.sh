@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/bash -p
 # claude-guard-file.sh - Claude Code PreToolUse hook
 # (matcher: Read|Edit|MultiEdit|Write|NotebookEdit|Glob|Grep).
 #
@@ -12,7 +12,11 @@
 # Any other exit is a non-blocking error for Claude Code (the tool still
 # runs), so every failure path here exits 2.
 #
-# CLAUDE_DOCKERIZED_GUARD_VERSION=3
+# The shebang is `bash -p`: privileged mode never sources $BASH_ENV/$ENV, which
+# a project's settings `env` could otherwise point at a script that exits 0
+# before this file runs. The managed policy also pins those variables empty.
+#
+# CLAUDE_DOCKERIZED_GUARD_VERSION=4
 
 set -u
 
@@ -24,6 +28,8 @@ if [ -r "$HOOK_DIR/hook-path" ]; then
     IFS= read -r TRUSTED_PATH <"$HOOK_DIR/hook-path" || true
 fi
 export PATH="$TRUSTED_PATH"
+# Nothing injected through settings `env` may reach the tools this hook spawns.
+unset BASH_ENV ENV NODE_OPTIONS NODE_PATH LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT
 
 deny_reason() {
     printf 'Blocked by claude-dockerized security policy: %s\n' "$1" >&2
@@ -50,6 +56,7 @@ INPUT="$(cat)"
 #   write  1                       (the call writes: content/edits/new_source)
 #   read   <path-like field>       (checked against the secret deny list)
 #   target <path being written>    (checked against the write roots)
+#   search <Grep/Glob root dir>    (refused when it would sweep secret stores)
 # Grep's `pattern` is a content regex, not a path, so only Glob's is a target.
 # Values with control characters are refused by the parsers (exit 3).
 # shellcheck disable=SC2016 # jq program, not a shell expansion
@@ -63,7 +70,8 @@ if type != "object" then error("not an object") else . end
 | "tool\t\($tool | clean)",
   (if ($ti.content | type) == "string" or ($ti.edits | type) == "array" or ($ti.new_source | type) == "string" then "write\t1" else empty end),
   ([$ti.file_path, $ti.notebook_path, $ti.path, $ti.glob, (if $tool == "Glob" then $ti.pattern else empty end)][] | s | clean | "read\t\(.)"),
-  ([$ti.file_path, $ti.notebook_path][] | s | clean | "target\t\(.)")
+  ([$ti.file_path, $ti.notebook_path][] | s | clean | "target\t\(.)"),
+  (if $tool == "Grep" or $tool == "Glob" then ($ti.path | s | clean | "search\t\(.)") else empty end)
 '
 PY_PROG='import json,sys
 def bad(): sys.exit(3)
@@ -86,6 +94,7 @@ for f in fields:
     if isinstance(ti.get(f),str): out.append("read\t"+clean(ti[f]))
 for f in ["file_path","notebook_path"]:
     if isinstance(ti.get(f),str): out.append("target\t"+clean(ti[f]))
+if tool in ("Grep","Glob") and isinstance(ti.get("path"),str): out.append("search\t"+clean(ti["path"]))
 print("\n".join(out))'
 NODE_PROG='let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
 const bad=()=>process.exit(3);let d;try{d=JSON.parse(s)}catch{bad()}
@@ -97,6 +106,7 @@ const out=["tool\t"+clean(tool)];
 if(typeof ti.content==="string"||Array.isArray(ti.edits)||typeof ti.new_source==="string")out.push("write\t1");
 for(const f of ["file_path","notebook_path","path","glob",...(tool==="Glob"?["pattern"]:[])])if(typeof ti[f]==="string")out.push("read\t"+clean(ti[f]));
 for(const f of ["file_path","notebook_path"])if(typeof ti[f]==="string")out.push("target\t"+clean(ti[f]));
+if((tool==="Grep"||tool==="Glob")&&typeof ti.path==="string")out.push("search\t"+clean(ti.path));
 console.log(out.join("\n"))})'
 
 parse_payload() {
@@ -123,13 +133,14 @@ case $? in
 esac
 
 TOOL="" WRITES=false
-READS=() TARGETS=()
+READS=() TARGETS=() SEARCHES=()
 while IFS=$'\t' read -r key value; do
     case "$key" in
     tool) TOOL="$value" ;;
     write) WRITES=true ;;
     read) [ -n "$value" ] && READS+=("$value") ;;
     target) [ -n "$value" ] && TARGETS+=("$value") ;;
+    search) [ -n "$value" ] && SEARCHES+=("$value") ;;
     esac
 done <<<"$PARSED"
 
@@ -147,69 +158,8 @@ deny_write() {
     exit 2
 }
 
-# --- Secret reads (literal path + symlink-resolved target) ---
-# Credential stores (T-10): OAuth store, git/pypi creds, netrc, docker/gh/kube/gcloud.
-# Case-insensitive: SERVER.KEY or .PEM exports are the same secrets.
-DENY_RE='(^|/)\.env(\.([^e]|$)|$)|(^|/)\.env\..*|\.pem$|\.key$|(^|/)auth\.json$|(^|/)id_(rsa|dsa|ecdsa|ed25519|ed25519_sk|ecdsa_sk|eddsa)$|(^|/)\.ssh(/|$)''|(^|/)\.npmrc$|(^|/)\.mcp-auth(/|$)|(^|/)\.?credentials(\.|$)|(^|/)private-keys-v1\.d(/|$)|(^|/)\.gitconfig$|(^|/)\.(netrc|git-credentials|pypirc)$|(^|/)\.docker/config\.json$|(^|/)gh/hosts\.yml$|(^|/)\.kube/config$|(^|/)\.config/gcloud(/|$)'
-
-check_deny_read() {
-    local p="$1"
-    # .env.example templates stay readable
-    case "$p" in
-    *.env.example*) return 1 ;;
-    esac
-    # public keys stay readable
-    case "$p" in
-    *.pub) return 1 ;;
-    *public-keys.d*|*authorized_keys*) return 1 ;;
-    esac
-    printf '%s' "$p" | grep -Eiq "$DENY_RE" && return 0
-    # bare *key heuristic (mykey, deploy_key) — allow monkey-style words only
-    # when they do not look like key files
-    if printf '%s' "$p" | grep -Eq '(^|/)[[:alnum:]._-]*key$'; then
-        case "$p" in
-        *monkey*|*keyboard*|*turkey*) return 1 ;;
-        *) return 0 ;;
-        esac
-    fi
-    if printf '%s' "$p" | grep -Eq '(^|/)[[:alnum:]._-]*(_key|-key|_priv)$'; then
-        return 0
-    fi
-    return 1
-}
-
-for target in "${READS[@]}"; do
-    check_deny_read "$target" && deny_read "$target"
-    if command -v realpath >/dev/null 2>&1; then
-        REAL="$(realpath -m "$target" 2>/dev/null || true)"
-        # resolve symlink when it exists
-        if [ -e "$target" ]; then
-            REAL2="$(realpath "$target" 2>/dev/null || true)"
-            [ -n "$REAL2" ] && REAL="$REAL2"
-        fi
-        if [ -n "${REAL:-}" ] && [ "$REAL" != "$target" ] && check_deny_read "$REAL"; then deny_read "$target"; fi
-    fi
-done
-
-# --- Write confinement (every tool that writes) ---
-[ "$WRITES" = true ] || exit 0
-[ "${#TARGETS[@]}" -gt 0 ] || deny_reason "write without a target path"
-
-# Roots: the project dir + approved scratch. Never "/". The hook's cwd is only
-# a fallback when Claude Code does not export CLAUDE_PROJECT_DIR.
-ROOTS=""
-add_root() {
-    case "$1" in
-    ""|/) return 0 ;;
-    /*) ROOTS="$ROOTS|$1" ;;
-    esac
-}
-add_root "${CLAUDE_PROJECT_DIR:-}"
-add_root "${CLAUDE_DOCKERIZED_PROJECT_DIR:-}"
-[ -z "${CLAUDE_PROJECT_DIR:-}${CLAUDE_DOCKERIZED_PROJECT_DIR:-}" ] && add_root "$PWD"
-add_root "/tmp/claude"
-
-lexical() {
+# Collapse ".", ".." and duplicate slashes without touching the filesystem.
+lexical_path() {
     local p="$1" abs="" out="" part
     case "$p" in /*) abs=1 ;; esac
     # collapse duplicate slashes
@@ -228,6 +178,93 @@ lexical() {
     printf '%s' "$out"
 }
 
+# --- Secret reads (literal path + symlink-resolved target) ---
+# Credential stores (T-10): OAuth store, git/pypi creds, netrc, docker/gh/kube/gcloud.
+# Case-insensitive (grep -i below): SERVER.KEY or .PEM exports are the same secrets.
+DENY_RE='(^|/)\.env(\.([^e]|$)|$)|(^|/)\.env\..*|\.pem$|\.key$|(^|/)auth\.json$|(^|/)id_(rsa|dsa|ecdsa|ed25519|ed25519_sk|ecdsa_sk|eddsa)$|(^|/)\.ssh(/|$)''|(^|/)\.npmrc$|(^|/)\.mcp-auth(/|$)|(^|/)\.?credentials(\.|$)|(^|/)private-keys-v1\.d(/|$)|(^|/)\.gitconfig$|(^|/)\.(netrc|git-credentials|pypirc)$|(^|/)\.docker/config\.json$|(^|/)gh/hosts\.yml$|(^|/)\.kube/config$|(^|/)\.config/gcloud(/|$)|(^|/)\.envrc$|(^|/)\.pgpass$|(^|/)\.aws(/|$)|\.(p12|pfx|jks)$|(^|/)\.(bash|zsh)_history$|(^|/)\.claude\.json$|^/proc/.*/environ$'
+
+check_deny_read() {
+    local p="$1" base="${1##*/}"
+    # Exemptions look at the final path component only (T-08): a directory that
+    # merely contains one of these names must not whitelist what is inside it.
+    case "$base" in
+    *.env.example* | *.pub | authorized_keys) return 1 ;;
+    esac
+    # public-keys.d/ holds public material, unless the file itself is a secret
+    case "$p" in
+    */public-keys.d/*) printf '%s' "$base" | grep -Eiq "$DENY_RE" || return 1 ;;
+    esac
+    printf '%s' "$p" | grep -Eiq "$DENY_RE" && return 0
+    # bare *key heuristic (mykey, deploy_key) — allow monkey-style words only
+    # when they do not look like key files
+    if printf '%s' "$p" | grep -Eq '(^|/)[[:alnum:]._-]*key$'; then
+        case "$p" in
+        *monkey*|*keyboard*|*turkey*) return 1 ;;
+        *) return 0 ;;
+        esac
+    fi
+    if printf '%s' "$p" | grep -Eq '(^|/)[[:alnum:]._-]*(_key|-key|_priv)$'; then
+        return 0
+    fi
+    return 1
+}
+
+BASE="${CLAUDE_PROJECT_DIR:-$PWD}"
+for target in "${READS[@]}"; do
+    check_deny_read "$target" && deny_read "$target"
+    if command -v realpath >/dev/null 2>&1; then
+        # relative paths mean "inside the project", whatever the hook's cwd is
+        case "$target" in /*) abs_target="$target" ;; *) abs_target="$BASE/$target" ;; esac
+        REAL="$(realpath -m "$abs_target" 2>/dev/null || true)"
+        if [ -n "$REAL" ] && [ "$REAL" != "$target" ] && check_deny_read "$REAL"; then deny_read "$target"; fi
+    fi
+done
+
+# --- Recursive search roots (Grep/Glob) ---
+# Read-deny only sees the path a tool names, but a recursive search over a
+# directory reads every file below it. Refuse roots that are, or contain, the
+# credential stores; searching a project directory stays allowed.
+search_root_too_broad() {
+    local p="$1" home d
+    [ "$p" = "/" ] && return 0
+    for home in "${HOME:-}" /home/coder; do
+        [ -n "$home" ] || continue
+        # the home itself and every ancestor of it
+        if [ "$p" = "$home" ] || [[ "$home" == "${p%/}/"* ]]; then return 0; fi
+        for d in .claude .config .aws .kube .docker .gnupg .mcp-auth .ssh; do
+            [ "$p" = "$home/$d" ] && return 0
+        done
+    done
+    return 1
+}
+
+for target in "${SEARCHES[@]}"; do
+    case "$target" in /*) abs_target="$target" ;; *) abs_target="$BASE/$target" ;; esac
+    ROOT="$(lexical_path "$abs_target")"
+    search_root_too_broad "$ROOT" && deny_read "$target (recursive search over secret stores)"
+    if command -v realpath >/dev/null 2>&1; then
+        REAL="$(realpath -m "$abs_target" 2>/dev/null || true)"
+        [ -n "$REAL" ] && search_root_too_broad "$REAL" && deny_read "$target (recursive search over secret stores)"
+    fi
+done
+
+# --- Write confinement (every tool that writes) ---
+[ "$WRITES" = true ] || exit 0
+[ "${#TARGETS[@]}" -gt 0 ] || deny_reason "write without a target path"
+
+# Roots: the project dir + approved scratch. Never "/". The hook's cwd is only
+# a fallback when Claude Code does not export CLAUDE_PROJECT_DIR.
+ROOTS=""
+add_root() {
+    case "$1" in
+    ""|/) return 0 ;;
+    /*) ROOTS="$ROOTS|$1" ;;
+    esac
+}
+add_root "${CLAUDE_PROJECT_DIR:-}"
+[ -z "${CLAUDE_PROJECT_DIR:-}" ] && add_root "$PWD"
+add_root "/tmp/claude"
+
 is_inside() {
     local c="$1" r
     local OLDIFS="$IFS"; IFS='|'
@@ -243,39 +280,35 @@ is_inside() {
 }
 
 # Strict mode also protects files the host executes or that relax the policy
-# (T-01, T-03): git hooks/config and project Claude settings. In balanced mode
+# (T-01, T-03): git hooks/config, submodules, MCP servers, project Claude
+# settings, commands and agents. In balanced mode
 # the wrapper's session integrity check reports changes to them instead.
 is_protected() {
     case "$1" in
-    */.git/hooks/* | */.git/config | */.claude/settings.json | */.claude/settings.local.json) return 0 ;;
+    */.git/hooks/* | */.git/config | */.gitmodules | */.mcp.json | */.claude/settings.json | */.claude/settings.local.json | */.claude/commands/* | */.claude/agents/*) return 0 ;;
     esac
     return 1
 }
 
-BASE="${CLAUDE_PROJECT_DIR:-${CLAUDE_DOCKERIZED_PROJECT_DIR:-$PWD}}"
 for target in "${TARGETS[@]}"; do
     if [[ "$target" == /* ]]; then
-        ABS="$(lexical "$target")"
+        ABS="$(lexical_path "$target")"
     else
-        ABS="$(lexical "$BASE/$target")"
+        ABS="$(lexical_path "$BASE/$target")"
     fi
 
+    # realpath -m resolves every symlink on the way (also below directories
+    # that do not exist yet, and dangling links); an unresolvable path is refused.
     CANDIDATES=("$ABS")
-    if [ -e "$ABS" ] && command -v realpath >/dev/null 2>&1; then
-        R="$(realpath "$ABS" 2>/dev/null || true)"
-        [ -n "$R" ] && CANDIDATES+=("$R")
-    fi
-    PARENT="${ABS%/*}"
-    [ -z "$PARENT" ] && PARENT="/"
-    if [ -e "$PARENT" ] && command -v realpath >/dev/null 2>&1; then
-        RP="$(realpath "$PARENT" 2>/dev/null || true)"
-        [ -n "$RP" ] && CANDIDATES+=("$RP/${ABS##*/}")
+    if command -v realpath >/dev/null 2>&1; then
+        R="$(realpath -m "$ABS" 2>/dev/null)" && [ -n "$R" ] || deny_write "$target"
+        CANDIDATES+=("$R")
     fi
 
     for c in "${CANDIDATES[@]}"; do
         is_inside "$c" || deny_write "$target"
         if [ "$POLICY_MODE" = strict ] && is_protected "$c"; then
-            deny_reason "strict policy protects $target (git hooks/config, project Claude settings)"
+            deny_reason "strict policy protects $target (git hooks/config, MCP servers, project Claude settings)"
         fi
     done
 done

@@ -54,7 +54,9 @@ PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd -P)"
 # Build the image if it doesn't exist (the main runner expects it to exist)
 if ! docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
     config_info "Docker image not found, building..."
-    docker build -t "$IMAGE_NAME" "$ROOT"
+    # Through the wrapper so pinned versions, the recorded sha256 and the
+    # hardening build args apply exactly as with `claude-dockerized build`.
+    "$ROOT/bin/claude-dockerized" build
 fi
 
 # Single code path: hand off to the main runner

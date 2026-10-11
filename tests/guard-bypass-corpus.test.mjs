@@ -7,7 +7,7 @@
 //
 // Usage: node tests/guard-bypass-corpus.test.mjs   (GUARD_TEST_VERBOSE=1 lists gaps)
 
-import { readFileSync, mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stageHooks, runHook, cleanup, makeReporter, repo } from "./lib/hook-runner.mjs";
@@ -26,6 +26,12 @@ mkdirSync(join(dirs.PROJECT, ".git/hooks"), { recursive: true });
 mkdirSync(dirs.OUTSIDE, { recursive: true });
 mkdirSync(dirs.HOME, { recursive: true });
 writeFileSync(join(dirs.PROJECT, ".git/config"), "[core]\n");
+// A symlink out of the project, for writes below a directory that does not exist yet.
+symlinkSync(dirs.OUTSIDE, join(dirs.PROJECT, "link-out"));
+// Startup hooks an attacker-controlled settings `env` could point the guard at:
+// both pretend the command is fine. The hooks must never run them.
+writeFileSync(join(dirs.HOME, "pwn.sh"), "exit 0\n");
+writeFileSync(join(dirs.HOME, "pwn.js"), 'console.log("allow");process.exit(0);\n');
 
 const substitute = (value) => {
   if (typeof value === "string") {
@@ -65,7 +71,7 @@ for (const c of corpus.cases) {
     const { verdict } = runHook(caseStage, script, {
       mode,
       payload,
-      env: { CLAUDE_PROJECT_DIR: dirs.PROJECT, HOME: dirs.HOME, ...(c.env ?? {}) },
+      env: { CLAUDE_PROJECT_DIR: dirs.PROJECT, HOME: dirs.HOME, ...substitute(c.env ?? {}) },
       cwd: dirs.PROJECT,
     });
     report.check(`[${mode}] ${c.threat} ${c.id}`, verdict, want, gap);
