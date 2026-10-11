@@ -4,8 +4,9 @@
 #
 # Some read-write paths are executed or trusted outside the session that can
 # write them: the project's git hooks/config run on the HOST (T-01), the
-# generated home's ~/.local/bin, plugins, skills, agents, commands and MCP
-# server entries run in every FUTURE session (T-05). No host CLI directory is
+# generated home's ~/.local/bin, plugins, skills, agents, commands, MCP server
+# entries and the command-running keys of the user settings.json run in every
+# FUTURE session (T-05). No host CLI directory is
 # mounted (T-02). The default profile keeps them writable, so the
 # wrapper fingerprints them (sha256 of content, mode and symlink target; an
 # mtime could be forged) before the session and reports every change after
@@ -23,7 +24,7 @@ _integrity_walk() {
                 printf 'link - - %s -> %s\n' "$f" "$(readlink "$f" 2>/dev/null)"
             else
                 printf 'file %s %s %s\n' "$(sha256sum "$f" 2>/dev/null | cut -d' ' -f1)" \
-                    "$(stat -c '%a' "$f" 2>/dev/null)" "$f"
+                    "$(stat -c '%a' "$f" 2>/dev/null || stat -f '%Lp' "$f" 2>/dev/null)" "$f"
             fi
         done
 }
@@ -47,6 +48,27 @@ console.log(JSON.stringify(sort([d.mcpServers ?? {}, p])));' "$file" 2>/dev/null
     printf 'mcp %s - %s#mcpServers\n' "$(printf '%s' "$servers" | sha256sum | cut -d' ' -f1)" "$file"
 }
 
+# Only the keys of the writable user settings.json that run commands or relax
+# the policy in later sessions (apiKeyHelper, statusLine, env, hooks,
+# permissions, ...). Preferences such as /model or the theme change freely.
+# Prints one fingerprint line.
+# Usage: _integrity_user_settings <settings.json>
+_integrity_user_settings() {
+    local file="$1" picked=""
+    [ -f "$file" ] || return 0
+    if command -v jq >/dev/null 2>&1; then
+        picked=$(jq -cS '{apiKeyHelper, awsAuthRefresh, awsCredentialExport, statusLine, env, hooks, permissions, enabledPlugins, enableAllProjectMcpServers, disableAllHooks}' "$file" 2>/dev/null)
+    elif command -v node >/dev/null 2>&1; then
+        picked=$(node -e '
+const d = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+const keys = ["apiKeyHelper", "awsAuthRefresh", "awsCredentialExport", "statusLine", "env", "hooks", "permissions", "enabledPlugins", "enableAllProjectMcpServers", "disableAllHooks"];
+const sort = (o) => (o && typeof o === "object" && !Array.isArray(o) ? Object.fromEntries(Object.keys(o).sort().map((k) => [k, sort(o[k])])) : o);
+console.log(JSON.stringify(sort(Object.fromEntries(keys.map((k) => [k, d[k] ?? null])))));' "$file" 2>/dev/null)
+    fi
+    [ -n "$picked" ] || picked="unparseable"
+    printf 'settings %s - %s#executable-keys\n' "$(printf '%s' "$picked" | sha256sum | cut -d' ' -f1)" "$file"
+}
+
 # Fingerprint every watched path into <out>.
 # Usage: integrity_snapshot <project_dir> <out>
 integrity_snapshot() {
@@ -62,6 +84,7 @@ integrity_snapshot() {
             _integrity_walk "$CCODE_HOME/$rel"
         done
         _integrity_mcp_servers "$CCODE_HOME/.claude.json"
+        _integrity_user_settings "$CCODE_HOME/.claude/settings.json"
     } >"$out" 2>/dev/null
     # Detection is best-effort: never abort a caller running under `set -e`.
     return 0

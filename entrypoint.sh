@@ -5,7 +5,7 @@ set -e
 # UID/GID remapping: the wrapper starts the container with
 # `--user <host uid>:<host gid>`, so every process already runs as the host
 # user. Docker socket access is granted at run time with `--group-add`
-# (see config-lib.sh), not by editing /etc/group here.
+# (see lib/mounts-lib.sh), not by editing /etc/group here.
 
 # Resolve the project working directory (set by bin/claude-dockerized via
 # CLAUDE_DOCKERIZED_WORKDIR). Falls back to the container's Docker --workdir ($PWD) so

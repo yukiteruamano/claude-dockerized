@@ -11,12 +11,9 @@
 # Returns 0 when added, 1 when already present, 2 on error.
 # Usage: ensure_path_in_rc <rcfile>
 ensure_path_in_rc() {
-    local rc_file="$1"
-    # Single quotes are intentional: $HOME/$PATH must stay unexpanded in the rc line.
-    # shellcheck disable=SC2016
-    local path_line='export PATH="$HOME/.local/share/claude-dockerized/bin:$PATH"'
+    local rc_file="$1" path_line="$CCODE_BIN_PATH_LINE"
     [ -f "$rc_file" ] || : >"$rc_file" 2>/dev/null || return 2
-    if grep -qF -- 'claude-dockerized/bin' "$rc_file" 2>/dev/null; then
+    if grep -qF -- "$path_line" "$rc_file" 2>/dev/null || grep -qF -- 'claude-dockerized/bin' "$rc_file" 2>/dev/null; then
         return 1
     fi
     {

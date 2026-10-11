@@ -106,6 +106,37 @@ check "T-07 ~/.gnupg refused as project" project_refused "$HOME/.gnupg"
 check "T-07 CONFIG_DIR refused as project" project_refused "$CONFIG_DIR"
 check "T-07 ~/.config refused as project" project_refused "$HOME/.config"
 
+# A project below $HOME lands at its path minus $HOME: ~/usr must not become /usr.
+mkdir -p "$HOME/usr/bin" "$HOME/bin" "$HOME/etc/claude-code" "$HOME/lib" "$HOME/opt/app" "$HOME/work/usr"
+for dir in usr bin etc lib usr/bin etc/claude-code; do
+    check "T-07 project at ~/$dir would shadow /$dir" project_refused "$HOME/$dir"
+done
+check "a project named like a system dir deeper down is accepted" project_ok "$HOME/work/usr"
+check "a project below ~/opt is accepted" project_ok "$HOME/opt/app"
+
+# --- targets are normalised before the shadowing check (T-07) ---------------------------
+for target in /etc/./claude-code /usr/local/../bin /home/coder/.claude/../.claude/hooks-guard /usr//bin /bin/sh; do
+    check "T-07 target $target refused" mount_refused "~/data:$target"
+done
+
+# --- host sources holding credentials or runtime state (T-07) ---------------------------
+mkdir -p "$HOME/.aws" "$HOME/.kube" "$HOME/.docker" "$HOME/.claude" "$HOME/.config/gcloud" "$HOME/.config/gh"
+for src in .aws .kube .docker .claude .config/gcloud .config/gh; do
+    check "T-07 ~/$src refused as a mount source" mount_refused "~/$src:/data"
+done
+: >"$HOME/.netrc"
+: >"$HOME/.npmrc"
+check "T-07 ~/.netrc refused as a mount source" mount_refused "~/.netrc:/home/coder/.netrc"
+check "T-07 ~/.npmrc refused as a mount source" mount_refused "~/.npmrc:/home/coder/.npmrc"
+for src in /etc /etc/shadow /etc/ssh /root /proc/1 /sys /dev /run /run/user /var/run/foo; do
+    check "T-07 host $src refused as a mount source" mount_refused "$src:/data"
+done
+for sock in docker podman containerd crio; do
+    : >"$HOME/data/$sock.sock"
+    check "T-07 $sock.sock refused" mount_refused "~/data/$sock.sock:/data/$sock.sock"
+done
+check "a mount from /opt is still accepted" mount_ok "/opt:/data"
+
 # --- env file placement (T-18) -------------------------------------------------------
 env_file_ok() {
     (
@@ -122,6 +153,19 @@ check "env file in CONFIG_DIR accepted" env_file_ok "$CONFIG_DIR/env"
 check_not "env file outside CONFIG_DIR refused" env_file_ok "$HOME/data/env"
 check_not "env file escaping via .. refused" env_file_ok "$CONFIG_DIR/../../data/env"
 check "T-18 env file inside the mounted generated home refused" env_file_refused "$CCODE_HOME/.claude/plugins/env"
+printf 'A=1\n' >"$CONFIG_DIR/env-open"
+chmod 644 "$CONFIG_DIR/env-open"
+check "T-18 env file readable by others refused" env_file_refused "$CONFIG_DIR/env-open"
+chmod 600 "$CONFIG_DIR/env-open"
+check "the same env file accepted once it is 0600" env_file_ok "$CONFIG_DIR/env-open"
+
+# --- relay dir: stale relays are removed with rm -rf, so the override is constrained ------
+relay_ok() { (GPG_RELAY_DIR="$1"; relay_dir_ok); }
+check "relay dir inside CONFIG_DIR accepted" relay_ok "$CONFIG_DIR/gnupg-relay"
+check "relay dir named like a relay dir under \$HOME accepted" relay_ok "$HOME/run/gnupg-relay"
+check_not "arbitrary \$HOME directory refused as relay dir" relay_ok "$HOME/Documents"
+check_not "\$HOME itself refused as relay dir" relay_ok "$HOME"
+check_not "/ refused as relay dir" relay_ok /
 
 # --- legitimate mounts keep working -----------------------------------------------------
 mkdir -p "$HOME/.config/git"
@@ -138,6 +182,7 @@ canonical_spec() {
 }
 assert_eq "$(canonical_spec "~/data-link:/data")" "$HOME/data:/data:ro" "docker receives the canonical host path"
 assert_eq "$(canonical_spec "~/work/../data:/data:rw")" "$HOME/data:/data:rw" "dot-dot segments are resolved"
+assert_eq "$(canonical_spec "~/data:/opt//app/./x/../data")" "$HOME/data:/opt/app/data:ro" "target is passed normalised"
 check "a mount under /home/coder is accepted" mount_ok "~/data:/home/coder/data"
 check "a mount under /opt is accepted" mount_ok "~/data:/opt/data"
 

@@ -64,7 +64,7 @@ RUN if [ "$DOCKER_CLI" != 1 ]; then echo "Docker CLI skipped (DOCKER_CLI=$DOCKER
 
 # Create non-root user
 # Note: Docker socket group membership is granted at run time by the wrapper
-# (config-lib.sh) with `--group-add <socket GID>`; the entrypoint never runs as
+# (lib/mounts-lib.sh) with `--group-add <socket GID>`; the entrypoint never runs as
 # root and does not edit /etc/group.
 # There is intentionally no sudo: the agent must never gain root, so neither a
 # sudoers entry nor the sudo binary (a setuid-root vector) is installed.
@@ -106,7 +106,7 @@ ENV PATH="$NVM_DIR/default:/usr/local/bin:/home/coder/.local/bin:$PATH"
 # See: https://code.claude.com/docs/en/setup#install-a-specific-version
 # The channel/version chosen at install time becomes the auto-update default,
 # but auto-updates are disabled at runtime via env.DISABLE_AUTOUPDATER=1 in the
-# managed settings.json (see config-lib.sh).
+# managed settings.json (see lib/layer-lib.sh).
 # ARG CLAUDE_BUILD_TIME is only passed during 'update' to bust cache.
 # ARG CLAUDE_CODE_VERSION pins the release (declared here, not at the top, so
 # changing it only rebuilds from this layer on). The installed binary must
@@ -169,7 +169,7 @@ USER coder
 # resolved against the container's /etc/group, hence gid 1000). Runs as coder:
 # it owns the tree, so no root step is needed and the image stays non-root.
 # NOTE: LSP servers and formatters are NOT baked in here; they live in
-# CCODE_HOME/home/.local/bin on the host (see lib/config-lib.sh
+# CCODE_HOME/home/.local/bin on the host (see lib/lsp-lib.sh
 # ensure_lsp_formatters) so they persist across rebuilds and stay out of the
 # host XDG dirs.
 RUN mkdir -p /home/coder/.claude/hooks-guard && \
