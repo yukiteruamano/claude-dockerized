@@ -68,7 +68,7 @@ cat >"$STUB/docker" <<'EOF'
 n=$(find "$DOCKER_STUB_CALLS" -type f | wc -l)
 printf '%s\n' "$@" >"$DOCKER_STUB_CALLS/$(printf '%04d' "$n")"
 case "$1" in
-run) printf '%s (Claude Code)\n' "${DOCKER_STUB_CLAUDE_VERSION:-2.1.284}" ;;
+run) printf '%s (Claude Code)\n' "${DOCKER_STUB_CLAUDE_VERSION:-2.1.296}" ;;
 esac
 exit 0
 EOF

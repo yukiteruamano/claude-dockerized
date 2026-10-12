@@ -166,7 +166,7 @@ tooling when it exists.
 ### Dockerfile — when touching images
 
 - Pin the base (`debian:trixie-slim`, never `latest`); set `SHELL ["/bin/bash", "-o", "pipefail", "-c"]`; parameterize versions via `ARG` (`CLAUDE_CODE_VERSION`, `NVM_VERSION`).
-- Install Claude Code only via the native installer with a pinned version (`bash -s 2.1.284`); never via npm.
+- Install Claude Code only via the native installer with a pinned version (`bash -s 2.1.296`); never via npm.
 - Never add privilege escalation, the daemon, or `--privileged`; run as non-root; clean apt caches in the same `RUN` layer.
 - Style: one concern per layer; verify with `hadolint` when available.
 

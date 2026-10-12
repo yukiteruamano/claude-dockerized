@@ -27,7 +27,7 @@ Run [Claude Code](https://code.claude.com/docs) (native binary, pinned version) 
 - **Native Security Layer** - A generated `~/.config/claude-dockerized/` directory (a managed policy with `permissions.deny/ask`, `allowManagedHooksOnly`, `disableBypassPermissionsMode`, `DISABLE_AUTOUPDATER=1`, plus native `PreToolUse` hooks and the vendored policy pattern sets) is never mounted as a whole: the policy reaches the container read-only as `/etc/claude-code/managed-settings.json`, the highest-precedence settings source, so user and project settings cannot relax it
 - **Configurable policy** - `setting.security_policy` selects `strict`, `balanced` (default, drops the noisy cloud/multi-tenant false positives) or `none`
 - **Remote flows allowed** - Git over SSH, remote MCP servers (`http`/`sse`), registries and APIs work in every policy mode; only destruction, exfiltration, secrets and Docker escapes are blocked
-- **No auto-updates** - The pinned Claude Code version (`2.1.284`) always runs; upgrades happen only through `claude-dockerized update` (image rebuild)
+- **No auto-updates** - The pinned Claude Code version (`2.1.296`) always runs; upgrades happen only through `claude-dockerized update` (image rebuild)
 - **No host Docker control by default** - The host Docker socket is **not** mounted unless you opt in with `setting.docker_socket=true` (it is root-equivalent on the host; see [SECURITY.md](SECURITY.md))
 - **Session Persistence** - Login, sessions, plugins, MCP state and LSP servers persist across container restarts and rebuilds
 - **Non-root User** - Runs as the host user via `--user <uid>:<gid>`; no root process ever starts in the container (plus `--cap-drop=ALL` and `no-new-privileges`)
@@ -274,7 +274,7 @@ cycles **and** image rebuilds:
 - **Editing config:** the policy is mounted **read-only**, so change it on the host (`claude-dockerized config edit` for wrapper settings, then `config sync`). Your preferences are writable: use `/model` or `/config` in a session, or `claude-dockerized config claude edit`. `claude mcp add/remove` and `claude plugin install/update/remove` are intentionally disabled inside the container; `claude mcp login/logout` keep working (tokens live in read-write mounts).
 - **Security layer:** generated on the host and mirrored on every run (wrapper-managed). The hooks are versioned in the repo (`hooks/claude-guard-*.sh`); bumping `CLAUDE_DOCKERIZED_GUARD_VERSION` refreshes installs (the previous copy is backed up to `.bak`).
 - **Policy mode:** `setting.security_policy` (default `balanced`) selects which patterns the hooks enforce. `balanced` drops cloud/multi-tenant rules and common false positives while keeping the dangerous ones; `strict` enforces everything; `none` disables the vendored patterns but keeps the built-in backstops. Local exceptions live in `hooks/policies/allow-patterns.json`.
-- **No auto-updates:** `env.DISABLE_AUTOUPDATER=1` is always set in the managed policy (verify with `claude-dockerized doctor`, which also runs the native `claude doctor`). Upgrades happen only via `claude-dockerized update`, which rebuilds the image with the pinned `CLAUDE_CODE_VERSION` (default `2.1.284`; override per-build with `update --claude-version X.Y.Z`).
+- **No auto-updates:** `env.DISABLE_AUTOUPDATER=1` is always set in the managed policy (verify with `claude-dockerized doctor`, which also runs the native `claude doctor`). Upgrades happen only via `claude-dockerized update`, which rebuilds the image with the pinned `CLAUDE_CODE_VERSION` (default `2.1.296`; override per-build with `update --claude-version X.Y.Z`).
 
 ### Custom Global Configuration (Optional)
 
@@ -425,7 +425,7 @@ Then rebuild: `claude-dockerized build`.
 
 ```dockerfile
 # Default (repo-pinned)
-ARG CLAUDE_CODE_VERSION=2.1.284
+ARG CLAUDE_CODE_VERSION=2.1.296
 ```
 
 ```bash
@@ -545,7 +545,7 @@ Your login lives in `~/.config/claude-dockerized/home/.claude/.credentials.json`
 
 ### Core Files
 
-- **`Dockerfile`** - Container image definition (Debian trixie-slim + Node.js/NVM + uv + Claude Code native binary v2.1.284, no sudo, no npm)
+- **`Dockerfile`** - Container image definition (Debian trixie-slim + Node.js/NVM + pnpm + uv + Claude Code native binary v2.1.296, no sudo, no npm)
 - **`entrypoint.sh`** - Container entrypoint (resolves the workdir, sets up NVM/Node and execs the command; runs unprivileged, no UID/GID mapping)
 
 ### User Scripts
@@ -609,7 +609,7 @@ Your login lives in `~/.config/claude-dockerized/home/.claude/.credentials.json`
 1. **Base Image**: Uses Debian Trixie slim for minimal footprint
 2. **Docker CLI Only**: Installs only Docker CLI (uses host's Docker daemon via the opt-in socket)
 3. **Development Tools**: Includes Node.js (via NVM), Python tooling (via uv), Git, jq, ripgrep and essential CLI tools
-4. **Claude Code Installation**: Installs the pinned native binary (`v2.1.284`) via the official installer (`https://claude.ai/install.sh`)
+4. **Claude Code Installation**: Installs the pinned native binary (`v2.1.296`) via the official installer (`https://claude.ai/install.sh`)
 5. **User Management**: Creates non-root `coder` user; the wrapper runs the container as your host UID/GID with `--user` and joins the image's `coder` group with `--group-add coder` (group-writable home), so no root process and no runtime remapping
 6. **Entrypoint**: Resolves the project workdir, loads NVM/Node and execs Claude Code as the unprivileged user
 7. **Volume Mounting**: Mounts only necessary files/dirs with appropriate permissions (managed files read-only, state read-write)

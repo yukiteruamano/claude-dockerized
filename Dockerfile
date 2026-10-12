@@ -2,7 +2,7 @@
 # Note: We only install Docker CLI to use host's Docker daemon via mounted socket
 # Pinned by digest (T-24): a tag can be re-pointed, a digest cannot. Dependabot
 # (docker ecosystem) proposes digest bumps; `build --pull` never floats past it.
-FROM debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a
+FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
 
 # Fail fast inside RUN pipelines (curl | sh, | tee, …)
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -17,7 +17,9 @@ ARG NVM_COMMIT=a885b885fef16fac4bc544188fb25e9e37ae83e8
 # Node.js LTS line pinned to an exact release (was: whatever --lts resolved).
 ARG NODE_VERSION=24.21.0
 # uv pinned to an exact release (was: always latest).
-ARG UV_VERSION=0.12.21
+ARG UV_VERSION=0.13.0
+# pnpm pinned to an exact release (project package manager, not the agent).
+ARG PNPM_VERSION=12.11.2
 # Fingerprint of Docker's apt signing key (docs.docker.com/engine/install/debian).
 ARG DOCKER_APT_KEY_FPR=9DC858229FC7DD38854AE2D88D81803C0EBFCD88
 
@@ -87,6 +89,12 @@ RUN curl -fsSL -o- "https://raw.githubusercontent.com/nvm-sh/nvm/${NVM_COMMIT}/i
     nvm use default && \
     ln -sf \$(dirname \$(which node)) $NVM_DIR/default"
 
+# Install pnpm (pinned) into the NVM Node as coder user. The version is asserted
+# so a moved registry tag cannot slip a different release in.
+RUN bash -c "source $NVM_DIR/nvm.sh && \
+    npm install -g pnpm@${PNPM_VERSION} && \
+    pnpm --version | grep -qx '${PNPM_VERSION}'"
+
 # Install uv (Python package manager) as coder user
 # See: https://docs.astral.sh/uv/getting-started/installation/
 RUN curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh && \
@@ -98,8 +106,9 @@ RUN curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh && \
 # generated home, mounted read-write at runtime).
 # /usr/local/bin holds the image-provided CLIs (see below); it is explicit here
 # so resolution never depends on the inherited base-image PATH.
-# NOTE: No npm/pnpm global install is used for Claude Code itself (no official
-# npm support); the native installer below is the only supported path.
+# NOTE: pnpm is a project tool; Claude Code itself is never installed through
+# npm/pnpm (no official npm support): the native installer below is the only
+# supported path.
 ENV PATH="$NVM_DIR/default:/usr/local/bin:/home/coder/.local/bin:$PATH"
 
 # Install Claude Code natively with a pinned version (official installer).
@@ -114,7 +123,7 @@ ENV PATH="$NVM_DIR/default:/usr/local/bin:/home/coder/.local/bin:$PATH"
 # earlier build of the same version (CLAUDE_CODE_SHA256, trust on first use),
 # the same bytes.
 # See: https://code.claude.com/docs/en/setup#install-a-specific-version
-ARG CLAUDE_CODE_VERSION=2.1.284
+ARG CLAUDE_CODE_VERSION=2.1.296
 ARG CLAUDE_CODE_SHA256=
 ARG CLAUDE_BUILD_TIME=0
 RUN curl -fsSL https://claude.ai/install.sh | bash -s "${CLAUDE_CODE_VERSION}" && \

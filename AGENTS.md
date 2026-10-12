@@ -22,7 +22,7 @@ Shell script-based Docker wrapper for running [Claude Code](https://code.claude.
 - `lib/install-lib.sh` — Install wizard library sourced by the wrapper's `install` command (`--yes`, `--only config,completions,aliases,global[,path][,build]`). **Not executable directly.**
 - `config/managed-settings.json`, `config/user-settings.default.json` — Managed policy template (rendered by `write_managed_settings`) and user-settings seed
 - `lib/migrate-settings.js` — Node helper for `ensure_user_settings`: strips policy keys (and `disableAllHooks`) from a legacy `settings.json`, keeping the user's own keys
-- `Dockerfile` — Container image (Debian trixie-slim + Node.js/NVM + uv + Claude Code native binary v2.1.284, no sudo, no npm install)
+- `Dockerfile` — Container image (Debian trixie-slim + Node.js/NVM + pnpm + uv + Claude Code native binary v2.1.296, no sudo, no npm install)
 - `entrypoint.sh` — Container entrypoint (unprivileged; resolves workdir, loads NVM, execs the command)
 - `run-simple.sh` — Simplified alternative runner (delegates to `claude-dockerized run`)
 - `hooks/claude-guard-bash.sh`, `hooks/claude-guard-file.sh` — Versioned native `PreToolUse` hooks (source of truth; copied into the user config by `lib/layer-lib.sh`)
@@ -231,7 +231,7 @@ Removed settings (`websearch_provider`, `theme`) warn and are ignored. Secrets o
 
 - Base image: `debian:trixie-slim` (pinned, not `latest`)
 - Set `SHELL ["/bin/bash", "-o", "pipefail", "-c"]` so RUN pipelines fail fast
-- Parameterize tool versions via `ARG`: `ARG NVM_VERSION=v0.40.8`, `ARG CLAUDE_CODE_VERSION=2.1.284`, `ARG CLAUDE_BUILD_TIME=0` (cache-bust only for `update`)
+- Parameterize tool versions via `ARG`: `ARG NVM_VERSION=v0.40.8`, `ARG CLAUDE_CODE_VERSION=2.1.296`, `ARG CLAUDE_BUILD_TIME=0` (cache-bust only for `update`)
 - Install Claude Code only via the native installer (`curl -fsSL https://claude.ai/install.sh | bash -s "${CLAUDE_CODE_VERSION}"`); never via npm (no official npm support)
 - Do NOT bake LSP servers or formatters into the image; they live in the generated home (`ensure_lsp_formatters`)
 - Clean apt cache in same RUN layer: `&& rm -rf /var/lib/apt/lists/*`

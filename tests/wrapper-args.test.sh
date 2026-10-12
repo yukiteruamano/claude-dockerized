@@ -255,8 +255,8 @@ last_user="$(grep -E '^USER ' "$dockerfile" | tail -n1)"
     fail "last USER must be 'coder' (non-root image), got: '$last_user'"
 
 # Pinned native install: version ARG, official installer, no npm/pnpm agent install.
-grep -Eq '^ARG CLAUDE_CODE_VERSION=2\.1\.284' "$dockerfile" ||
-    fail "Dockerfile must pin ARG CLAUDE_CODE_VERSION=2.1.284"
+grep -Eq '^ARG CLAUDE_CODE_VERSION=2\.1\.296' "$dockerfile" ||
+    fail "Dockerfile must pin ARG CLAUDE_CODE_VERSION=2.1.296"
 grep -q 'https://claude.ai/install.sh' "$dockerfile" ||
     fail "Dockerfile must use the native installer (claude.ai/install.sh)"
 # Image-provided CLIs must live outside the home bin dir: the generated home's
@@ -269,7 +269,7 @@ grep -q 'cp -aL' "$dockerfile" ||
     fail "Dockerfile must dereference installer symlinks (their targets are shadow-mounted too)"
 grep -q 'test ! -L /usr/local/bin/claude' "$dockerfile" ||
     fail "Dockerfile must assert the installed claude is a real file, not a link"
-if grep -qE 'npm (install|add).*(-g|@anthropic)|pnpm add -g.*@opencode' "$dockerfile"; then
+if grep -qE 'npm (install|add).*(@anthropic|claude)|pnpm add -g.*@opencode' "$dockerfile"; then
     fail "Dockerfile must not install the agent via npm/pnpm"
 fi
 grep -Eq '^FROM debian:trixie-slim' "$dockerfile" ||
