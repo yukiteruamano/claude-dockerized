@@ -6,6 +6,8 @@ Releases are signed annotated tags (`docs/security/YELLOW.md#releases`).
 
 ### Security
 
+- **Guard v5** (`CLAUDE_DOCKERIZED_GUARD_VERSION=5`):
+  - `balanced` no longer applies the vendored `base64-payload-1` / `base64-payload-2`, which denied any 40+ character run before or after `run`/`exec` (container ids, commit hashes, long paths or script names next to `npm run` / `docker exec`). In their place `hooks/guard-eval.js` checks, in balanced only, for a whole-word `run`/`exec` and a base64-looking token on the same line, before or after it (reported under the same rule ids). Not a payload: a path or script name made of words (lower-case, camelCase or PascalCase, digits allowed), a hex run of a digest length (40/64/96/128) unless a decoder such as `pack`, `fromhex`, `xxd`, `hex` or `Buffer` is on the line. Hex of any other length, and random letters, still count as a payload. `strict` keeps the vendored rules unchanged. The vendored `policies/*.json` are untouched.
 - **Guard v4** (`CLAUDE_DOCKERIZED_GUARD_VERSION=4`; installs refresh on the next run, the previous copy is kept as `.bak`):
   - Both hooks run under `#!/bin/bash -p` and drop startup/preload variables, so settings `env` can no longer make them exit 0 early; the managed policy pins the preload variable empty.
   - The balanced/none remote-flow override applies only to a single plain command: chained, expanded, redirected or uploading commands are judged by the vendored rules.

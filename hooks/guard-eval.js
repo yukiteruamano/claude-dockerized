@@ -58,7 +58,65 @@ const excluded = new Set([
   "env-direct-2", "at-schedule", "base64-exfil-1", "dos-yes", "dos-yes-pipe",
   // Any ampersand inside a loop body (2>&1, &&) matches these, not only a background job.
   "fork-bomb-3", "fork-bomb-4",
+  // Replaced in balanced by payloadRuleId (below); strict keeps the vendored rules.
+  "base64-payload-1", "base64-payload-2",
 ]);
+
+// base64-payload-1/-2 fire on any 40+ character run before or after "run" or
+// "exec", so a container id, a commit hash or a long path next to "npm run" /
+// "docker exec" is denied. Balanced uses this narrower check instead: a
+// whole-word keyword and, on the same line, a maximal token that looks like
+// base64 (-1: payload after the keyword, -2: payload before it).
+const BASE64_REASONS = {
+  "base64-payload-1": "Exec with long base64 payload",
+  "base64-payload-2": "Long base64 payload + exec request",
+};
+const BASE64_KEYWORD = /(?<![\p{L}\p{N}_])(?:run|exec|выполни|запусти)(?![\p{L}\p{N}_])/giu;
+const BASE64_TOKEN = /(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{40,}={0,2}/g;
+const BASE64_DECODER = /(?<![\p{L}\p{N}_])(?:pack|fromhex|unhex|unhexlify|xxd|hex|buffer|base64|b64decode|decode)(?![\p{L}\p{N}_])/iu;
+
+// Lengths of hex digests and ids (sha1, sha256, sha384, sha512). A hex run of
+// any other length is not an id, so it counts as a payload whatever decodes it.
+const HASH_LENGTHS = new Set([40, 64, 96, 128]);
+
+// camelCase / PascalCase / lower-case word, digits allowed after a word. Each
+// extra word must start with a capital, so the pattern cannot backtrack.
+const WORD = /^[A-Za-z]?[a-z]+[0-9]*(?:[A-Z][a-z]+[0-9]*)*$/;
+
+const vowelRatio = (token) => {
+  const letters = token.replace(/[^A-Za-z]/g, "");
+  return letters.length === 0 ? 0 : letters.replace(/[^aeiouAEIOU]/g, "").length / letters.length;
+};
+
+// A slash-separated token whose parts are all words is a path. A single word
+// with the vowel share of natural language is an identifier; random letters
+// (about 19% vowels) are not.
+const isPathLike = (token) => {
+  const parts = token.split("/").filter(Boolean);
+  return parts.length > 1 && parts.every((p) => WORD.test(p));
+};
+const isIdentifier = (token) => WORD.test(token) && vowelRatio(token) >= 0.3;
+
+const looksLikeBase64 = (line, token) => {
+  if (/^[0-9a-f]+$/i.test(token)) return !HASH_LENGTHS.has(token.length) || BASE64_DECODER.test(line);
+  return !isPathLike(token) && !isIdentifier(token);
+};
+
+const hasPayloadToken = (line, text) =>
+  [...text.matchAll(BASE64_TOKEN)].some((m) => looksLikeBase64(line, m[0]));
+
+// Rule id of the first line with a keyword and a payload-looking token, or null.
+const payloadRuleId = (value) => {
+  for (const line of value.split(/[\n\r]/)) {
+    const keywords = [...line.matchAll(BASE64_KEYWORD)];
+    if (keywords.length === 0) continue;
+    const first = keywords[0];
+    const last = keywords[keywords.length - 1];
+    if (hasPayloadToken(line, line.slice(first.index + first[0].length))) return "base64-payload-1";
+    if (hasPayloadToken(line, line.slice(0, last.index))) return "base64-payload-2";
+  }
+  return null;
+};
 
 // Build every rule or fail closed: a pattern that does not compile would
 // otherwise be a silently lost rule.
@@ -102,5 +160,10 @@ for (const rules of denySets) {
       process.exit(0);
     }
   }
+}
+const payloadRule = mode === "balanced" ? payloadRuleId(value) : null;
+if (payloadRule) {
+  console.log(`deny|${payloadRule}|${BASE64_REASONS[payloadRule]}`);
+  process.exit(0);
 }
 console.log("pass");
