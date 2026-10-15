@@ -16,7 +16,7 @@
 # a project's settings `env` could otherwise point at a script that exits 0
 # before this file runs. The managed policy also pins those variables empty.
 #
-# CLAUDE_DOCKERIZED_GUARD_VERSION=4
+# CLAUDE_DOCKERIZED_GUARD_VERSION=5
 #
 # Policy modes (./policy-mode, written by the wrapper next to this hook on the
 # read-only mount; CLAUDE_DOCKERIZED_POLICY is only a fallback because project
