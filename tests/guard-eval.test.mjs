@@ -130,5 +130,22 @@ for (const value of [`docker exec ${HEX64} cat /etc/hostname`, `git show ${SHA40
   report.check(`strict keeps the vendored rules for ${JSON.stringify(value.slice(0, 24))}`, evaluate(value, "strict").startsWith("deny|"), true);
 }
 
+// --- False-positive corpus (tests/fixtures/guard-fp-corpus.tsv) ---
+// Benign commands mined from real sessions must pass in balanced; payload
+// shapes (base64/hex next to run/exec, decode-then-eval) must stay denied.
+// Known evasions are listed here and flip to XPASS once they are closed.
+const FP_KNOWN_GAPS = {
+  "run-b64url-chunked": "base64url payload split with hyphens (strict misses it too)",
+};
+const fpRows = readFileSync(join(repo, "tests/fixtures/guard-fp-corpus.tsv"), "utf8")
+  .split("\n")
+  .filter((l) => l && !l.startsWith("#"))
+  .map((l) => l.split("\t"));
+report.check("fp corpus is loaded", fpRows.length >= 30, true);
+for (const [expected, label, command] of fpRows) {
+  const denied = evaluate(command).startsWith("deny|");
+  report.check(`fp corpus ${expected} ${label}`, denied, expected === "DENY", FP_KNOWN_GAPS[label]);
+}
+
 cleanup(stage);
 report.finish();
