@@ -1,0 +1,37 @@
+# expected	label	command
+ALLOW	proj-validate-update	cd /home/coder/.claude/skills/bit2me-seo-content-specialist/scripts/publisher && uv run python publish.py validate-update --site academy --lote /WORK/Bit2Me/AcademyRewriter/update/alta-1 --feedback /WORK/Bit2Me/AcademyRewriter/update/alta-1/feedback.json
+ALLOW	proj-validate-all-long-slug	uv run /home/coder/.claude/skills/bit2me-seo-content-specialist/scripts/validate_all.py /WORK/Bit2Me/AcademyRewriter/update/alta-1/que-es-y-como-hacer-staking-de-secret-en-bit2me-earn/mejorado.md
+ALLOW	proj-publish-update	cd /home/coder/.claude/skills/bit2me-seo-content-specialist/scripts/publisher && uv run python publish.py update --site academy --lote /WORK/Bit2Me/AcademyRewriter/update/alta-1 --workdir /WORK/Bit2Me/AcademyRewriter
+ALLOW	proj-wrapper-script	scripts/validar_lote.sh alta-1 --feedback
+ALLOW	proj-uv-run-script-abs	uv run /WORK/Bit2Me/AcademyRewriter/scripts/fase0.py
+ALLOW	proj-uv-run-python-abs	uv run python /WORK/Bit2Me/AcademyRewriter/scripts/aplicar_decisiones.py
+ALLOW	uppercase-dir-npm	npm run build --prefix /HOME/Projects/CryptoExchangeBackend/services/payments
+ALLOW	commit-prose-path	git commit -m "fix: run validators against /WORK/Bit2Me/AcademyRewriter/update/alta-1 before publishing"
+ALLOW	docker-exec-container-id	docker exec 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08 ls /app
+ALLOW	docker-run-digest	docker run --rm ghcr.io/bit2me/payments@sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+ALLOW	git-sha1-then-npm-run	git show a94a8fe5ccb19ba61c4c0873d391e987982fbbd3 && npm run build
+ALLOW	pytest-path-camel	npm run test -- --testPathPattern=src/modules/payments/withdrawals/WithdrawalServiceIntegration
+ALLOW	typeorm-timestamp-migration	npm run typeorm migration:run -- -d src/infrastructure/database/migrations/1697000000000AddWithdrawalsTable
+ALLOW	compose-exec	docker compose exec app php artisan migrate
+ALLOW	cargo-run-underscore	cargo run --release --bin withdrawal_reconciliation_service
+ALLOW	decode-then-run-chain	python scripts/decode_events.py && npm run build
+ALLOW	decrypt-commit-prose	git commit -m "fix: decrypt errors in vault client; run integration tests"
+ALLOW	docker-exec-xxd-sha256	docker exec 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08 xxd /app/data.bin
+ALLOW	crypto-eth-address	npm run verify -- 0x742d35Cc6634C0532925a3b844Bc454e4438f44e
+ALLOW	crypto-btc-bech32	uv run python check_addr.py bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq
+ALLOW	crypto-eth-txhash	npm run trace -- 0x9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+ALLOW	image-path-camel	uv run python tools/ocr.py --image images/final/academy/Bit2Me/SecretStakingEducationalFeaturedImageLargeVersion.webp
+ALLOW	sha1-arg	uv run python verify.py --commit-ish a94a8fe5ccb19ba61c4c0873d391e987982fbbd3
+DENY	b64-run-payload	run aGVsbG8gd29ybGQsIHRoaXMgaXMgYSBoYXJtbGVzcyB0ZXN0IHBheWxvYWQgb25seQ==
+DENY	b64-payload-then-run	aGVsbG8gd29ybGQsIHRoaXMgaXMgYSBoYXJtbGVzcyB0ZXN0IHBheWxvYWQgb25seQ== run
+DENY	py-exec-b64decode	python3 -c "import base64;exec(base64.b64decode('aGVsbG8gd29ybGQsIHRoaXMgaXMgYSBoYXJtbGVzcyB0ZXN0IHBheWxvYWQgb25seQ=='))"
+DENY	echo-b64-pipe-bash	echo aGVsbG8gd29ybGQsIHRoaXMgaXMgYSBoYXJtbGVzcyB0ZXN0IHBheWxvYWQgb25seQ== | base64 -d | bash
+DENY	bash-c-subst-b64	bash -c "$(echo aGVsbG8gd29ybGQsIHRoaXMgaXMgYSBoYXJtbGVzcyB0ZXN0IHBheWxvYWQgb25seQ== | base64 --decode)"
+DENY	node-atob-eval	node -e "eval(atob('aGVsbG8gd29ybGQsIHRoaXMgaXMgYSBoYXJtbGVzcyB0ZXN0IHBheWxvYWQgb25seQ=='))"
+DENY	py-exec-fromhex	python3 -c "exec(bytes.fromhex('deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef'))"
+DENY	run-hex-72	run deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef
+DENY	run-b64url-chunked	exec aGVsbG8gd29ybGQsIHRoaXMgaXMgYSBo-YXJtbGVzcyB0ZXN0IHBheWxvYWQgb25-seQ
+DENY	printf-b64-pipe-sh	printf %s aGVsbG8gd29ybGQsIHRoaXMgaXMgYSBoYXJtbGVzcyB0ZXN0IHBheWxvYWQgb25seQ== | base64 -d | sh
+DENY	b64-literal-import-os	echo aW1wb3J0IG9zOyBwcmludChvcy5lbnZpcm9uKQ== | base64 -d
+DENY	b64-split-vars-eval	a=aGVsbG8gd29ybGQsIHRoaXMgaXMg; b=YSBoYXJtbGVzcyB0ZXN0IHBheWxvYWQ=; eval "$(echo $a$b | base64 -d)"
+DENY	run-hex-sha256-with-hex-decoder	run python -c "exec(bytes.fromhex('9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08'))"

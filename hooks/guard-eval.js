@@ -60,6 +60,12 @@ const excluded = new Set([
   "fork-bomb-3", "fork-bomb-4",
   // Replaced in balanced by payloadRuleId (below); strict keeps the vendored rules.
   "base64-payload-1", "base64-payload-2",
+  // Whole-string prose rules (decode, then a later run): any `decode` before a
+  // later `run` in a chained command matches. Replaced in balanced by DECODE_EXEC.
+  "base64-decode-exec-en-1", "base64-decode-exec-ru-1",
+  // Same class as the already excluded xxd-tool / base64-exfil-1; secret files
+  // stay covered by the hook's leak backstops.
+  "xxd-exfil",
 ]);
 
 // base64-payload-1/-2 fire on any 40+ character run before or after "run" or
@@ -73,34 +79,68 @@ const BASE64_REASONS = {
 };
 const BASE64_KEYWORD = /(?<![\p{L}\p{N}_])(?:run|exec|выполни|запусти)(?![\p{L}\p{N}_])/giu;
 const BASE64_TOKEN = /(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{40,}={0,2}/g;
-const BASE64_DECODER = /(?<![\p{L}\p{N}_])(?:pack|fromhex|unhex|unhexlify|xxd|hex|buffer|base64|b64decode|decode)(?![\p{L}\p{N}_])/iu;
+// `xxd` only decodes with -r; a plain `xxd file` is a hex dump, not a decoder.
+const BASE64_DECODER = /(?<![\p{L}\p{N}_])(?:pack|fromhex|unhex|unhexlify|xxd\s+-[a-z]*r|hex|buffer|base64|b64decode|decode)(?![\p{L}\p{N}_])/iu;
 
-// Lengths of hex digests and ids (sha1, sha256, sha384, sha512). A hex run of
-// any other length is not an id, so it counts as a payload whatever decodes it.
-const HASH_LENGTHS = new Set([40, 64, 96, 128]);
+// Lengths of hex digests and ids (md5, sha1, sha224, sha256, sha384, sha512);
+// with the 0x prefix they are also EVM addresses and transaction hashes. A hex
+// run of any other length is not an id, so it counts as a payload whatever
+// decodes it.
+const HASH_LENGTHS = new Set([32, 40, 56, 64, 96, 128]);
 
-// camelCase / PascalCase / lower-case word, digits allowed after a word. Each
-// extra word must start with a capital, so the pattern cannot backtrack.
-const WORD = /^[A-Za-z]?[a-z]+[0-9]*(?:[A-Z][a-z]+[0-9]*)*$/;
+// camelCase / PascalCase / lower-case word, digits allowed around a word (a
+// timestamped migration name starts with digits). Each extra word must start
+// with a capital, so the pattern cannot backtrack.
+const WORD = /^[0-9]*[A-Za-z]?[a-z]+[0-9]*(?:[A-Z][a-z]+[0-9]*)*$/;
+// Directory or file part written in capitals or digits only (/WORK/, /HOME/, 2026).
+const ACRONYM = /^[A-Z0-9]+$/;
+// Bech32 addresses (bc1q..., tb1p..., ltc1...): lower-case, no random casing.
+const BECH32 = /^(?:bc|tb|ltc|bcrt)1[a-z0-9]{38,}$/;
+
+const LONG_HEX = /^(?:0x)?[0-9a-f]{24,}$/i;
+
+// A token shorter than this after the benign parts are removed is not a payload.
+const MIN_PAYLOAD = 32;
 
 const vowelRatio = (token) => {
   const letters = token.replace(/[^A-Za-z]/g, "");
   return letters.length === 0 ? 0 : letters.replace(/[^aeiouAEIOU]/g, "").length / letters.length;
 };
 
-// A slash-separated token whose parts are all words is a path. A single word
-// with the vowel share of natural language is an identifier; random letters
-// (about 19% vowels) are not.
-const isPathLike = (token) => {
-  const parts = token.split("/").filter(Boolean);
-  return parts.length > 1 && parts.every((p) => WORD.test(p));
+// A hex id of a known length is benign unless a decoder word shares the line.
+const isHexId = (part, line) => {
+  const hex = part.replace(/^0x/i, "");
+  return /^[0-9a-f]+$/i.test(hex) && HASH_LENGTHS.has(hex.length) && !BASE64_DECODER.test(line);
 };
-const isIdentifier = (token) => WORD.test(token) && vowelRatio(token) >= 0.3;
 
-const looksLikeBase64 = (line, token) => {
-  if (/^[0-9a-f]+$/i.test(token)) return !HASH_LENGTHS.has(token.length) || BASE64_DECODER.test(line);
-  return !isPathLike(token) && !isIdentifier(token);
+// `multi` = the token has several slash-separated parts, i.e. it is a path: its
+// parts may be capitals, digits or short words ("src", "lib") with few vowels. A
+// lone word still needs the vowel share of natural language, because random
+// letters (about 19% vowels) are not an identifier.
+const isBenignPart = (part, line, multi) => {
+  // A long hex run ("deadbeef..." also reads as a word) is benign only as a digest or id.
+  if (LONG_HEX.test(part)) return isHexId(part, line);
+  return (
+    BECH32.test(part) ||
+    (WORD.test(part) && (multi || vowelRatio(part) >= 0.3)) ||
+    (multi && ACRONYM.test(part))
+  );
 };
+
+// Characters of the token that are not explained by a path part or an id. Parts
+// are measured one by one, so a path with one odd segment (a digest, a hash) does
+// not hide a payload and a payload with a slash inside it is still measured whole.
+const unexplainedLength = (line, token) => {
+  const parts = token.split("/").filter(Boolean);
+  const multi = parts.length > 1;
+  return parts.reduce((sum, p) => sum + (isBenignPart(p, line, multi) ? 0 : p.length), 0);
+};
+
+const looksLikeBase64 = (line, token) => unexplainedLength(line, token) >= MIN_PAYLOAD;
+
+// Narrow replacement for "decode ... run": a decoder (base64 -d, b64decode, atob)
+// whose output is evaluated on the same line (eval / source / sh -c / bash -c).
+const DECODE_EXEC = /(?<![\p{L}\p{N}_])(?:eval|source|(?:ba|z)?sh\s+-c)(?![\p{L}\p{N}_])[^\n\r]*(?:base64\s+(?:-d|-D|--decode)|b64decode|atob\s*\()/iu;
 
 const hasPayloadToken = (line, text) =>
   [...text.matchAll(BASE64_TOKEN)].some((m) => looksLikeBase64(line, m[0]));
@@ -164,6 +204,10 @@ for (const rules of denySets) {
 const payloadRule = mode === "balanced" ? payloadRuleId(value) : null;
 if (payloadRule) {
   console.log(`deny|${payloadRule}|${BASE64_REASONS[payloadRule]}`);
+  process.exit(0);
+}
+if (mode === "balanced" && DECODE_EXEC.test(value)) {
+  console.log("deny|base64-decode-exec-line|Decoded output evaluated (eval/source/sh -c)");
   process.exit(0);
 }
 console.log("pass");
