@@ -2,7 +2,7 @@
 
 Releases are signed annotated tags (`docs/security/YELLOW.md#releases`).
 
-## Unreleased
+## 0.3.1 - 2026-10-16
 
 ### Security
 
@@ -31,7 +31,7 @@ Releases are signed annotated tags (`docs/security/YELLOW.md#releases`).
 - `lib/config-lib.sh` (3.6k lines) is split into `config-lib`, `mounts-lib`, `layer-lib`, `agent-lib`, `lsp-lib` and `wizard-lib` (function bodies unchanged); the session-rules template moved to `config/session-rules.md`; `ensure_claude_dockerized_config` and `load_config` are composed of small functions; `run`/one-off commands share `build_session_args` and `run_docker_session`.
 - `exec` requires the message before any option.
 - `run-simple.sh` builds through the wrapper (pinned version and build args apply).
-- `WRAPPER_VERSION` is `0.3.0`; a test keeps it from falling behind the latest tag.
+- `WRAPPER_VERSION` is `0.3.1`; a test keeps it from falling behind the latest tag.
 
 ### Tests
 
