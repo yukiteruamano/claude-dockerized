@@ -129,11 +129,25 @@ doctor_host_checks() {
             DIAG_RESULTS+=("warn|claude-version|image ${image:-unknown} vs pinned $pinned (run: claude-dockerized build)")
         fi
     fi
-    if check_security_layer >/dev/null 2>&1; then
+    # Every profile carries its own mirror of the layer: check them all.
+    local pname drifted=""
+    for pname in $(profile_names); do
+        if ! (
+            # shellcheck disable=SC2034 # read by activate_profile
+            PROFILE_FLAG="$pname"
+            activate_profile
+            parse_config >/dev/null 2>&1 || true
+            check_security_layer >/dev/null 2>&1
+        ); then
+            drifted="$drifted $pname"
+        fi
+    done
+    if [ -z "$drifted" ]; then
         DIAG_RESULTS+=("pass|security-layer|hooks, policies and managed settings match the repo")
     else
-        DIAG_RESULTS+=("fail|security-layer|drift detected (details: claude-dockerized config sync --check)")
+        DIAG_RESULTS+=("fail|security-layer|drift detected in profile(s):$drifted (details: claude-dockerized config sync --check)")
     fi
+    DIAG_RESULTS+=("pass|profile|active: $PROFILE_NAME ($PROFILE_SOURCE)")
     DIAG_RESULTS+=("pass|policy|security_policy=$SECURITY_POLICY, hardening=$HARDENING")
     if [ "$INTEGRITY_CHECK" = true ]; then
         local last

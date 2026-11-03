@@ -53,8 +53,36 @@ load_from 'mount.data=~/data:/data\n'
 assert_eq "${CUSTOM_MOUNTS[0]:-}" "~/data:/data" "mount value parsed"
 assert_eq "${CUSTOM_MOUNT_KEYS[0]:-}" data "mount key parsed"
 
-load_from 'setting.env_file=~/.config/claude-dockerized/a=b\n'
-assert_eq "$ENV_FILE" "~/.config/claude-dockerized/a=b" "values may contain '='"
+load_from 'mount.eq=~/a=b:/data\n'
+assert_eq "${CUSTOM_MOUNTS[0]:-}" "~/a=b:/data" "values may contain '='"
+
+# Secrets are per profile: a legacy global setting.env_file is ignored (with a warning).
+# save_config must not leave a setting that load_config then rejects (an empty
+# setting.profile used to warn on every load), and must keep a chosen default.
+config_reset_settings
+save_config >/dev/null 2>&1
+roundtrip_out=$(load_config 2>&1)
+check_not "save_config/load_config round trip is silent" has_text "Invalid" "$roundtrip_out"
+check_not "an unset default profile is not written as an empty setting" grep -q '^setting.profile=' "$CONFIG_FILE"
+DEFAULT_PROFILE=work
+save_config >/dev/null 2>&1
+load_config >/dev/null 2>&1
+assert_eq "$DEFAULT_PROFILE" work "a chosen default profile survives save/load"
+# an overwrite (the wizard saves without loading) must keep the chosen default profile
+printf 'setting.profile=work\nsetting.memory=2g\n' >"$CONFIG_FILE"
+config_reset_settings
+save_config >/dev/null 2>&1
+check "save_config keeps the default profile when it was not loaded" grep -qx 'setting.profile=work' "$CONFIG_FILE"
+check_not "…and still drops the other settings it was not given" grep -q 'memory=2g' "$CONFIG_FILE"
+printf 'setting.profile=\n' >"$CONFIG_FILE"
+empty_out=$(load_config 2>&1)
+check_not "an explicitly empty setting.profile is accepted silently" has_text "Invalid" "$empty_out"
+
+printf 'setting.env_file=~/.config/claude-dockerized/env\n' >"$CONFIG_FILE"
+legacy_out=$(load_config 2>&1)
+load_config >/dev/null 2>&1
+assert_eq "$ENV_FILE" "" "setting.env_file no longer selects a secrets file"
+check "legacy setting.env_file warns" has_text "per profile" "$legacy_out"
 
 load_from 'setting.cleanup_days=abc\nsetting.memory=lots\nsetting.cpus=-1\n'
 assert_eq "$CLEANUP_DAYS" 7 "invalid cleanup_days ignored"

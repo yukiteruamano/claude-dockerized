@@ -278,7 +278,7 @@ session_rules_current() {
     local file="$1" marker
     [ -f "$file" ] || return 1
     for marker in "Language Tooling" "## Tool Usage" "## Core Workflow" "private-keys-v1.d" "id_ed25519" \
-        "setting.env_file" "Manejo remoto" "managed-settings.json" "/permissions"; do
+        "profile's host secrets file" "Manejo remoto" "managed-settings.json" "/permissions"; do
         grep -qF -- "$marker" "$file" 2>/dev/null || return 1
     done
 }
@@ -556,7 +556,7 @@ check_security_layer() {
 
     # The secrets file is never read for values here; only its permissions.
     if [ -n "${ENV_FILE:-}" ]; then
-        # setting.env_file may start with ~: resolve it like build_env_file_args does
+        # resolve it like build_env_file_args does
         local env_file_path
         env_file_path=$(canonical_host_path "$ENV_FILE")
         if [ ! -f "$env_file_path" ]; then
@@ -692,7 +692,7 @@ validate_claude_config() {
         "" | " ") ;;
         *)
             config_error "Inline secrets in $oc ($keys ): move credentials to env references or apiKeyHelper."
-            config_info "Put the values in setting.env_file instead (see README)."
+            config_info "Put the values in the profile's env file instead (claude-dockerized profile edit <name> env)."
             return 1
             ;;
         esac

@@ -186,6 +186,8 @@ run_cli_command() {
     check_image "$IMAGE_NAME" || exit 1
     parse_config
     ensure_claude_dirs
+    profile_report_loosened
+    [ "${DRY_RUN:-false}" = true ] || profile_touch_used
 
     build_session_args "$project_dir" "$docker_socket"
 
@@ -284,13 +286,19 @@ run_claude() {
     local random_suffix
     random_suffix=$(generate_random_suffix)
     local container_name="claude-${dir_name}-${random_suffix}"
+    if [ "$PROFILE_NAME" != default ]; then
+        container_name="claude-$(sanitize_container_name "$PROFILE_NAME")-${dir_name}-${random_suffix}"
+    fi
 
     print_info "Starting Claude Code in Docker..."
     print_info "Project directory: $project_dir"
     print_info "Container name: $container_name"
+    profile_banner
 
     # Parse custom config and build docker arguments
     parse_config
+    profile_report_loosened
+    [ "$dry_run" = true ] || profile_touch_used
     # Docker socket is opt-in: mounting it is root-equivalent on the host.
     build_session_args "$project_dir" "$DOCKER_SOCKET"
 
@@ -486,7 +494,7 @@ _rebuild_claude_image() {
 _update_post_pull() {
     print_info "Refreshing security layer..."
     parse_config || true
-    sync_security_layer || true
+    profile_foreach sync_security_layer || true
     if [ "$_UP_NO_BUILD" = true ]; then
         print_success "Update complete (code + security layer; image untouched, --no-build)."
         return 0
@@ -552,7 +560,7 @@ full_upgrade() {
             return $?
         fi
         parse_config || true
-        sync_security_layer >/dev/null 2>&1 || true
+        profile_foreach sync_security_layer >/dev/null 2>&1 || true
         return 0
     fi
 
@@ -644,7 +652,18 @@ rollback_update() {
         return 1
         ;;
     esac
+    # A target that predates account profiles cannot see the migrated home:
+    # decide before touching the checkout, revert the layout right after it.
+    profile_rollback_precheck || return 1
     update_rollback "$yes" || return 1
+    if [ "$PROFILE_ROLLBACK_LAYOUT" = true ]; then
+        profile_migrate_rollback || {
+            print_error "The checkout was rolled back but the account layout was not, and this version has no 'profile' command. Move it by hand:"
+            print_info "  mv \"$PROFILES_DIR/default/home\" \"$CONFIG_DIR/home\""
+            print_info "  (the old config and env file are in the newest $CONFIG_DIR/backups/pre-profiles-*/; the env file belongs where its MANIFEST says)"
+            return 1
+        }
+    fi
     exec "$REPO_ROOT/bin/claude-dockerized" config sync
 }
 
@@ -669,7 +688,7 @@ show_stats() {
     local share="$CCODE_HOME/.local/share/claude"
     local state="$CCODE_HOME/.local/state/claude"
     local cache="$CCODE_HOME/.cache/claude"
-    echo "Session storage (generated home: $CCODE_HOME):"
+    echo "Session storage (profile $PROFILE_NAME, generated home: $CCODE_HOME):"
     local d
     for d in "$share" "$state" "$cache"; do
         if [ -d "$d" ]; then
@@ -867,9 +886,10 @@ show_config() {
     sync)
         # Local-only command: refresh the versioned security layer (hooks,
         # policies, settings, mirror) from the repo without starting a
-        # container. With --check it only reports drift.
+        # container. With --check it only reports drift. Every profile is
+        # synced: an idle profile must not keep an outdated guard.
         parse_config || true
-        sync_security_layer "${1:-}"
+        profile_foreach sync_security_layer "${1:-}"
         ;;
     claude)
         # User preferences (read-write in the container) can be edited here;
@@ -935,6 +955,18 @@ main() {
             set -- version "$@"
             break
             ;;
+        -p | --profile)
+            if [ -z "${2:-}" ]; then
+                print_error "$1 needs a profile name (see: claude-dockerized profiles)"
+                exit 1
+            fi
+            PROFILE_FLAG="$2"
+            shift 2
+            ;;
+        --profile=*)
+            PROFILE_FLAG="${1#--profile=}"
+            shift
+            ;;
         *) break ;;
         esac
     done
@@ -959,11 +991,35 @@ main() {
         ;;
     esac
 
+    # Account selection: --profile NAME anywhere before `--` (-p NAME as a
+    # global option or after `run`), then CLAUDE_DOCKERIZED_PROFILE, the
+    # project bind, setting.profile and default. Activating the profile points
+    # CCODE_HOME at its home (and migrates the single-account layout once).
+    case "$command" in
+    help | --help | -h | version | uninstall) ;;
+    *)
+        local short_ok=false
+        [ "$command" = run ] && short_ok=true
+        profile_extract_flag "$short_ok" "$@"
+        set -- "${PROFILE_ARGS[@]}"
+        if [ "$command" = profile ] && [ "${1:-}" = migrate ]; then
+            PROFILE_SKIP_AUTO_MIGRATE=1
+        fi
+        activate_profile "$(profile_project_hint "$command" "$@")"
+        ;;
+    esac
+
     case "$command" in
     run)
         check_docker
         check_config
         run_claude "$@"
+        ;;
+    profile)
+        manage_profiles "$@"
+        ;;
+    profiles)
+        manage_profiles list "$@"
         ;;
     auth)
         check_docker

@@ -116,8 +116,8 @@ integrity_report() {
     local audit_dir="$CONFIG_DIR/audit" json_paths
     mkdir -p "$audit_dir" 2>/dev/null && chmod 700 "$audit_dir" 2>/dev/null
     json_paths=$(printf '%s\n' "$changes" | _integrity_json_array)
-    printf '{"time":"%s","project":%s,"changed":%s}\n' \
-        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(printf '%s' "$project" | _integrity_json_string)" "$json_paths" \
+    printf '{"time":"%s","profile":%s,"project":%s,"changed":%s}\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(printf '%s' "${PROFILE_NAME:-default}" | _integrity_json_string)" "$(printf '%s' "$project" | _integrity_json_string)" "$json_paths" \
         >>"$audit_dir/sessions.jsonl" 2>/dev/null
     chmod 600 "$audit_dir/sessions.jsonl" 2>/dev/null
     return 1

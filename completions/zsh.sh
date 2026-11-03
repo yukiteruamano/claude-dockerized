@@ -13,6 +13,8 @@ _claude_dockerized() {
         'mcp:MCP servers (list|get|login|logout)'
         'plugin:Plugins (list|check)'
         'models:Show the default model'
+        'profile:Account profiles (list|create|login|use|bind|set|delete|...)'
+        'profiles:List account profiles (alias of profile list)'
         'install:First-time setup / repair PATH, config, completions, aliases'
         'build:Build the image'
         'update:Verified self-update (signed release, preview, sync, rebuild)'
@@ -37,9 +39,33 @@ _claude_dockerized() {
             _describe -t commands 'claude-dockerized command' commands
             ;;
         args)
+            local -a profile_names
+            # shellcheck disable=SC2296,SC2298,SC2206
+            profile_names=(default ${${(f)"$(command ls -1 "${CONFIG_DIR:-$HOME/.config/claude-dockerized}/profiles" 2>/dev/null)"}:#default})
             case $words[1] in
                 run)
-                    _arguments '1:project directory:_files -/' '*::claude arguments:'
+                    # shellcheck disable=SC2128 # zsh joins the array inside the double quotes
+                    _arguments \
+                        '(-p --profile)'{-p,--profile}"[account profile]:profile:(${profile_names})" \
+                        '1:project directory:_files -/' '*::claude arguments:'
+                    ;;
+                profile)
+                    if (( CURRENT == 2 )); then
+                        _values 'profile subcommand' list current show path create login logout use bind unbind edit set unset rename delete doctor migrate
+                    else
+                        case $words[2] in
+                            list) _values 'flag' --json ;;
+                            show|path|login|logout|use|bind|edit|unset|rename|delete|doctor)
+                                (( CURRENT == 3 )) && _describe -t profiles 'profile' profile_names
+                                ;;
+                            create) _values 'flag' --from --login --model --env-file --share-skills --lsp-from ;;
+                            set) _values 'flag' --allow-loosen ;;
+                            migrate) _values 'flag' --dry-run --rollback ;;
+                        esac
+                    fi
+                    ;;
+                profiles)
+                    _values 'flag' --json
                     ;;
                 mcp)
                     _values 'mcp subcommand' list get login logout

@@ -19,7 +19,19 @@ CONFIG_FILE="${CONFIG_FILE:-$CONFIG_DIR/config}"
 # instead of spreading it across the host XDG dirs, so the setup is portable
 # and replaces native host usage. It mirrors the container home layout and is
 # mounted piece by piece (fine-grained mounts, never ~/.claude as a whole).
-CCODE_HOME="${CCODE_HOME:-$CONFIG_DIR/home}"
+#
+# Accounts are profiles: each one owns a CCODE_HOME of its own under
+# $PROFILES_DIR/<name>/home (plus its config overlay and secrets file), see
+# lib/profile-lib.sh. activate_profile derives CCODE_HOME from the selected
+# profile; a CCODE_HOME already present in the environment pins the state
+# root instead (test seam / advanced use) and disables the profile layout.
+PROFILES_DIR="${PROFILES_DIR:-$CONFIG_DIR/profiles}"
+if [ -n "${CCODE_HOME:-}" ]; then
+    CCODE_HOME_PINNED=true
+else
+    CCODE_HOME_PINNED=false
+fi
+CCODE_HOME="${CCODE_HOME:-$PROFILES_DIR/default/home}"
 
 # Directory holding active GPG relay sockets (one subdir per session). The relay
 # lives on a normal filesystem so Docker can bind it (it cannot bind sockets
@@ -91,6 +103,10 @@ source "$_CONFIG_LIB_DIR/agent-lib.sh"
 source "$_CONFIG_LIB_DIR/lsp-lib.sh"
 # shellcheck source=lib/wizard-lib.sh
 source "$_CONFIG_LIB_DIR/wizard-lib.sh"
+# shellcheck source=lib/profile-lib.sh
+source "$_CONFIG_LIB_DIR/profile-lib.sh"
+# shellcheck source=lib/profile-cmd-lib.sh
+source "$_CONFIG_LIB_DIR/profile-cmd-lib.sh"
 unset _CONFIG_LIB_DIR
 
 # Resolve an editor: $EDITOR first, then common fallbacks.
@@ -141,7 +157,10 @@ config_reset_settings() {
     NETWORK_EXPLICIT=false          # setting.network was set in the config (strict keeps an explicit choice)
     MEMORY=""                       # Optional container memory limit (docker --memory), e.g. 4g
     CPUS=""                         # Optional container CPU limit (docker --cpus), e.g. 2
-    ENV_FILE=""                     # Optional dotenv file with secrets (docker --env-file), must live under CONFIG_DIR
+    DEFAULT_PROFILE=""              # setting.profile: profile used when nothing selects one (empty = default)
+    ENV_FILE=""                     # Per-profile dotenv secrets file (docker --env-file); load_config sets it to <profile>/env when present
+    SHARE_SKILLS=false              # Mount the default profile's skills read-only instead of this profile's own
+    LSP_FROM=""                     # "default": mount the default profile's .local/bin read-only (no per-profile LSP installs)
     CLAUDE_MODEL=""                 # Optional default model (passed as --model); empty = Claude default / last /model choice
     CLEANUP_DAYS="7"                # Local session-data retention (managed cleanupPeriodDays); empty = Claude default
     LSP_ENABLED=false               # Enable native LSP support (binaries + .lsp.json live in CCODE_HOME)
@@ -357,11 +376,13 @@ init_config_file() {
 # setting.memory=4g
 # setting.cpus=2
 
-# Secrets file (dotenv KEY=VALUE lines) loaded with docker --env-file.
-# Must live under ~/.config/claude-dockerized/ (never mounted). Create it with
-# `install -m 600 /dev/null ~/.config/claude-dockerized/env` and add keys like
-# ANTHROPIC_API_KEY=... Empty = disabled.
-# setting.env_file=~/.config/claude-dockerized/env
+# Secrets are per profile (never global): the dotenv file
+# ~/.config/claude-dockerized/profiles/<name>/env (mode 600) is loaded with
+# docker --env-file. Edit it with: claude-dockerized profile edit <name> env
+
+# Profile used when --profile, CLAUDE_DOCKERIZED_PROFILE and a project bind
+# do not select one (empty = default). Change it with: claude-dockerized profile use <name>
+# setting.profile=default
 
 # Default model (passed as --model; empty = Claude default, /model still works).
 # setting.model=
@@ -387,10 +408,21 @@ init_config_file() {
 # setting.ssh_agent_support=true: the agent socket plus ~/.ssh/config and
 # known_hosts are mounted read-only automatically.
 
-# Secrets live in setting.env_file (dotenv KEY=VALUE, never mounted).
-# Use `claude-dockerized install` to add keys without ever printing them.
+# Secrets live in the profile's env file (dotenv KEY=VALUE, never mounted):
+# claude-dockerized profile edit <name> env. Install can add keys without
+# ever printing them.
 EOF
     config_success "Created config file at $CONFIG_FILE"
+}
+
+# Set the boolean global <var> from "true"/"false"; any other value leaves it
+# unchanged (so an overlay can tighten as well as loosen a setting).
+# Usage: _config_apply_bool <VAR> <value>
+_config_apply_bool() {
+    case "$2" in
+    true) printf -v "$1" '%s' true ;;
+    false) printf -v "$1" '%s' false ;;
+    esac
 }
 
 # Apply one validated setting.<key>=<value> to the global settings.
@@ -398,22 +430,42 @@ EOF
 _config_apply_setting() {
     local key="$1" value="$2"
     case "$key" in
-    ssh_agent_support) [[ "$value" == "true" ]] && SSH_AGENT_SUPPORT=true ;;
-    gpg_agent_support) [[ "$value" == "true" ]] && GPG_AGENT_SUPPORT=true ;;
-    gpg_allow_main_socket) [[ "$value" == "true" ]] && GPG_ALLOW_MAIN_SOCKET=true ;;
-    gpg_autostart_agent) [[ "$value" == "false" ]] && GPG_AUTOSTART_AGENT=false ;;
-    gpg_relay) [[ "$value" == "false" ]] && GPG_RELAY=false ;;
-    docker_socket) [[ "$value" == "true" ]] && DOCKER_SOCKET=true ;;
+    ssh_agent_support) _config_apply_bool SSH_AGENT_SUPPORT "$value" ;;
+    gpg_agent_support) _config_apply_bool GPG_AGENT_SUPPORT "$value" ;;
+    gpg_allow_main_socket) _config_apply_bool GPG_ALLOW_MAIN_SOCKET "$value" ;;
+    gpg_autostart_agent) _config_apply_bool GPG_AUTOSTART_AGENT "$value" ;;
+    gpg_relay) _config_apply_bool GPG_RELAY "$value" ;;
+    docker_socket) _config_apply_bool DOCKER_SOCKET "$value" ;;
+    share_skills) _config_apply_bool SHARE_SKILLS "$value" ;;
+    lsp_from)
+        case "$value" in
+        "" | default) LSP_FROM="$value" ;;
+        *) config_warning "Invalid lsp_from '$value' (use default or leave it empty); ignoring" ;;
+        esac
+        ;;
     network)
         case "$value" in
         "" | host | bridge)
             NETWORK="${value:-host}"
-            [ -n "$value" ] && NETWORK_EXPLICIT=true
+            if [ -n "$value" ]; then
+                NETWORK_EXPLICIT=true
+            fi
             ;;
         *) config_warning "Invalid network '$value' (use host|bridge); keeping host" ;;
         esac
         ;;
-    env_file) ENV_FILE="$value" ;;
+    env_file) # secrets are per profile now (migrated by lib/profile-lib.sh)
+        [ -z "$value" ] || config_warning "Ignoring setting.env_file: secrets are per profile (edit them with: claude-dockerized profile edit <name> env)"
+        ;;
+    profile) # default profile name (global config only); empty = default
+        if [ -z "$value" ]; then
+            DEFAULT_PROFILE=""
+        elif profile_name_valid "$value"; then
+            DEFAULT_PROFILE="$value"
+        else
+            config_warning "Invalid profile '$value' in setting.profile; using default"
+        fi
+        ;;
     model)
         case "$value" in
         "") CLAUDE_MODEL="" ;;
@@ -483,8 +535,8 @@ _config_apply_setting() {
         *) config_warning "Invalid integrity_check '$value' (use true|false); keeping true" ;;
         esac
         ;;
-    image_strip_setuid) [[ "$value" == "true" ]] && IMAGE_STRIP_SETUID=true ;;
-    image_docker_cli) [[ "$value" == "false" ]] && IMAGE_DOCKER_CLI=false ;;
+    image_strip_setuid) _config_apply_bool IMAGE_STRIP_SETUID "$value" ;;
+    image_docker_cli) _config_apply_bool IMAGE_DOCKER_CLI "$value" ;;
     security_policy)
         case "$value" in
         strict | balanced | none) SECURITY_POLICY="$value" ;;
@@ -501,8 +553,10 @@ _config_apply_setting() {
 # Load config file into arrays, preserving each entry's original key suffix so
 # save_config can re-emit it unchanged (re-running setup never renames keys).
 # One pass: mount.* entries, legacy env.* (ignored with a warning: the
-# host-environment passthrough was removed, secrets live in setting.env_file;
-# see migrate_legacy_env_vars) and setting.* values.
+# host-environment passthrough was removed, secrets live in the profile's env
+# file; see migrate_legacy_env_vars) and setting.* values. This reads the
+# GLOBAL file only (the wizard saves what it returns); runtime commands call
+# parse_config, which adds the active profile's overlay on top.
 load_config() {
     if ! config_exists; then
         # Defaults are valid: say it once per invocation, as information.
@@ -510,14 +564,26 @@ load_config() {
             config_info "No config file yet ($CONFIG_FILE): using defaults. Create it with: claude-dockerized install --only config"
             _CONFIG_MISSING_NOTED=1
         fi
+        profile_resolve_env_file
         return 1
     fi
 
     CUSTOM_MOUNTS=()
     CUSTOM_MOUNT_KEYS=()
     config_reset_settings
+    _load_config_file "$CONFIG_FILE"
+    profile_resolve_env_file
+    return 0
+}
 
-    local key value
+# Read one config file into the settings state. With <overlay>=overlay the
+# file is a profile overlay: only overlay-safe keys apply, a same-named
+# mount.* replaces the global one, and a setting that loosens the global
+# security posture is ignored unless the file carries allow_loosen.<key>=true
+# (see profile_overlay_apply_setting).
+# Usage: _load_config_file <file> [overlay]
+_load_config_file() {
+    local file="$1" mode="${2:-global}" key value i
     while IFS='=' read -r key value || [ -n "$key" ]; do
         # Trim whitespace around key and value; skip comments
         key="${key#"${key%%[![:space:]]*}"}"
@@ -529,20 +595,39 @@ load_config() {
         mount.*)
             # keep the suffix after "mount." so save_config re-emits it unchanged
             if [ -n "$value" ] && [ -n "${key#mount.}" ]; then
-                CUSTOM_MOUNT_KEYS+=("${key#mount.}")
-                CUSTOM_MOUNTS+=("$value")
+                local replaced=false
+                # A read-write mount from a profile overlay needs approval.
+                if [ "$mode" = overlay ] && ! profile_overlay_mount_allowed "${key#mount.}" "$value" "$file"; then
+                    continue
+                fi
+                if [ "$mode" = overlay ]; then
+                    for i in "${!CUSTOM_MOUNT_KEYS[@]}"; do
+                        if [ "${CUSTOM_MOUNT_KEYS[$i]}" = "${key#mount.}" ]; then
+                            CUSTOM_MOUNTS[i]="$value"
+                            replaced=true
+                        fi
+                    done
+                fi
+                if [ "$replaced" = false ]; then
+                    CUSTOM_MOUNT_KEYS+=("${key#mount.}")
+                    CUSTOM_MOUNTS+=("$value")
+                fi
             fi
             ;;
         env.*)
             if [ -n "$value" ] && [ -n "${key#env.}" ]; then
-                config_warning "Ignoring legacy '${key#env.}' (env.* passthrough was removed); move the value to setting.env_file instead."
+                config_warning "Ignoring legacy '${key#env.}' (env.* passthrough was removed); move the value to the profile's env file instead."
             fi
             ;;
-        setting.*) _config_apply_setting "${key#setting.}" "$value" ;;
+        setting.*)
+            if [ "$mode" = overlay ]; then
+                profile_overlay_apply_setting "${key#setting.}" "$value" "$file"
+            else
+                _config_apply_setting "${key#setting.}" "$value"
+            fi
+            ;;
         esac
-    done <"$CONFIG_FILE"
-
-    return 0
+    done <"$file"
 }
 
 # Allocate an unused "customN" key suffix for a new entry, avoiding collisions
@@ -570,6 +655,10 @@ next_custom_key() {
 # skipping exact duplicate lines (idempotent across re-runs).
 save_config() {
     mkdir -p "$CONFIG_DIR"
+    # The default profile is not a wizard setting: an overwrite must not drop
+    # it. Read it before the file is truncated below.
+    local default_profile="$DEFAULT_PROFILE"
+    [ -n "$default_profile" ] || default_profile=$(profile_config_default)
 
     {
         echo "# Claude Dockerized User Configuration"
@@ -605,9 +694,9 @@ save_config() {
         echo "# Optional container resource limits (empty = no limit)"
         echo "setting.memory=$MEMORY"
         echo "setting.cpus=$CPUS"
-        echo "# Secrets file (dotenv KEY=VALUE lines) loaded with docker --env-file."
-        echo "# Must live under $CONFIG_DIR (never mounted). Empty = disabled."
-        echo "setting.env_file=$ENV_FILE"
+        echo "# Secrets are per profile: $PROFILES_DIR/<name>/env (never mounted)."
+        echo "# Default profile when nothing selects one (omitted = default)."
+        [ -z "$default_profile" ] || echo "setting.profile=$default_profile"
         echo "# Default model (passed as --model; empty = Claude default, /model still works)."
         echo "setting.model=$CLAUDE_MODEL"
         echo "# Local session-data retention in days (cleanupPeriodDays; empty = Claude default)."
@@ -644,7 +733,16 @@ save_config() {
 
 # Parse config file into global arrays
 parse_config() {
-    load_config || return 0 # Continue even if load fails
+    if ! load_config; then # Continue even if load fails: defaults are valid
+        CUSTOM_MOUNTS=()
+        CUSTOM_MOUNT_KEYS=()
+        config_reset_settings
+        profile_resolve_env_file
+    fi
+    # The overlay is parsed outside any `if`, so under the wrapper's `set -e`
+    # a failing statement there would end the process silently: keep going.
+    profile_apply_overlay || true
+    return 0
 }
 
 # Print current configuration (for debugging/info)
@@ -652,6 +750,7 @@ print_config() {
     echo ""
     echo "Current configuration:"
     echo "  Config file: $CONFIG_FILE"
+    echo "  Profile: ${PROFILE_NAME:-default} (${PROFILE_SOURCE:-default})"
     echo "  SSH agent forwarding: $SSH_AGENT_SUPPORT"
     echo "  GnuPG agent forwarding: $GPG_AGENT_SUPPORT"
     echo "  GPG main-socket fallback: $GPG_ALLOW_MAIN_SOCKET"
@@ -661,7 +760,7 @@ print_config() {
     if [ "$DOCKER_SOCKET" = true ]; then
         echo "  Docker socket WARNING: root-equivalent on the host (Docker-in-Docker only)"
     fi
-    echo "  Container network: $NETWORK"
+    echo "  Container network: $(_profile_effective_network "$HARDENING" "$NETWORK" "$NETWORK_EXPLICIT")"
     echo "  Security policy: $SECURITY_POLICY"
     echo "  Hardening profile: $HARDENING"
     echo "  Session integrity check: $INTEGRITY_CHECK"
@@ -682,6 +781,12 @@ print_config() {
     echo "  Session retention: ${CLEANUP_DAYS:-(default)} days"
     if [ "$LSP_ENABLED" = true ]; then echo "  LSP: true ($LSP_SERVERS)"; else echo "  LSP: false"; fi
     echo "  Formatters: $FORMATTERS_ENABLED"
+    echo "  Shared skills (from default): $SHARE_SKILLS"
+    echo "  LSP binaries from: ${LSP_FROM:-(own)}"
+    local loosened
+    for loosened in "${PROFILE_LOOSENED[@]}"; do
+        echo "  $UI_SYM_WARN loosened by this profile: $loosened"
+    done
 
     if [ ${#CUSTOM_MOUNTS[@]} -gt 0 ]; then
         echo ""

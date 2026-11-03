@@ -275,6 +275,9 @@ build_common_docker_args() {
     # Security policy mode consumed by the mounted hooks
     # (strict | balanced | none). Defaults to balanced when unset.
     DOCKER_COMMON_ARGS+=(-e "CLAUDE_DOCKERIZED_POLICY=$SECURITY_POLICY")
+    # Active profile: shown by the statusline, and the label lets
+    # `profile delete|rename` find running sessions.
+    DOCKER_COMMON_ARGS+=(-e "CLAUDE_DOCKERIZED_PROFILE=$PROFILE_NAME" --label "claude-dockerized.profile=$PROFILE_NAME")
     DOCKER_COMMON_ARGS+=(-e "CLAUDE_DOCKERIZED_HARDENING=$HARDENING")
 
     # Claude Code self-update is disabled via env.DISABLE_AUTOUPDATER=1 in the
@@ -376,9 +379,17 @@ build_standard_volume_args() {
     # or rewrite instructions that later sessions load; manage them from the
     # host. Created first: without the overlay the read-write ~/.claude parent
     # would let the session create skills/ itself.
+    # With setting.share_skills=true a non-default profile mounts the default
+    # profile's skills instead of its own (still read-only, and the only part
+    # of another profile that is ever mounted; T-31).
     mkdir -p "$chome/.claude/skills" 2>/dev/null || true
-    if [ -d "$chome/.claude/skills" ]; then
-        VOLUME_ARGS+=(-v "$chome/.claude/skills:/home/coder/.claude/skills:ro")
+    local skills_src="$chome/.claude/skills"
+    if [ "$SHARE_SKILLS" = true ] && [ "$PROFILE_NAME" != default ]; then
+        skills_src="$(profile_home_of default)/.claude/skills"
+        mkdir -p "$skills_src" 2>/dev/null || true
+    fi
+    if [ -d "$skills_src" ]; then
+        VOLUME_ARGS+=(-v "$skills_src:/home/coder/.claude/skills:ro")
     fi
 
     # LSP config (regenerated when setting.lsp=true).
@@ -396,8 +407,16 @@ build_standard_volume_args() {
 
     # Generated-home binaries: LSP servers and formatters installed by
     # ensure_lsp_formatters (read-write, on PATH in the container).
-    if [ -d "$chome/.local/bin" ]; then
-        VOLUME_ARGS+=(-v "$chome/.local/bin:/home/coder/.local/bin:$persist")
+    # With setting.lsp_from=default a non-default profile uses the default
+    # profile's binaries read-only (no per-profile installs; T-31).
+    local bin_src="$chome/.local/bin" bin_mode="$persist"
+    if [ "$LSP_FROM" = default ] && [ "$PROFILE_NAME" != default ]; then
+        bin_src="$(profile_home_of default)/.local/bin"
+        bin_mode=ro
+        mkdir -p "$bin_src" 2>/dev/null || true
+    fi
+    if [ -d "$bin_src" ]; then
+        VOLUME_ARGS+=(-v "$bin_src:/home/coder/.local/bin:$bin_mode")
     fi
 
     # Sessions / history / caches (read-write).

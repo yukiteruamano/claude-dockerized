@@ -138,14 +138,16 @@ for dir in usr etc; do
     check_not "no container starts for ~/$dir" ran_container
 done
 
-printf 'API_KEY=x\n' >"$CONFIG_DIR/env"
-chmod 644 "$CONFIG_DIR/env"
-printf 'setting.env_file=%s\n' "$CONFIG_DIR/env" >"$CONFIG_DIR/config"
+# Secrets are per profile: the env file is <profiles>/default/env (never global).
+mkdir -p "$CONFIG_DIR/profiles/default"
+printf 'API_KEY=x\n' >"$CONFIG_DIR/profiles/default/env"
+chmod 644 "$CONFIG_DIR/profiles/default/env"
+: >"$CONFIG_DIR/config"
 wrapper run "$PROJECT"
 assert_eq "$RC" 1 "run refuses an env file readable by others"
 check "the refusal tells how to fix it" has_text "chmod 600" "$OUT"
 check_not "no container starts with an exposed env file" ran_container
-chmod 600 "$CONFIG_DIR/env"
+chmod 600 "$CONFIG_DIR/profiles/default/env"
 wrapper run "$PROJECT"
 assert_eq "$RC" 0 "run accepts the same env file once it is 0600"
 check "the env file reaches docker as --env-file" argv_has --env-file

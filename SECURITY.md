@@ -9,7 +9,7 @@ treated as untrusted code execution inside the container.
 
 | Document | Contents |
 |----------|----------|
-| [docs/security/THREAT-MODEL.md](docs/security/THREAT-MODEL.md) | scope, assets, adversaries, trust boundaries, STRIDE, the threat matrix (T-01…T-30) with status and tests, residual risk |
+| [docs/security/THREAT-MODEL.md](docs/security/THREAT-MODEL.md) | scope, assets, adversaries, trust boundaries, STRIDE, the threat matrix (T-01…T-34) with status and tests, residual risk |
 | [docs/security/RED.md](docs/security/RED.md) | attack playbook: kill chain, attack catalog per threat, how to run the exercise, tabletop scenarios |
 | [docs/security/BLUE.md](docs/security/BLUE.md) | controls by layer with their code location and test, detection signals, incident response |
 | [docs/security/YELLOW.md](docs/security/YELLOW.md) | secure-development rules, adding an attack, PR checklist, signed releases, CI; Purple/Orange/Green appendix |

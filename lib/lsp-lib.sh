@@ -77,6 +77,9 @@ lsp_expected_stamp() {
 ensure_lsp_formatters() {
     [ -n "${CLAUDE_DOCKERIZED_SKIP_LSP_INSTALL:-}" ] && return 0
     [ "$LSP_ENABLED" = true ] || [ "$FORMATTERS_ENABLED" = true ] || return 0
+    # setting.lsp_from=default: the binaries come read-only from the default
+    # profile, which owns the installs (nothing to install here).
+    [ "$LSP_FROM" = default ] && [ "$PROFILE_NAME" != default ] && return 0
     # One check per wrapper process: check_config already ran it before
     # run_claude's build_standard_volume_args in the same process; a second
     # call must not spawn a second throwaway container (double "Installing..."

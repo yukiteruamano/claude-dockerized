@@ -1,6 +1,10 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "includeCoAuthoredBy": true,
+  "statusLine": {
+    "type": "command",
+    "command": "echo \"[${CLAUDE_DOCKERIZED_PROFILE:-default}] ${PWD##*/}\""
+  },
   "permissions": {
     "defaultMode": "default",
     "allow": [
