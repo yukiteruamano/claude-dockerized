@@ -72,10 +72,11 @@ check "Dependabot watches the actions" matches 'package-ecosystem: github-action
 
 # --- release version (docs/security/YELLOW.md#releases) ---------------------------------------
 # WRAPPER_VERSION is bumped before tagging: it may be ahead of the latest tag
-# but never behind it, or `version` would report a stale release.
+# but never behind it, or `version` would report a stale release. Pre-release
+# tags (vX.Y.Z-rcN) are ignored: `sort -V` would rank them above the release.
 wrapper_version="$(sed -n 's/^WRAPPER_VERSION="\(.*\)"$/\1/p' "$REPO_DIR/bin/claude-dockerized")"
 check "WRAPPER_VERSION is a plain x.y.z" matches '^[0-9]+\.[0-9]+\.[0-9]+$' <(printf '%s\n' "$wrapper_version")
-latest_tag="$(git -C "$REPO_DIR" tag -l 'v[0-9]*' 2>/dev/null | sed 's/^v//' | sort -V | tail -n 1)"
+latest_tag="$(git -C "$REPO_DIR" tag -l 'v[0-9]*' 2>/dev/null | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sed 's/^v//' | sort -V | tail -n 1)"
 if [ -n "$latest_tag" ]; then
     newest="$(printf '%s\n%s\n' "$wrapper_version" "$latest_tag" | sort -V | tail -n 1)"
     assert_eq "$newest" "$wrapper_version" "WRAPPER_VERSION ($wrapper_version) is not behind the latest tag (v$latest_tag)"

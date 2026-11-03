@@ -2,7 +2,7 @@
 # Note: We only install Docker CLI to use host's Docker daemon via mounted socket
 # Pinned by digest (T-24): a tag can be re-pointed, a digest cannot. Dependabot
 # (docker ecosystem) proposes digest bumps; `build --pull` never floats past it.
-FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
+FROM debian:trixie-slim@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4
 
 # Fail fast inside RUN pipelines (curl | sh, | tee, …)
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -15,11 +15,11 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG NVM_VERSION=v0.40.8
 ARG NVM_COMMIT=a885b885fef16fac4bc544188fb25e9e37ae83e8
 # Node.js LTS line pinned to an exact release (was: whatever --lts resolved).
-ARG NODE_VERSION=24.21.0
+ARG NODE_VERSION=24.22.2
 # uv pinned to an exact release (was: always latest).
-ARG UV_VERSION=0.13.0
+ARG UV_VERSION=0.13.7
 # pnpm pinned to an exact release (project package manager, not the agent).
-ARG PNPM_VERSION=12.11.2
+ARG PNPM_VERSION=12.16.1
 # Fingerprint of Docker's apt signing key (docs.docker.com/engine/install/debian).
 ARG DOCKER_APT_KEY_FPR=9DC858229FC7DD38854AE2D88D81803C0EBFCD88
 
@@ -123,7 +123,7 @@ ENV PATH="$NVM_DIR/default:/usr/local/bin:/home/coder/.local/bin:$PATH"
 # earlier build of the same version (CLAUDE_CODE_SHA256, trust on first use),
 # the same bytes.
 # See: https://code.claude.com/docs/en/setup#install-a-specific-version
-ARG CLAUDE_CODE_VERSION=2.1.296
+ARG CLAUDE_CODE_VERSION=2.1.311
 ARG CLAUDE_CODE_SHA256=
 ARG CLAUDE_BUILD_TIME=0
 RUN curl -fsSL https://claude.ai/install.sh | bash -s "${CLAUDE_CODE_VERSION}" && \

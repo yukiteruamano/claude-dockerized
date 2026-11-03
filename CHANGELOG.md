@@ -2,6 +2,15 @@
 
 Releases are signed annotated tags (`docs/security/YELLOW.md#releases`).
 
+## 0.4.1
+
+### Changed
+
+- Claude Code is pinned to `2.1.311` (was `2.1.296`; `stable` channel).
+- Image tools: Node.js `24.22.2`, uv `0.13.7`, pnpm `12.16.1`; `debian:trixie-slim` digest refreshed.
+- Opt-in LSP/formatter pins: ruff `0.17.3`, prettier `3.9.10`, typescript-language-server `6.0.3`, gopls `v0.24.0`.
+- `WRAPPER_VERSION` is `0.4.1`.
+
 ## Unreleased
 
 ### Security
