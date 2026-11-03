@@ -26,7 +26,7 @@ attempt to weaken or bypass them.
   for exactly that: they run on the host or in later sessions, and every
   change is reported to the user after the session.
 - `~/.claude/skills/` is read-only: skills are installed and edited from the
-  host (`~/.config/claude-dockerized/home/.claude/skills/`).
+  host (the active profile's home under `~/.config/claude-dockerized/profiles/`).
 - Only modify files inside the mounted project directory; touching anything
   outside it requires explicit user approval.
 
@@ -56,8 +56,10 @@ commit messages, heredocs and `grep` patterns. Keep that in mind:
   the wrapper config from the host (e.g. `claude-dockerized config edit`).
 - Never read or print secret files. Avoid dumping the environment: it carries
   provider credentials from the secrets file (printing it is not blocked).
-- Provider credentials arrive via environment variables from the host secrets
-  file (`setting.env_file`); never write them into files or print them.
+- Provider credentials arrive via environment variables from the
+  profile's host secrets file (one per account profile, `profiles/<name>/env`
+  on the host); never write them into files or print them. Never try to
+  reach another profile's home or secrets: only the active profile is mounted.
 - `apt-get`/`apt` are blocked: install dependencies with `uv` (Python) or the
   project's own Node toolchain.
 - Do not reference `/var/run/docker.sock` directly; Docker access is opt-in.

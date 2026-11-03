@@ -701,8 +701,8 @@ printf 'env.mig1=MIG_TEST_VAR\nsetting.gpg_agent_support=false\n' >"$CONFIG_FILE
 export MIG_TEST_VAR="mig-test-value"
 mig_out=$(printf 'Y\n' | migrate_legacy_env_vars 2>&1)
 grep -q 'MIG_TEST_VAR' <<<"$mig_out" || fail "migration must report key names"
-grep -qx 'MIG_TEST_VAR=mig-test-value' "$CONFIG_DIR/env" || fail "migration must write the value"
-[ "$(stat -c '%a' "$CONFIG_DIR/env")" = 600 ] || fail "migrated env file must be 600"
+grep -qx 'MIG_TEST_VAR=mig-test-value' "$PROFILE_ENV_FILE" || fail "migration must write the value"
+[ "$(stat -c '%a' "$PROFILE_ENV_FILE")" = 600 ] || fail "migrated env file must be 600"
 if grep -q 'mig-test-value' <<<"$mig_out"; then
     fail "migration must never print values"
 fi

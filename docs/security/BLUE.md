@@ -80,6 +80,17 @@ reduces noise and blocks the obvious.
 | LSP/formatters pinned, installed in a throwaway container with `--ignore-scripts` | T-14 | `lsp-install` |
 | CI actions pinned by SHA, Dependabot, release tags verified | T-29, T-12 | `supply-chain`, `release-verify.yml` |
 
+### Account profiles
+
+| Control | Threat | Verified by |
+|---------|--------|-------------|
+| One `CCODE_HOME` per profile; only the active profile's home is mounted. `skills` and `.local/bin` of `default` can be shared read-only (opt-in) | T-31 | `profiles` |
+| The project-to-profile bind is kept outside the project (`profiles.map`, `0600`) | T-32 | `profiles` |
+| Secrets live only in `profiles/<name>/env` (`0600`, never mounted); no global env file; the legacy `setting.env_file` is migrated, then ignored | T-33 | `profiles`, `commands` |
+| Overlay loosening (policy, hardening, socket, agents, effective network, memory/cpus limits, `:rw` mounts) needs `profile set … --allow-loosen`, which approves the exact value; an unapproved loosening is dropped; `list`, `doctor` and every run flag it | T-34 | `profiles` |
+| The layout migration is automatic and backed up (`$CONFIG_DIR/backups/pre-profiles-*`, `0700`); `profile migrate --rollback` restores it | T-31 | `profiles` |
+| `config sync` and `doctor` cover every profile's mirror of the security layer | T-15 | `profiles` |
+
 ## Detection
 
 | Signal | Where | What it means |
@@ -96,7 +107,7 @@ Useful triage commands:
 ```bash
 tail -n 5 ~/.config/claude-dockerized/audit/sessions.jsonl
 git -C <project> diff -- .git/config; ls -la <project>/.git/hooks
-ls -la ~/.config/claude-dockerized/home/.local/bin
+ls -la ~/.config/claude-dockerized/profiles/default/home/.local/bin
 claude-dockerized doctor --json | jq '.host[] | select(.status != "pass")'
 ```
 
@@ -106,7 +117,7 @@ claude-dockerized doctor --json | jq '.host[] | select(.status != "pass")'
 1. Do not run git in the project from the host yet (hooks/config could run).
    Inspect with `ls -la .git/hooks` and `cat .git/config` instead.
 2. Remove what you did not add (`git config --unset …`, delete the hook,
-   delete the file in `~/.config/claude-dockerized/home/...`).
+   delete the file in `~/.config/claude-dockerized/profiles/default/home/...`).
 3. Review the session transcript for the prompt that led there (prompt
    injection source: repo file, issue, web page, MCP result).
 4. Consider `setting.hardening=strict` for untrusted projects.

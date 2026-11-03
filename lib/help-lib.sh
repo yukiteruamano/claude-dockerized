@@ -19,6 +19,8 @@ Everyday:
     mcp [ARGS]           MCP servers: list|get|login|logout (add/remove are host-only)
     plugin [ARGS]        Plugins: list|check (install/update/remove are host-only)
     models               Show the default model (/model switches per session)
+    profile [SUB]        Account profiles: list|create|login|use|bind|set|delete|... (help profile)
+    profiles             Alias of 'profile list' (name, login, account, model, last use)
 
 Setup and maintenance:
     install [OPTS]       First-time setup / repair: PATH, config, completions, aliases
@@ -38,6 +40,7 @@ Diagnostics:
     help [COMMAND]       This overview, or one command's details
 
 Global options:
+    -p, --profile NAME   Use this account profile (also: CLAUDE_DOCKERIZED_PROFILE; after 'run' or anywhere before --)
     --no-color           Plain output (also: NO_COLOR=1); CLICOLOR_FORCE=1 forces color
     -V, --version        Same as 'version'
     -h, --help           This help
@@ -46,11 +49,12 @@ Global options:
 Getting started:
     1. $CCD_NAME install          # PATH, config, completions (once)
     2. $CCD_NAME build            # build the image
-    3. $CCD_NAME auth             # log in
+    3. $CCD_NAME auth             # log in (the 'default' profile)
     4. $CCD_NAME run ~/src/app    # work on a project
+    More accounts: $CCD_NAME profile create work --login; $CCD_NAME run --profile work
 
 Security: non-root container (host UID, no capabilities, no new privileges),
-read-only managed policy and guard hooks, secrets only via setting.env_file,
+read-only managed policy and guard hooks, secrets only in each profile's env file,
 Docker socket off by default, session integrity report after each run,
 opt-in hardening profiles (setting.hardening). See SECURITY.md and
 docs/security/ for the threat model and the Red/Blue/Yellow playbooks.
@@ -63,7 +67,7 @@ command_help() {
     case "$1" in
     run)
         cat <<EOF
-Usage: $CCD_NAME run [DIR] [-- CLAUDE_ARGS...]
+Usage: $CCD_NAME run [DIR] [-p|--profile NAME] [-- CLAUDE_ARGS...]
 
 Start an interactive Claude Code session with DIR (default: the current
 directory) mounted read-write. Everything after -- goes to claude, e.g.:
@@ -119,6 +123,40 @@ Usage: $CCD_NAME config [show|edit|path|sync [--check]|claude [path|edit|policy]
     claude [path|edit|policy]
                        user settings.json (writable preferences) / managed policy path
     credentials path   credentials file path (values are never printed)
+EOF
+        ;;
+    profile | profiles)
+        cat <<EOF
+Usage: $CCD_NAME profile [SUBCOMMAND]        (profiles = profile list)
+
+Each account is a profile with its own home (login, sessions, plugins, MCP),
+overlay config and env file. Only the active profile's home is mounted.
+Selection: --profile NAME, then CLAUDE_DOCKERIZED_PROFILE, the project bind,
+setting.profile, default.
+
+    list [--json]               name, login, account, model, last use, size, notes
+    current [--name]            active profile and why
+    show [NAME]                 paths, login and the effective config
+    path [NAME] [home|config|env]
+    create NAME [--from SRC] [--login] [--model M] [--env-file FILE]
+                [--share-skills] [--lsp-from default]
+    login NAME | logout NAME [--yes]
+    use NAME                    default profile (setting.profile)
+    bind NAME [DIR] | unbind [DIR]   pin a project to a profile (kept outside the project)
+    edit NAME [config|env]      overlay config / secrets in \$EDITOR
+    set NAME KEY VALUE [--allow-loosen] | unset NAME KEY    (KEY: a setting or mount.<name>)
+    rename OLD NEW | delete NAME [--yes] [--force]
+    doctor [NAME|--all]         permissions, login, loosened settings, security layer
+    migrate [--dry-run|--no-backup|--rollback|--prune-backups [--yes]]
+                                move the single-account layout (automatic, with backup);
+                                the backups keep old credentials until pruned
+
+A profile can tighten any setting freely. Loosening the global posture
+(security_policy, hardening, docker_socket, ssh/gpg agents, integrity_check,
+share_skills, lsp_from, a host network where the global one is bridge, a
+memory/cpus limit removed, zeroed or raised, any :rw mount) needs --allow-loosen, which approves that exact value;
+it is flagged in list and on every run, and an unapproved one is ignored.
+Secrets live only in <config>/profiles/<name>/env; there is no global env file.
 EOF
         ;;
     clean) echo "Usage: $CCD_NAME clean   (remove the image; config and sessions are kept)" ;;

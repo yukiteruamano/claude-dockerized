@@ -36,7 +36,7 @@ deliberately mounts or puts in the env file.
 | Asset | Where | Why it matters |
 |-------|-------|----------------|
 | Host account and files | outside the container | code execution as the user = full compromise |
-| Provider credentials | `setting.env_file` → container env; `.credentials.json` | account takeover, billing |
+| Provider credentials | the profile env file (`profiles/<name>/env`) → container env; `.credentials.json` of the profile home | account takeover, billing |
 | Signing oracles | forwarded SSH / GnuPG agents (opt-in) | impersonation (signed commits, SSH auth) |
 | MCP OAuth tokens | `.credentials.json` (native), generated-home `~/.mcp-auth` (`mcp-remote`) | access to connected services |
 | Security layer | managed policy, hooks, policies, wrapper code | disabling it removes every soft control |
@@ -90,6 +90,7 @@ deliberately mounts or puts in the env file.
 | B4 | impostor release (T-12) | rewritten tags, unpinned inputs (T-24), CI actions (T-29), LSP installs (T-14) | release-verify workflow | — | bad update without rollback (T-13) | — |
 | Host-side wrapper | — | layer drift/tampering (T-15), merge keeps `disableAllHooks` (T-16), env file in a mounted dir (T-18) | — | — | — | shared temp race (T-17) |
 | Settings | false assurance from an inert sandbox (T-30) | — | — | — | — | — |
+| Profiles | a project file picks the account (T-32), a global key overrides a profile login (T-33) | — | — | another account's home and secrets (T-31) | — | a profile weakens the global posture (T-34) |
 
 Network exposure through `--network host` (T-06) spans B1 (information
 disclosure of loopback services) and is accepted by default.
@@ -132,6 +133,10 @@ Status legend: **mitigated** (control in place, test green) · **detected**
 | T-28 | Privilege escalation inside the container (capabilities, setuid) | mitigated | dryrun rootless flags; integration caps/no_new_privs |
 | T-29 | CI supply chain: mutable action tags (cf. CVE-2026-33634) | mitigated | `.github/workflows/ci.yml` SHA pins |
 | T-30 | Inert `sandbox.enabled` gives false assurance (no bubblewrap in the image) | mitigated | tool-coverage `managed policy keeps the inert sandbox off` |
+| T-31 | A session reads or writes another account profile's home (credentials, sessions, MCP) | mitigated (only the active profile's home is mounted; `share_skills` / `lsp_from` expose the default profile's skills and binaries read-only, and need `--allow-loosen` like any loosening) | profiles `the default home is not mounted next to it`, `nothing else of the default profile is mounted` |
+| T-32 | The project picks the account of the next session (a file planted in the repo) | mitigated (the bind lives in `$CONFIG_DIR/profiles.map`, outside the project) | profiles `a file planted in the project cannot change the profile` |
+| T-33 | A global secret (e.g. `ANTHROPIC_API_KEY`) overrides a profile's own login or leaks across accounts | mitigated (no global env file; only the profile's own env file is passed) | profiles `only the profile's own env file is passed` |
+| T-34 | A profile weakens the global security posture silently (policy, hardening, docker socket, agents, effective network, integrity, memory/cpus limits, read-write mounts) | mitigated (loosening needs `--allow-loosen`, which approves the exact value; an unapproved loosening is dropped; flagged in `list`, `doctor` and on every run) | profiles `an unapproved loosening in the overlay is dropped`, `network=host under global strict hardening is refused`, `editing the value after the approval voids it`, `a higher memory limit is refused`, `a read-write mount is refused without approval` |
 
 ## 7. Residual risk (accepted)
 

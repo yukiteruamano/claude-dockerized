@@ -37,8 +37,8 @@ added the same way: first as a failing case, then fixed (see
 | Phase | Goal of the attacker | Threats |
 |-------|----------------------|---------|
 | Recon | learn user, capabilities, mounts, env names, policy mode | — (always possible; `doctor` shows the same) |
-| Credential access | read provider keys, OAuth stores, SSH/GPG material | T-10, T-19, T-25, T-26 |
-| Defense evasion | switch off or blind the guard | T-03, T-04, T-08, T-09, T-11, T-16, T-30 |
+| Credential access | read provider keys, OAuth stores, SSH/GPG material | T-10, T-19, T-25, T-26, T-31, T-33 |
+| Defense evasion | switch off or blind the guard | T-03, T-04, T-08, T-09, T-11, T-16, T-30, T-32, T-34 |
 | Privilege escalation | root inside the container | T-21, T-22, T-27, T-28 |
 | Persistence | survive the session | T-02, T-04, T-05 |
 | Escape to host | run code as the host user | T-01, T-02, T-06, T-07, T-20 |
@@ -156,6 +156,19 @@ Result on the current code is in the matrix of THREAT-MODEL.md.
   *Tests:* `mounts`.
 - **T-23 — Exhaust the host** (fork bomb, memory). *Tests:* `hardening`
   (pids limit in standard/strict).
+
+### Account profiles
+
+- **T-31 — Reach another account's home** through a mount, a symlink or a
+  shared path. *Tests:* `profiles` (only the active profile's home is mounted).
+- **T-32 — Pick the account from the project:** plant a `.ccd-profile`-style
+  file in the repo so the next session starts under another profile.
+  *Tests:* `profiles` (the bind lives in `$CONFIG_DIR/profiles.map`).
+- **T-33 — Make a global secret win over a profile login** (an
+  `ANTHROPIC_API_KEY` in a shared env file). *Tests:* `profiles` (no global
+  env file; one env file per profile).
+- **T-34 — Weaken the posture through a profile overlay** (`security_policy`,
+  `docker_socket`, agents, `network=host`). *Tests:* `profiles`.
 
 ## Tabletop scenarios
 

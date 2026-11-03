@@ -13,6 +13,8 @@ Shell script-based Docker wrapper for running [Claude Code](https://code.claude.
 - `lib/agent-lib.sh` — Forwarded GnuPG/SSH agents, the public GnuPG mirror and the socket relay, `test_seam`. Sourced by `config-lib.sh`.
 - `lib/lsp-lib.sh` — Opt-in LSP servers/formatters installed into the generated home (pinned versions live here). Sourced by `config-lib.sh`.
 - `lib/wizard-lib.sh` — Interactive configuration prompts and `interactive_config_setup`. Sourced by `config-lib.sh`.
+- `lib/profile-lib.sh` — Account profiles core: name rules, selection (`--profile`/`-p`, `CLAUDE_DOCKERIZED_PROFILE`, project bind in `profiles.map`, `setting.profile`), `activate_profile` (points `CCODE_HOME` at `profiles/<name>/home`), config overlay with the loosening guard (`profile_overlay_apply_setting`), account info, and the automatic single-account → `profiles/default` migration with backup (`profile_migrate_legacy`, `--rollback`). Sourced by `config-lib.sh`.
+- `lib/profile-cmd-lib.sh` — The `profile`/`profiles` commands (`manage_profiles`: list, create, login, logout, show, current, use, bind, unbind, edit, set, unset, rename, delete, path, doctor, migrate) and `profile_foreach` (used by `config sync`/`update`). Sourced by `config-lib.sh`.
 - `lib/ui-lib.sh` — Output helpers (`print_info`/`print_success` → stdout, `print_warning`/`print_error` → stderr; color only on a TTY, `NO_COLOR`/`--no-color`/`CLICOLOR_FORCE`, ASCII symbols outside UTF-8). Sourced by `config-lib.sh`. **Not executable directly.**
 - `lib/update-lib.sh` — Verified self-update: local trust store (`$CONFIG_DIR/trust`), signature verification, origin pin, target selection, preview, rollback state (`$CONFIG_DIR/state`). **Not executable directly.**
 - `lib/diag-lib.sh` — Docker preflight with remediation, host `doctor` checks (`--json`), `version`. **Not executable directly.**
@@ -34,6 +36,7 @@ Shell script-based Docker wrapper for running [Claude Code](https://code.claude.
 - `tests/guard-failure-modes.test.mjs`, `tests/guard-tool-coverage.test.mjs`, `tests/guard-eval.test.mjs`, `tests/migrate-settings.test.mjs` — Guard fail-closed behaviour, hook wiring, policy data integrity, legacy settings migration
 - `tests/wrapper-args.test.sh` — Wrapper mount/env contract test (no Docker)
 - `tests/commands.test.sh` — models, stats, debug, exec, uninstall, upgrade/rollback help and wrapper-level refusals (project that would shadow the image, world-readable env file) via a docker stub
+- `tests/profiles.test.sh` — Account profiles via a docker stub with `CCODE_HOME` unpinned: migration + backup + rollback, selection precedence, home/env isolation (T-31, T-33), project binds (T-32), overlay loosening guard (T-34), shared skills/LSP, list/rename/delete/doctor/sync
 - `tests/wrapper-dryrun.test.sh`, `tests/mounts.test.sh`, `tests/config-parse.test.sh`, `tests/self-update.test.sh`, `tests/cli-contract.test.sh` — Full `docker run` argv via a docker stub, mount/path validation, config parsing, self-update against a local bare origin, help/completion drift
 - `tests/integration/container.test.sh` — Container runtime contract (non-root, zero caps, no_new_privs, read-only mounts); skips without Docker
 - `tests/threat-matrix.test.sh`, `tests/hardening.test.sh`, `tests/integrity.test.sh`, `tests/supply-chain.test.sh`, `tests/lsp-install.test.sh`, `tests/ui.test.sh`, `tests/entrypoint.test.sh` — Docs↔tests traceability, hardening profiles, session integrity, supply-chain pins, LSP installs, CLI output, entrypoint PATH
@@ -57,6 +60,9 @@ bin/claude-dockerized update [--dry-run|--yes|--no-build|--channel tags|branch|-
 bin/claude-dockerized update --trust-key FILE  # Pin a release-signing key (interactive fingerprint confirmation)
 bin/claude-dockerized rollback [--yes]  # Undo the last update (checkout + :prev image)
 claude-dockerized models            # Show effective default model
+claude-dockerized profiles          # List account profiles (= profile list)
+claude-dockerized profile create NAME [--login]  # New account profile; also login|logout|use|bind|unbind|edit|set|unset|rename|delete|show|path|current|doctor|migrate
+claude-dockerized run [DIR] --profile NAME       # Run with a profile (-p NAME; also CLAUDE_DOCKERIZED_PROFILE)
 claude-dockerized exec MSG          # Non-interactive prompt (claude -p)
 claude-dockerized mcp [ARGS]        # Manage MCP servers (list|get|login|logout; add/remove are host-only)
 claude-dockerized plugin [ARGS]     # Manage plugins (list|check; install/update/remove are host-only)
@@ -175,7 +181,7 @@ always print `claude-dockerized`, never `$0`.
 ### Shared Logic (lib/mounts-lib.sh, lib/layer-lib.sh, lib/agent-lib.sh, lib/lsp-lib.sh)
 
 All volume mount logic lives in `lib/mounts-lib.sh` to eliminate duplication (the security layer in `lib/layer-lib.sh`, agent forwarding in `lib/agent-lib.sh`, LSP installs in `lib/lsp-lib.sh`):
-- `CCODE_HOME` (`~/.config/claude-dockerized/home`) — self-contained Claude Code state root mirroring the container home; all mounts source from here, never from host XDG dirs
+- `CCODE_HOME` (`~/.config/claude-dockerized/profiles/<name>/home`, derived by `activate_profile` from the selected profile; `default` when nothing selects one) — self-contained Claude Code state root mirroring the container home; all mounts source from here, never from host XDG dirs. A `CCODE_HOME` already in the environment pins the state root (`CCODE_HOME_PINNED=true`): profiles and the migration are disabled (the test suites use this seam; `tests/profiles.test.sh` leaves it unset). Only the active profile's home is mounted; the sole exceptions are the opt-in `share_skills` / `lsp_from=default` read-only mounts of the default profile's skills and `.local/bin` (T-31)
 - `build_standard_volume_args "$project_dir" [include_docker_socket]` — populates `VOLUME_ARGS` array with fine-grained mounts (managed policy dir `$CCODE_HOME/etc/claude-code` at `/etc/claude-code` read-only; the generated `~/.claude` read-write as a directory so `settings.json` saves never hit EBUSY, with `hooks-guard/` and `CLAUDE.md` overlaid read-only; `.claude.json`, sessions read-write; skills always read-only; plugins/agents/commands, `.local/bin` read-write, or read-only under `setting.hardening=strict`, which also overlays the project's `.git` hooks/config read-only; never the host `~/.claude`)
 - `build_common_docker_args` — populates `DOCKER_COMMON_ARGS` array (--rm, --network host, `--user <host uid>:<host gid>`, `--group-add coder`, `--cap-drop=ALL`, `--security-opt no-new-privileges:true`, TERM, `CLAUDE_DOCKERIZED_POLICY`)
 - `ensure_claude_dirs` — creates required host directories, seeds the state tree (credentials placeholder `0600`, `.claude.json`) and installs the versioned security layer (`ensure_claude_dockerized_config`: native hooks + `policies/*.json` with their `policies/VERSION` marker, `managed-settings.json` rendered from `config/managed-settings.json` by `write_managed_settings` (hooks, deny/ask, `DISABLE_AUTOUPDATER=1`, pinned policy mode, sandbox off) + writable preference-only `settings.json` seeded from `config/user-settings.default.json` by `ensure_user_settings` (legacy copies or `disableAllHooks` migrated by `lib/migrate-settings.js`), `hooks-guard/policy-mode`, `CLAUDE.md`, optional `.lsp.json`)
@@ -215,7 +221,7 @@ setting.docker_socket=false
 setting.security_policy=balanced
 setting.memory=4g
 setting.cpus=2
-setting.env_file=~/.config/claude-dockerized/env
+setting.profile=default
 setting.model=sonnet
 setting.cleanup_days=7
 setting.lsp=false
@@ -224,8 +230,11 @@ setting.formatters=false
 mount.gitconfig=~/.gitconfig:/home/coder/.gitconfig
 ```
 
-Removed settings (`websearch_provider`, `theme`) warn and are ignored. Secrets only travel via `setting.env_file` (refused when group/other-readable: `chmod 600`) (dotenv file under `~/.config/claude-dockerized/`,
-`docker --env-file`, never mounted). The old `env.*` host passthrough was removed.
+Removed settings (`websearch_provider`, `theme`) warn and are ignored. Secrets are **per profile** and only travel via `profiles/<name>/env` (refused when group/other-readable: `chmod 600`; dotenv, `docker --env-file`, never mounted; there is no global env file, T-33). A legacy global `setting.env_file` is migrated into `profiles/default/env` and then warns and is ignored. The old `env.*` host passthrough was removed.
+
+`profiles/<name>/config` is an overlay in the same format: only the keys in `profile_overlay_key_ok` apply (image build options and `setting.profile` stay global) and a same-named `mount.*` replaces the global one. A setting that loosens the global security posture is dropped (the global value stays, one warning per process) unless the overlay carries an approval line `allow_loosen.<key>=<exact raw value>`, which only `profile set … --allow-loosen` writes, so editing the value voids it (T-34). Loosening means: `security_policy`/`hardening` lowered, `docker_socket`/`ssh_agent_support`/`gpg_agent_support`/`gpg_allow_main_socket` enabled, `integrity_check=false`, `share_skills=true` or `lsp_from=default` (the two cross-profile read-only mounts; `profile create --share-skills/--lsp-from` writes their approval) (checked per key in `profile_overlay_apply_setting`); the *effective* network going from bridge to host (strict hardening implies bridge), a `memory`/`cpus` limit removed or raised, and any `:rw` mount (`mount.<name>` key; read-only mounts are free) (checked in `_profile_overlay_post_checks` / `profile_overlay_mount_allowed`). `profile set` evaluates the whole candidate overlay with `profile_overlay_unapproved`; `profile list`/`doctor` read the real state with `profile_overlay_state`. `load_config` reads the global file only (the wizard saves it); runtime commands call `parse_config`, which adds the overlay. `share_skills` and `lsp_from` are overlay settings (see `mounts-lib.sh`).
+
+Migration to the profile layout (`profile_migrate_legacy`): backup first (free-space check, verified copy, `$CONFIG_DIR/backups/pre-profiles-*`, 0700), then move; an env file that lived in the old home is moved out of the home; concurrent first runs wait on `$CONFIG_DIR/.profiles-migrate.lock`; `--no-backup` is manual only and still writes the record (`MANIFEST`) that `--rollback` needs; the lock is a directory holding the owner's pid (a dead owner makes it stale, it is released by the caller on every path, so `_profile_migrate_locked` must not rely on `set -e`); the env file moves before the home and never ends up inside it; `--rollback` (checked by `profile_rollback_check`, shared with the wrapper rollback's precheck) restores the layout without touching the current config except `setting.env_file`/`setting.profile` and never deletes or overwrites an overlay or env file the old layout cannot hold; `rollback` (the wrapper command) calls `profile_rollback_precheck` / `profile_migrate_rollback` when the target predates profiles; `--prune-backups` deletes the backups (they keep old credentials).
 
 ### Dockerfile Conventions
 
@@ -272,22 +281,24 @@ Removed settings (`websearch_provider`, `theme`) warn and are ignored. Secrets o
 | Host Path | Container Path | Mode | Purpose |
 |-----------|---------------|------|---------|
 | `$PROJECT_DIR` | `$PROJECT_DIR` (with `$HOME` stripped) | rw | Project files |
-| `~/.config/claude-dockerized/home/etc/claude-code/` | `/etc/claude-code/` | **read-only** | Managed policy `managed-settings.json` (highest precedence): hooks, deny/ask, `DISABLE_AUTOUPDATER`, pinned policy mode, sandbox off. Rendered from `config/managed-settings.json` |
-| `~/.config/claude-dockerized/home/.claude/` | `/home/coder/.claude/` | rw | Generated Claude state as a directory (a single-file bind would make settings saves fail with EBUSY); `settings.json` holds writable preferences seeded from `config/user-settings.default.json` (`/model`, `/config`, or `config claude edit`) |
-| `~/.config/claude-dockerized/home/.claude/hooks-guard/` | `/home/coder/.claude/hooks-guard/` | **read-only** | Native `PreToolUse` hooks + policy data |
-| `~/.config/claude-dockerized/home/.claude/CLAUDE.md` | `/home/coder/.claude/CLAUDE.md` | **read-only** | Managed session rules |
-| `~/.config/claude-dockerized/home/.claude/.credentials.json` | `/home/coder/.claude/.credentials.json` | rw (`0600`) | Login (`claude auth login`), persists across rebuilds |
-| `~/.config/claude-dockerized/home/.claude/plugins/` `agents/` `commands/` | same under `/home/coder/.claude/` | rw | User plugins, agents, commands |
-| `~/.config/claude-dockerized/home/.claude/skills/` | `/home/coder/.claude/skills/` | **read-only** | User skills, managed from the host (T-05) |
-| `~/.config/claude-dockerized/home/.claude/.lsp.json` | `/home/coder/.claude/.lsp.json` | rw | LSP config (generated when `setting.lsp=true`) |
-| `~/.config/claude-dockerized/home/.claude.json` | `/home/coder/.claude.json` | rw | MCP user-scope state |
-| `~/.config/claude-dockerized/home/.local/bin/` | `/home/coder/.local/bin/` | rw | LSP/formatter binaries (generated home) |
-| `~/.config/claude-dockerized/home/.local/share/claude/` | `/home/coder/.local/share/claude/` | rw | Sessions, transcripts |
-| `~/.config/claude-dockerized/home/.local/state/claude/` | `/home/coder/.local/state/claude/` | rw | History, locks |
-| `~/.config/claude-dockerized/home/.cache/claude/` | `/home/coder/.cache/claude/` | rw | Caches |
-| `~/.config/claude-dockerized/home/.mcp-auth/` | `/home/coder/.mcp-auth/` | rw (`0700`) | OAuth tokens of `mcp-remote` proxy servers (native Claude MCP OAuth lives in `.credentials.json`); read-write under strict too; the host `~/.mcp-auth` is never mounted |
+| `~/.config/claude-dockerized/profiles/default/home/etc/claude-code/` | `/etc/claude-code/` | **read-only** | Managed policy `managed-settings.json` (highest precedence): hooks, deny/ask, `DISABLE_AUTOUPDATER`, pinned policy mode, sandbox off. Rendered from `config/managed-settings.json` |
+| `~/.config/claude-dockerized/profiles/default/home/.claude/` | `/home/coder/.claude/` | rw | Generated Claude state as a directory (a single-file bind would make settings saves fail with EBUSY); `settings.json` holds writable preferences seeded from `config/user-settings.default.json` (`/model`, `/config`, or `config claude edit`) |
+| `~/.config/claude-dockerized/profiles/default/home/.claude/hooks-guard/` | `/home/coder/.claude/hooks-guard/` | **read-only** | Native `PreToolUse` hooks + policy data |
+| `~/.config/claude-dockerized/profiles/default/home/.claude/CLAUDE.md` | `/home/coder/.claude/CLAUDE.md` | **read-only** | Managed session rules |
+| `~/.config/claude-dockerized/profiles/default/home/.claude/.credentials.json` | `/home/coder/.claude/.credentials.json` | rw (`0600`) | Login (`claude auth login`), persists across rebuilds |
+| `~/.config/claude-dockerized/profiles/default/home/.claude/plugins/` `agents/` `commands/` | same under `/home/coder/.claude/` | rw | User plugins, agents, commands |
+| `~/.config/claude-dockerized/profiles/default/home/.claude/skills/` | `/home/coder/.claude/skills/` | **read-only** | User skills, managed from the host (T-05) |
+| `~/.config/claude-dockerized/profiles/default/home/.claude/.lsp.json` | `/home/coder/.claude/.lsp.json` | rw | LSP config (generated when `setting.lsp=true`) |
+| `~/.config/claude-dockerized/profiles/default/home/.claude.json` | `/home/coder/.claude.json` | rw | MCP user-scope state |
+| `~/.config/claude-dockerized/profiles/default/home/.local/bin/` | `/home/coder/.local/bin/` | rw | LSP/formatter binaries (generated home) |
+| `~/.config/claude-dockerized/profiles/default/home/.local/share/claude/` | `/home/coder/.local/share/claude/` | rw | Sessions, transcripts |
+| `~/.config/claude-dockerized/profiles/default/home/.local/state/claude/` | `/home/coder/.local/state/claude/` | rw | History, locks |
+| `~/.config/claude-dockerized/profiles/default/home/.cache/claude/` | `/home/coder/.cache/claude/` | rw | Caches |
+| `~/.config/claude-dockerized/profiles/default/home/.mcp-auth/` | `/home/coder/.mcp-auth/` | rw (`0700`) | OAuth tokens of `mcp-remote` proxy servers (native Claude MCP OAuth lives in `.credentials.json`); read-write under strict too; the host `~/.mcp-auth` is never mounted |
 | `~/.agents/` | `/home/coder/.agents/` | ro | Agent-compatible skills (skills/<name>/SKILL.md) |
-| `~/.config/claude-dockerized/home/.gnupg/` | `/home/coder/.gnupg/` | rw (opt-in) | Mirrored **public** GnuPG material (pubring/trustdb/gpg.conf) + agent socket, only when `setting.gpg_agent_support=true`; `private-keys-v1.d/` is never copied |
+| `~/.config/claude-dockerized/profiles/default/home/.gnupg/` | `/home/coder/.gnupg/` | rw (opt-in) | Mirrored **public** GnuPG material (pubring/trustdb/gpg.conf) + agent socket, only when `setting.gpg_agent_support=true`; `private-keys-v1.d/` is never copied |
 | `/var/run/docker.sock` | `/var/run/docker.sock` | rw (opt-in) | Docker socket, only when `setting.docker_socket=true` |
+
+The table shows the `default` profile; every profile has the same tree under `~/.config/claude-dockerized/profiles/<name>/home/`, and the container also gets `CLAUDE_DOCKERIZED_PROFILE` and a `claude-dockerized.profile` label (used by `profile delete|rename` to refuse while a session runs). The project-to-profile bind lives in `$CONFIG_DIR/profiles.map`, never in the project (T-32).
 
 The wrapper's own directory (`~/.config/claude-dockerized/`, i.e. `$CONFIG_DIR`) is **never** mounted. Its `CLAUDE.md`, hooks and policies are sourced from there and mirrored into the generated home; `managed-settings.json` is rendered from `config/managed-settings.json` and the wrapper config.

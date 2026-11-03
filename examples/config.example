@@ -110,11 +110,20 @@
 # setting.memory=4g
 # setting.cpus=2
 
-# Secrets file (dotenv KEY=VALUE lines) loaded with docker --env-file.
-# Must live under ~/.config/claude-dockerized/ (never mounted; elsewhere is
-# refused). Create with: install -m 600 /dev/null ~/.config/claude-dockerized/env
-# This is the only way user secrets reach the container. Empty = disabled.
-# setting.env_file=~/.config/claude-dockerized/env
+# Secrets are per profile, never global: the dotenv file
+# ~/.config/claude-dockerized/profiles/<name>/env (mode 600, never mounted) is
+# loaded with docker --env-file. Edit it with: claude-dockerized profile edit <name> env
+# This is the only way user secrets reach the container.
+
+# Profile used when --profile, CLAUDE_DOCKERIZED_PROFILE and a project bind do
+# not select one (empty = default). Change it with: claude-dockerized profile use <name>
+# setting.profile=default
+
+# Per-profile overrides live in ~/.config/claude-dockerized/profiles/<name>/config
+# (same format; set them with: claude-dockerized profile set <name> KEY VALUE).
+# Loosening a security setting there needs --allow-loosen. Extra overlay-only keys:
+#   setting.share_skills=true   mount the default profile's skills read-only
+#   setting.lsp_from=default    mount the default profile's .local/bin read-only
 
 # Default model (passed as --model; empty = Claude default, /model still works).
 # setting.model=
@@ -145,8 +154,8 @@
 # ============================================
 # Secrets (env file only)
 # ============================================
-# There is no per-variable passthrough: every secret goes in setting.env_file
-# (dotenv KEY=VALUE lines, mode 600, under ~/.config/claude-dockerized/).
+# There is no per-variable passthrough: every secret goes in the profile's env
+# file (dotenv KEY=VALUE lines, mode 600, ~/.config/claude-dockerized/profiles/<name>/env).
 # Use 'claude-dockerized install' to add keys without ever printing them.
 #
 # Example file content (~/.config/claude-dockerized/env, NOT this file):

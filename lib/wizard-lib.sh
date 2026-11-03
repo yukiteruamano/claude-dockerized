@@ -227,11 +227,11 @@ migrate_legacy_env_vars() {
 
     echo ""
     config_info "Legacy env.* entries found in $CONFIG_FILE."
-    echo "Their values can be moved into the secrets file (setting.env_file)."
+    echo "Their values can be moved into the secrets file of the active profile."
     read -r -p "Migrate now from the current host environment? (Y/n): " migrate || migrate=""
     [[ "$migrate" =~ ^[Nn]$ ]] && return 0
 
-    [ -n "$ENV_FILE" ] || ENV_FILE="$CONFIG_DIR/env"
+    [ -n "$ENV_FILE" ] || ENV_FILE="$PROFILE_ENV_FILE"
     local var_name var_value count=0 skipped=0
     while IFS= read -r var_name; do
         [ -n "$var_name" ] || continue
@@ -266,7 +266,7 @@ prompt_env_vars() {
 
     # Default location on first use.
     if [ -z "$ENV_FILE" ]; then
-        ENV_FILE="$CONFIG_DIR/env"
+        ENV_FILE="$PROFILE_ENV_FILE"
     fi
 
     local var_name var_value
