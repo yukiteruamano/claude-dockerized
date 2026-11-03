@@ -255,8 +255,8 @@ last_user="$(grep -E '^USER ' "$dockerfile" | tail -n1)"
     fail "last USER must be 'coder' (non-root image), got: '$last_user'"
 
 # Pinned native install: version ARG, official installer, no npm/pnpm agent install.
-grep -Eq '^ARG CLAUDE_CODE_VERSION=2\.1\.296' "$dockerfile" ||
-    fail "Dockerfile must pin ARG CLAUDE_CODE_VERSION=2.1.296"
+grep -Eq '^ARG CLAUDE_CODE_VERSION=2\.1\.311' "$dockerfile" ||
+    fail "Dockerfile must pin ARG CLAUDE_CODE_VERSION=2.1.311"
 grep -q 'https://claude.ai/install.sh' "$dockerfile" ||
     fail "Dockerfile must use the native installer (claude.ai/install.sh)"
 # Image-provided CLIs must live outside the home bin dir: the generated home's

@@ -58,7 +58,7 @@ check "container drops every capability" run_has --cap-drop=ALL
 check "container sets no-new-privileges" run_has no-new-privileges:true
 check "container runs as the host user" run_has "$(id -u):$(id -g)"
 check "npm scripts are disabled" run_has_text "--ignore-scripts"
-check "typescript-language-server is pinned" run_has_text "typescript-language-server@6.0.1"
+check "typescript-language-server is pinned" run_has_text "typescript-language-server@6.0.3"
 check "pyright is pinned" run_has_text "pyright@1.1.414"
 check "ruff is pinned" run_has "RUFF_VERSION=$FMT_RUFF_VERSION"
 check "only the generated-home bin dir is writable" run_has "$CCODE_HOME/.local/bin:/opt/lsp-bin:rw"
@@ -125,7 +125,7 @@ FORMATTERS_ENABLED=true
 reset_calls
 ensure_lsp_formatters >/dev/null 2>&1
 check "formatters alone trigger an install" install_run
-check "prettier is pinned" run_has_text "prettier@3.9.9"
+check "prettier is pinned" run_has_text "prettier@3.9.10"
 
 # Disabled / skipped: nothing at all.
 FORMATTERS_ENABLED=false
