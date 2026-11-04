@@ -2,6 +2,15 @@
 
 Releases are signed annotated tags (`docs/security/YELLOW.md#releases`).
 
+## 0.4.4
+
+### Fixed
+
+- Opt-in LSP/formatter installs (`setting.lsp`, `setting.formatters`) now persist in the profile instead of reinstalling on every `run`:
+  - The install script run in the throwaway container used `local` outside a function, which aborted it after `npm install` and before the links were created, so every run reported a failed install and retried (`bash: line 7: local: can only be used in a function`).
+  - `tsserver` is no longer expected: `typescript@7` does not ship that bin, so the verification could never pass.
+  - When any npm tool is missing, the whole wanted npm set is installed in one command (`npm install --no-save` prunes the rest of the prefix, which made ts, pyright and prettier wipe each other in a reinstall loop).
+
 ## 0.4.3
 
 Supersedes `0.4.2`, whose tag was cut from a commit that does not descend from `master` (an install on `master` could not fast-forward to it). Same fixes, now on top of `master`.
