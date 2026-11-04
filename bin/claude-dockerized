@@ -461,15 +461,26 @@ _rebuild_claude_image() {
         sha_file=$(update_claude_sha_file "$version")
         [ -s "$sha_file" ] && version_args+=(--build-arg "CLAUDE_CODE_SHA256=$(head -n1 "$sha_file")")
     fi
-    if docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
-        docker tag "$IMAGE_NAME" "${IMAGE_NAME%%:*}:prev" >/dev/null 2>&1 &&
-            print_info "Previous image kept as ${IMAGE_NAME%%:*}:prev (rollback)"
+    local default_version
+    default_version=$(update_dockerfile_claude_version)
+    if [ -n "$version" ] && [ -n "$default_version" ] && [ "$version" != "$default_version" ]; then
+        print_warning "Claude Code is pinned to $version; this release builds $default_version by default."
+        print_info "Move to it with: claude-dockerized update --claude-version $default_version"
     fi
+    # :prev is taken once per update: a retry after a failed rebuild must not
+    # replace it with an image that already came out of that update.
+    if ! update_has_prev_image && docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
+        if docker tag "$IMAGE_NAME" "${IMAGE_NAME%%:*}:prev" >/dev/null 2>&1; then
+            update_mark_prev_image
+            print_info "Previous image kept as ${IMAGE_NAME%%:*}:prev (rollback)"
+        fi
+    fi
+    update_set_rebuild_pending || true
     image_build_args
     print_info "Rebuilding image..."
     if ! docker build --build-arg "CLAUDE_BUILD_TIME=$(date +%s)" "${version_args[@]}" "${IMAGE_BUILD_ARGS[@]}" -t "$IMAGE_NAME" "$REPO_ROOT"; then
         print_error "Image rebuild failed; the previous image is unchanged."
-        print_info "Undo the code update with: claude-dockerized rollback"
+        print_info "Retry the rebuild with: claude-dockerized update (or undo the code update with: claude-dockerized rollback)"
         return 1
     fi
     local installed_sha actual_version
@@ -477,6 +488,7 @@ _rebuild_claude_image() {
     print_info "Claude Code in the image: ${actual_version:-unknown}"
     if [ -n "$version" ] && [ -n "$actual_version" ] && [ "$actual_version" != "$version" ]; then
         print_error "The image runs Claude Code $actual_version, not the pinned $version."
+        print_info "Retry with: claude-dockerized update; undo the code update with: claude-dockerized rollback"
         return 1
     fi
     installed_sha=$(docker run --rm --entrypoint sha256sum "$IMAGE_NAME" /usr/local/bin/claude 2>/dev/null | cut -d' ' -f1)
@@ -486,6 +498,7 @@ _rebuild_claude_image() {
         [ -s "$sha_file" ] || printf '%s\n' "$installed_sha" >"$sha_file"
     fi
     [ -n "$version" ] && update_save_claude_version "$version"
+    update_clear_rebuild_pending
     return 0
 }
 
@@ -494,13 +507,19 @@ _rebuild_claude_image() {
 _update_post_pull() {
     print_info "Refreshing security layer..."
     parse_config || true
-    profile_foreach sync_security_layer || true
+    local synced=true
+    profile_foreach sync_security_layer || synced=false
+    if [ "$synced" != true ]; then
+        print_error "The security layer could not be refreshed; fix the items above and run: claude-dockerized config sync"
+    fi
     if [ "$_UP_NO_BUILD" = true ]; then
+        [ "$synced" = true ] || return 1
         print_success "Update complete (code + security layer; image untouched, --no-build)."
         return 0
     fi
     check_docker || return 1
     _rebuild_claude_image || return 1
+    [ "$synced" = true ] || return 1
     print_success "Update complete (code + security layer + image)."
 }
 
@@ -521,7 +540,7 @@ full_upgrade() {
         return $?
     }
 
-    if [ ! -d "$REPO_ROOT/.git" ] || ! command -v git >/dev/null 2>&1; then
+    if [ ! -e "$REPO_ROOT/.git" ] || ! command -v git >/dev/null 2>&1; then
         print_error "Self-update needs git and a git checkout ($REPO_ROOT); reinstall with install.sh."
         return 1
     fi
@@ -550,12 +569,27 @@ full_upgrade() {
         git -C "$REPO_ROOT" status -sb | head -5
         return 1
     fi
+    if [ "$sel_rc" -ne 0 ]; then
+        print_error "Could not determine the update target."
+        return 1
+    fi
     if [ -z "$target" ]; then
         print_success "Already up to date ($(git -C "$REPO_ROOT" describe --tags --always 2>/dev/null))."
+        if update_rebuild_pending; then
+            print_warning "The image rebuild of a previous update is pending (run: claude-dockerized update)."
+        fi
         [ "$_UP_CHECK" = true ] && return 0
         [ "$_UP_DRY_RUN" = true ] && return 0
+        if update_rebuild_pending && [ "$_UP_NO_BUILD" != true ]; then
+            print_warning "The image rebuild of a previous update did not finish; retrying it."
+            check_docker || return 1
+            _rebuild_claude_image
+            return $?
+        fi
         if [ -n "$_UP_CLAUDE_VERSION" ] && [ "$_UP_NO_BUILD" != true ]; then
             check_docker || return 1
+            # An image-only change gets its own rollback point (code stays put).
+            update_record_rollback && update_commit_rollback || return 1
             _rebuild_claude_image
             return $?
         fi
@@ -618,6 +652,9 @@ full_upgrade() {
         print_error "Fast-forward failed; nothing was changed."
         return 1
     fi
+    update_commit_rollback || print_warning "Could not store the rollback point; 'rollback' will not be available."
+    # Until the new image is built, a retry of `update` must finish the job.
+    [ "$_UP_NO_BUILD" = true ] || update_set_rebuild_pending || true
     print_success "Code updated to $target ($commit)."
 
     # Continue with the NEW code (sync + rebuild).
