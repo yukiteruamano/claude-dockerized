@@ -68,6 +68,7 @@ cat >"$STUB/docker" <<'EOF'
 n=$(find "$DOCKER_STUB_CALLS" -type f | wc -l)
 printf '%s\n' "$@" >"$DOCKER_STUB_CALLS/$(printf '%04d' "$n")"
 case "$1" in
+build) [ "${DOCKER_STUB_FAIL_BUILD:-}" = 1 ] && exit 1 ;;
 run) printf '%s (Claude Code)\n' "${DOCKER_STUB_CLAUDE_VERSION:-2.1.311}" ;;
 esac
 exit 0
@@ -180,16 +181,79 @@ check "image rebuilt" built_image
 check "previous image tagged for rollback" docker_called_with "claude-dockerized:prev"
 check "the new code re-synced the security layer" [ -f "$CCODE_HOME/etc/claude-code/managed-settings.json" ]
 
+# --- rollback right after the update: code and image go back together -------------------------------------
+up rollback
+assert_eq "$RC" 1 "rollback needs --yes without a TTY"
+up rollback --yes
+assert_eq "$RC" 0 "rollback succeeds"
+assert_eq "$(head_of "$INSTALL")" "$before" "checkout restored to the rollback point"
+check "image restored from :prev" docker_called_with "claude-dockerized:prev"
+up rollback --yes
+check_not "a second rollback leaves the image alone" docker_called_with "claude-dockerized:prev"
+up update --yes
+assert_eq "$RC" 0 "the update can be applied again after a rollback"
+assert_eq "$(head_of "$INSTALL")" "$(git -C "$SEED" rev-parse 'v0.2.0^{commit}')" "checkout is at the signed release again"
+
 # --- Claude version pin: rebuild even when up to date, kept for later builds --------------------------------
 DOCKER_STUB_CLAUDE_VERSION=2.1.300 up update --yes --claude-version 2.1.300
 assert_eq "$RC" 0 "up to date + --claude-version rebuilds"
 check "requested Claude version reaches the build" docker_called_with "CLAUDE_CODE_VERSION=2.1.300"
+check "a pin that differs from the Dockerfile default is called out" has_text "pinned to 2.1.300" "$OUT"
 assert_eq "$(cat "$CONFIG_DIR/state/claude-version" 2>/dev/null)" 2.1.300 "Claude version pin saved"
 check "binary sha256 recorded for the pinned version (TOFU)" [ -s "$CONFIG_DIR/state/claude-2.1.300-$(uname -m).sha256" ]
 DOCKER_STUB_CLAUDE_VERSION=2.1.300 up build
 check "a later build reuses the pinned version" docker_called_with "CLAUDE_CODE_VERSION=2.1.300"
 up update --yes --claude-version 2.1.301
 assert_eq "$RC" 1 "a build reporting another Claude version fails"
+
+# --- an image-only change has its own rollback point: code stays put -------------------------------------------
+export DOCKER_STUB_CLAUDE_VERSION=2.1.300
+up rollback --yes
+assert_eq "$RC" 0 "rollback after an image-only change"
+assert_eq "$(head_of "$INSTALL")" "$(git -C "$SEED" rev-parse 'v0.2.0^{commit}')" "an image-only change does not move the code back"
+check "its image is restored from :prev" docker_called_with "claude-dockerized:prev"
+
+# --- --no-build leaves the image alone, and so does its rollback ---------------------------------------------
+nb_before="$(head_of "$INSTALL")"
+upstream_commit "nobuild"
+release v0.2.5 "$SIGNER" "$SIGNER_FPR"
+up update --yes --no-build
+assert_eq "$RC" 0 "--no-build update applied"
+up rollback --yes
+assert_eq "$RC" 0 "rollback after --no-build succeeds"
+assert_eq "$(head_of "$INSTALL")" "$nb_before" "rollback after --no-build restores the code"
+check_not "rollback after --no-build keeps the current image" docker_called_with "claude-dockerized:prev"
+
+# --- a failed rebuild is finished by the next `update` -------------------------------------------------------------
+upstream_commit "retry"
+release v0.2.6 "$SIGNER" "$SIGNER_FPR"
+DOCKER_STUB_FAIL_BUILD=1 up update --yes
+assert_eq "$RC" 1 "a failed rebuild fails the update"
+assert_eq "$(head_of "$INSTALL")" "$(git -C "$SEED" rev-parse 'v0.2.6^{commit}')" "the code was updated"
+check "the failure says how to retry" has_text "Retry the rebuild" "$OUT"
+up update --check
+assert_eq "$RC" 0 "--check still reports no new release"
+check "--check mentions the pending rebuild" has_text "pending" "$OUT"
+up update --yes
+assert_eq "$RC" 0 "the retry succeeds"
+check "the retry rebuilds the image" built_image
+up update --check
+check_not "nothing pending afterwards" has_text "pending" "$OUT"
+up update --yes
+check_not "up to date does not rebuild again" built_image
+
+# --- a signed tag published under another name is refused --------------------------------------------------------
+upstream_commit "renamed"
+GNUPGHOME="$SIGNER" git -C "$SEED" -c gpg.program=gpg -c user.signingkey="$SIGNER_FPR" tag -s v0.2.7 -m v0.2.7
+git -C "$SEED" push -q origin refs/tags/v0.2.7:refs/tags/v0.2.8
+git -C "$SEED" tag -d v0.2.7 >/dev/null
+up update --check
+assert_eq "$RC" 100 "the renamed tag is a candidate"
+check "a renamed signed tag is not verified" has_text "NOT verified" "$OUT"
+before_rename="$(head_of "$INSTALL")"
+up update --yes --no-build
+assert_eq "$RC" 1 "a renamed signed tag is refused"
+assert_eq "$(head_of "$INSTALL")" "$before_rename" "renamed tag not applied"
 
 # --- impostor, unsigned and rewritten releases are refused --------------------------------------------
 released="$(head_of "$INSTALL")"
@@ -211,15 +275,20 @@ assert_eq "$RC" 1 "a rewritten release tag makes the update fail"
 check "rewritten tag is reported" has_text "rewritten upstream" "$OUT"
 assert_eq "$(head_of "$INSTALL")" "$released" "rewritten tag changes nothing"
 
-# --- rollback ----------------------------------------------------------------------------------------------
-up rollback
-assert_eq "$RC" 1 "rollback needs --yes without a TTY"
-up rollback --yes
-assert_eq "$RC" 0 "rollback succeeds"
-assert_eq "$(head_of "$INSTALL")" "$before" "checkout restored to the rollback point"
-check "image restored from :prev" docker_called_with "claude-dockerized:prev"
+# --- ahead of upstream is not a divergence ----------------------------------------------------------------------
+git -C "$INSTALL" tag -d v0.2.0 >/dev/null
+git -C "$INSTALL" fetch -q origin
+git -C "$INSTALL" reset -q --hard origin/master
+printf 'local\n' >"$INSTALL/LOCAL.test"
+git -C "$INSTALL" add LOCAL.test
+git -C "$INSTALL" commit -q -m "local on top of upstream"
+up update --check --channel branch
+assert_eq "$RC" 0 "a checkout ahead of upstream is up to date (branch)"
+up update --check
+assert_eq "$RC" 0 "a checkout ahead of the newest release is up to date (tags)"
 
 # --- divergence and a changed origin -------------------------------------------------------------------------
+git -C "$INSTALL" reset -q --hard "$released"
 printf 'local\n' >"$INSTALL/LOCAL.test"
 git -C "$INSTALL" add LOCAL.test
 git -C "$INSTALL" commit -q -m "local change"
@@ -227,6 +296,9 @@ diverged="$(head_of "$INSTALL")"
 up update --yes --no-build --channel branch
 assert_eq "$RC" 1 "diverged checkout refused"
 assert_eq "$(head_of "$INSTALL")" "$diverged" "diverged checkout left untouched"
+up update --check
+assert_eq "$RC" 1 "a newer release that does not descend from the checkout is not hidden"
+check "the divergence is explained" has_text "diverged" "$OUT"
 git -C "$INSTALL" remote set-url origin "$TMP/elsewhere.git"
 up update --check
 assert_eq "$RC" 1 "a changed origin remote is refused"

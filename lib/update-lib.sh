@@ -118,6 +118,14 @@ _update_confirm_trust() {
 update_verify_ref() {
     local ref="$1" kind out rc=0
     kind=$(_update_git cat-file -t "$ref" 2>/dev/null)
+    if [ "$kind" = tag ]; then
+        # The signature covers the tag's own "tag <name>" header, not the ref
+        # it is published under: a validly signed tag object renamed upstream
+        # must not pass as another release.
+        local signed_name
+        signed_name=$(_update_git cat-file tag "$ref" 2>/dev/null | awk '/^tag /{print $2; exit}')
+        [ "$signed_name" = "$ref" ] || return 1
+    fi
     local -a cfg=(
         -c "gpg.program=gpg"
         -c "gpg.ssh.allowedSignersFile=$UPDATE_TRUST_DIR/allowed_signers"
@@ -174,26 +182,40 @@ update_check_origin() {
 
 # Newest release tag (vX.Y.Z) that fast-forwards HEAD, or the upstream tip
 # for the branch channel. Prints nothing when already up to date.
+# Returns 0 (target printed, or nothing to do), 1 (no upstream) or 2 (the
+# checkout diverged from upstream / from a newer release: no forced update).
 # Usage: update_select_target <tags|branch>
 update_select_target() {
-    local channel="$1" head tag commit
+    local channel="$1" head tag commit skipped=""
     head=$(_update_git rev-parse HEAD)
     if [ "$channel" = branch ]; then
         commit=$(_update_git rev-parse '@{u}' 2>/dev/null) || return 1
         [ "$commit" = "$head" ] && return 0
-        _update_git merge-base --is-ancestor HEAD "$commit" || return 2
+        _update_git merge-base --is-ancestor HEAD "$commit" || {
+            # Local commits on top of upstream are not a divergence.
+            _update_git merge-base --is-ancestor "$commit" HEAD && return 0
+            return 2
+        }
         printf '%s' '@{u}'
         return 0
     fi
     while IFS= read -r tag; do
         [ -n "$tag" ] || continue
         commit=$(_update_git rev-parse "$tag^{commit}" 2>/dev/null) || continue
-        [ "$commit" = "$head" ] && return 0
+        [ "$commit" = "$head" ] && break
         if _update_git merge-base --is-ancestor HEAD "$commit" 2>/dev/null; then
+            [ -n "$skipped" ] && config_warning "Skipping release(s) that do not descend from this checkout:$skipped"
             printf '%s' "$tag"
             return 0
         fi
+        # HEAD already contains this release: the older ones cannot apply either.
+        _update_git merge-base --is-ancestor "$commit" HEAD 2>/dev/null && break
+        skipped="$skipped $tag"
     done < <(_update_git tag -l 'v[0-9]*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$')
+    if [ -n "$skipped" ]; then
+        config_warning "Newer release(s) do not descend from this checkout:$skipped"
+        return 2
+    fi
     return 0
 }
 
@@ -215,11 +237,36 @@ update_preview() {
     fi
 }
 
-# Record the rollback point (commit before the update).
+# Stage the rollback point (the commit before the update). The previous point
+# stays valid until update_commit_rollback, so a refused merge loses nothing.
 update_record_rollback() {
     _update_ensure_dirs || return 1
-    _update_git rev-parse HEAD >"$UPDATE_STATE_DIR/last-good"
+    _update_git rev-parse HEAD >"$UPDATE_STATE_DIR/last-good.next"
 }
+
+# Make the staged rollback point current. The :prev image marker is dropped:
+# it only describes an image rebuilt after this point (see update_mark_prev_image).
+update_commit_rollback() {
+    mv -f "$UPDATE_STATE_DIR/last-good.next" "$UPDATE_STATE_DIR/last-good" || return 1
+    rm -f "$UPDATE_STATE_DIR/prev-image"
+}
+
+# :prev holds the image from before the last update (set by the rebuild).
+# Without the marker the last update did not touch the image, and rollback
+# must not retag an older :prev over the current image.
+update_has_prev_image() { [ -e "$UPDATE_STATE_DIR/prev-image" ]; }
+update_mark_prev_image() {
+    _update_ensure_dirs || return 1
+    : >"$UPDATE_STATE_DIR/prev-image"
+}
+
+# An update applied the new code but its image rebuild has not succeeded yet.
+update_rebuild_pending() { [ -e "$UPDATE_STATE_DIR/rebuild-pending" ]; }
+update_set_rebuild_pending() {
+    _update_ensure_dirs || return 1
+    : >"$UPDATE_STATE_DIR/rebuild-pending"
+}
+update_clear_rebuild_pending() { rm -f "$UPDATE_STATE_DIR/rebuild-pending"; }
 
 # Undo the last update: move the checkout back to the recorded commit and
 # restore the previous image tag, then re-sync with the restored code.
@@ -260,11 +307,18 @@ update_rollback() {
         fi
         config_success "Checkout restored to $target."
     fi
-    if command -v docker >/dev/null 2>&1 && docker image inspect "${IMAGE_NAME%%:*}:prev" >/dev/null 2>&1; then
-        docker tag "${IMAGE_NAME%%:*}:prev" "$IMAGE_NAME" && config_success "Image restored from ${IMAGE_NAME%%:*}:prev."
+    if ! update_has_prev_image; then
+        config_info "The last update did not change the image; it was left as is."
+    elif command -v docker >/dev/null 2>&1 && docker image inspect "${IMAGE_NAME%%:*}:prev" >/dev/null 2>&1; then
+        if docker tag "${IMAGE_NAME%%:*}:prev" "$IMAGE_NAME"; then
+            config_success "Image restored from ${IMAGE_NAME%%:*}:prev."
+            rm -f "$UPDATE_STATE_DIR/prev-image"
+        fi
     else
         config_info "No previous image tag; rebuild with: claude-dockerized build"
     fi
+    # The restored code and image belong together again.
+    update_clear_rebuild_pending
     return 0
 }
 
@@ -276,6 +330,11 @@ update_saved_claude_version() {
 update_save_claude_version() {
     _update_ensure_dirs || return 1
     printf '%s\n' "$1" >"$UPDATE_STATE_DIR/claude-version"
+}
+
+# Claude Code version the checked-out Dockerfile builds by default.
+update_dockerfile_claude_version() {
+    sed -n 's/^ARG CLAUDE_CODE_VERSION=\([0-9][0-9.]*\)$/\1/p' "$REPO_ROOT/Dockerfile" 2>/dev/null | head -n1
 }
 
 # Recorded sha256 of the Claude binary for <version> on this architecture
