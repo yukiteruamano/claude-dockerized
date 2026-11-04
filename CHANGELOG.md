@@ -2,7 +2,9 @@
 
 Releases are signed annotated tags (`docs/security/YELLOW.md#releases`).
 
-## 0.4.2
+## 0.4.3
+
+Supersedes `0.4.2`, whose tag was cut from a commit that does not descend from `master` (an install on `master` could not fast-forward to it). Same fixes, now on top of `master`.
 
 ### Fixed
 
