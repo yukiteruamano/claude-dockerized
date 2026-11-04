@@ -65,6 +65,27 @@ lsp_expected_stamp() {
         "$LSP_GOPLS_VERSION" "$LSP_SERVERS" "$LSP_ENABLED" "$FORMATTERS_ENABLED"
 }
 
+# Script run by bash inside the throwaway container (see ensure_lsp_formatters).
+# Top level, not a function: `local` is illegal here and aborts under set -e
+# before the links exist. LSP_DEST lets the tests run it against a temp dir.
+# Usage: lsp_container_script
+lsp_container_script() {
+    cat <<'SCRIPT'
+set -e
+dest="${LSP_DEST:-/opt/lsp-bin}"
+if [ -n "$NPM_PKGS" ]; then
+    # shellcheck disable=SC2086
+    npm install --prefix "$dest/.lsp/node" --no-audit --no-fund --ignore-scripts --no-save $NPM_PKGS
+    for b in $NPM_BINS; do ln -sfn ".lsp/node/node_modules/.bin/$b" "$dest/$b"; done
+fi
+if [ "$WANT_RUFF" = true ]; then
+    UV_TOOL_DIR="$dest/.lsp/uv-tools" UV_TOOL_BIN_DIR="$dest/.lsp/uv-bin" UV_CACHE_DIR=/tmp/uv-cache \
+        uv tool install --force "ruff==$RUFF_VERSION"
+    ln -sfn .lsp/uv-bin/ruff "$dest/ruff"
+fi
+SCRIPT
+}
+
 # Install LSP servers and formatters into the generated home (never
 # system-wide; persists across rebuilds). The npm and uv packages install
 # inside a throwaway container of the image (no capabilities, no new
@@ -92,8 +113,12 @@ ensure_lsp_formatters() {
     # deciding what is missing: a repaired tree skips docker entirely.
     lsp_repair_uv_link "$bindir" || true
 
+    # npm_pkgs/npm_bins hold the whole wanted npm set, installed in one command
+    # whenever any of its binaries is missing: `npm install --no-save` prunes
+    # whatever else lives in the prefix, so a partial install would wipe the
+    # tools that were fine and the next run would reinstall them in a loop.
     local -a npm_pkgs=() npm_bins=()
-    local want_ruff=false entry
+    local need_npm=false want_ruff=false entry
     if [ "$LSP_ENABLED" = true ]; then
         local IFS_save="$IFS"
         IFS=','
@@ -102,18 +127,16 @@ ensure_lsp_formatters() {
             case "$entry" in
             "") ;;
             ts | typescript)
-                if ! lsp_bin_ok "$bindir/typescript-language-server"; then
-                    # shellcheck disable=SC2206 # intentional split of the pinned list
-                    npm_pkgs+=($LSP_NPM_TS)
-                    npm_bins+=(typescript-language-server tsserver)
-                fi
+                # shellcheck disable=SC2206 # intentional split of the pinned list
+                npm_pkgs+=($LSP_NPM_TS)
+                npm_bins+=(typescript-language-server)
+                lsp_bin_ok "$bindir/typescript-language-server" || need_npm=true
                 ;;
             python)
-                if ! lsp_bin_ok "$bindir/pyright-langserver"; then
-                    npm_pkgs+=("$LSP_NPM_PYRIGHT")
-                    npm_bins+=(pyright pyright-langserver)
-                fi
-                if ! lsp_bin_ok "$bindir/ruff"; then want_ruff=true; fi
+                npm_pkgs+=("$LSP_NPM_PYRIGHT")
+                npm_bins+=(pyright pyright-langserver)
+                lsp_bin_ok "$bindir/pyright-langserver" || need_npm=true
+                lsp_bin_ok "$bindir/ruff" || want_ruff=true
                 ;;
             go)
                 if ! lsp_bin_ok "$bindir/gopls" && command -v go >/dev/null 2>&1; then
@@ -136,19 +159,19 @@ ensure_lsp_formatters() {
         IFS="$IFS_save"
     fi
     if [ "$FORMATTERS_ENABLED" = true ]; then
-        if ! lsp_bin_ok "$bindir/prettier"; then
-            npm_pkgs+=("$FMT_NPM_PRETTIER")
-            npm_bins+=(prettier)
-        fi
-        if ! lsp_bin_ok "$bindir/ruff"; then want_ruff=true; fi
+        npm_pkgs+=("$FMT_NPM_PRETTIER")
+        npm_bins+=(prettier)
+        lsp_bin_ok "$bindir/prettier" || need_npm=true
+        lsp_bin_ok "$bindir/ruff" || want_ruff=true
     fi
-    if [ "${#npm_pkgs[@]}" -eq 0 ] && [ "$want_ruff" = false ]; then
+    if [ "$need_npm" = false ] && [ "$want_ruff" = false ]; then
         # Nothing missing: record the stamp so future version bumps are
         # detected, then stay silent (no per-run "Installing..." noise).
         lsp_expected_stamp >"$bindir/.lsp-versions" 2>/dev/null || true
         _LSP_FORMATTERS_DONE=1
         return 0
     fi
+    [ "$need_npm" = true ] || { npm_pkgs=(); npm_bins=(); }
     local image="${IMAGE_NAME:-claude-dockerized:latest}"
     if ! command -v docker >/dev/null 2>&1 || ! docker image inspect "$image" >/dev/null 2>&1; then
         config_warning "LSP/formatters pending: build the image first (claude-dockerized build), then run again."
@@ -158,22 +181,8 @@ ensure_lsp_formatters() {
 
     # Runs inside the image as the host user; the only writable mount is the
     # generated home's .local/bin.
-    # shellcheck disable=SC2016 # expanded inside the container
-    local script='
-set -e
-dest=/opt/lsp-bin
-if [ -n "$NPM_PKGS" ]; then
-    # shellcheck disable=SC2086
-    npm install --prefix "$dest/.lsp/node" --no-audit --no-fund --ignore-scripts --no-save $NPM_PKGS
-    local b
-    for b in $NPM_BINS; do ln -sfn ".lsp/node/node_modules/.bin/$b" "$dest/$b"; done
-fi
-if [ "$WANT_RUFF" = true ]; then
-    UV_TOOL_DIR="$dest/.lsp/uv-tools" UV_TOOL_BIN_DIR="$dest/.lsp/uv-bin" UV_CACHE_DIR=/tmp/uv-cache \
-        uv tool install --force "ruff==$RUFF_VERSION"
-    ln -sfn .lsp/uv-bin/ruff "$dest/ruff"
-fi
-'
+    local script
+    script=$(lsp_container_script)
     config_info "Installing pinned LSP/formatters in a throwaway container: ${npm_pkgs[*]}$([ "$want_ruff" = true ] && printf ' ruff==%s' "$FMT_RUFF_VERSION")"
     local out
     if ! out=$(docker run --rm --user "$(id -u):$(id -g)" --cap-drop=ALL --security-opt no-new-privileges:true \

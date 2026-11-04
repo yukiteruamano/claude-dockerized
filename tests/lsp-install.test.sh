@@ -119,6 +119,44 @@ reset_calls
 ensure_lsp_formatters >/dev/null 2>&1
 check "stamp written when up to date" [ -f "$CCODE_HOME/.local/bin/.lsp-versions" ]
 
+# The script the container runs must actually complete: `local` at top level
+# aborted it (set -e) between `npm install` and the links, so every run
+# reported a failed install and retried. Run it for real against a temp dest
+# with a fake npm that lays out node_modules/.bin like the real one.
+CS_DEST="$TMP/cs-dest"
+CS_STUB="$TMP/cs-stub"
+mkdir -p "$CS_DEST" "$CS_STUB"
+cat >"$CS_STUB/npm" <<'FAKE'
+#!/bin/bash
+prefix=""
+while [ $# -gt 0 ]; do [ "$1" = --prefix ] && prefix="$2"; shift; done
+mkdir -p "$prefix/node_modules/.bin"
+for b in $NPM_BINS; do : >"$prefix/node_modules/.bin/$b"; chmod +x "$prefix/node_modules/.bin/$b"; done
+FAKE
+chmod +x "$CS_STUB/npm"
+container_script_run() {
+    LSP_DEST="$CS_DEST" PATH="$CS_STUB:$PATH" NPM_PKGS="p@1" NPM_BINS="typescript-language-server pyright pyright-langserver" \
+        WANT_RUFF=false bash -c "$(lsp_container_script)" >/dev/null 2>&1
+}
+check "container script completes (no top-level local)" container_script_run
+check "container script links the npm bins" lsp_bin_ok "$CS_DEST/pyright-langserver"
+
+# `npm install --no-save` prunes the rest of the prefix, so when only one npm
+# tool is missing the whole wanted set must go in one install (a partial one
+# made ts/pyright/prettier wipe each other in an endless reinstall loop).
+LSP_ENABLED=true
+LSP_SERVERS="ts,python"
+FORMATTERS_ENABLED=false
+for b in typescript-language-server ruff; do : >"$CCODE_HOME/.local/bin/$b"; chmod +x "$CCODE_HOME/.local/bin/$b"; done
+rm -f "$CCODE_HOME/.local/bin/pyright-langserver"
+reset_calls
+ensure_lsp_formatters >/dev/null 2>&1
+check "one missing npm tool triggers an install" install_run
+check "...reinstalling the whole npm set (ts too)" run_has_text "typescript-language-server@6.0.3"
+check "...and pyright" run_has_text "pyright@1.1.414"
+check_not "tsserver is not requested (typescript 7 ships no such bin)" run_has_text "tsserver"
+for b in typescript-language-server pyright-langserver ruff; do : >"$CCODE_HOME/.local/bin/$b"; chmod +x "$CCODE_HOME/.local/bin/$b"; done
+
 # Formatters alone install their binaries (was: nothing without lsp=true).
 LSP_ENABLED=false
 FORMATTERS_ENABLED=true
