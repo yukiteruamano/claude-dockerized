@@ -8,8 +8,8 @@ treated as untrusted code execution inside the container.
 ## Documents
 
 | Document | Contents |
-|----------|----------|
-| [docs/security/THREAT-MODEL.md](docs/security/THREAT-MODEL.md) | scope, assets, adversaries, trust boundaries, STRIDE, the threat matrix (T-01…T-34) with status and tests, residual risk |
+| --- | --- |
+| [docs/security/THREAT-MODEL.md](docs/security/THREAT-MODEL.md) | scope, assets, adversaries, trust boundaries, STRIDE, the threat matrix (T-01…T-35) with status and tests, residual risk |
 | [docs/security/RED.md](docs/security/RED.md) | attack playbook: kill chain, attack catalog per threat, how to run the exercise, tabletop scenarios |
 | [docs/security/BLUE.md](docs/security/BLUE.md) | controls by layer with their code location and test, detection signals, incident response |
 | [docs/security/YELLOW.md](docs/security/YELLOW.md) | secure-development rules, adding an attack, PR checklist, signed releases, CI; Purple/Orange/Green appendix |
@@ -35,6 +35,10 @@ treated as untrusted code execution inside the container.
 - **Detection by default.** Changes to paths that run on the host or in later
   sessions (git hooks/config, `~/.local/bin`, plugins, skills, MCP servers)
   are reported after every session and logged.
+- **Per-session agent state.** Forwarded agents are opt-in, and each session
+  gets its own copy of the *public* GnuPG material plus its own relay socket;
+  a session only removes its own directories, so a concurrent session cannot
+  break another one's signing or push (T-35).
 - **Opt-in prevention.** `setting.hardening=standard|strict` (pids limit,
   read-only root filesystem, read-only persistent paths and `.git` overlays,
   bridge network), `setting.image_strip_setuid`, `setting.image_docker_cli`.
@@ -53,7 +57,10 @@ treated as untrusted code execution inside the container.
 - `--network host` is the default (host loopback services are reachable);
   use `setting.network=bridge` or `setting.hardening=strict`.
 - Forwarded SSH/GnuPG agents (opt-in) are signing oracles while a session
-  runs; private keys are never mounted.
+  runs; private keys are never mounted. Sessions of the **same profile** still
+  share its home (`.claude.json`, `settings.json`, the login), so concurrent
+  sessions can race on preferences and on the OAuth refresh; the host
+  `gpg-agent` also answers one passphrase prompt at a time.
 - The Docker socket (opt-in) is root-equivalent on the host.
 - In the default profile the root filesystem is writable and persistent
   paths are read-write (changes are detected, not prevented).

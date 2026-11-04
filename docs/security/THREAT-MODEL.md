@@ -153,6 +153,12 @@ Status legend: **mitigated** (control in place, test green) · **detected**
 - **Provider credentials are visible to the session** (T-19): they configure
   the CLI. Keep unrelated secrets out of the env file.
 - **Forwarded agents are signing oracles** while a session runs (opt-in).
+- **Concurrent sessions share the profile home.** The agent state (GnuPG
+  mirror and relay sockets) is per session (T-35), but two sessions of the
+  same profile still share `.claude.json`, `settings.json` and the login, so
+  preference writes and the OAuth refresh can race; the host `gpg-agent`
+  answers one passphrase prompt at a time. Use one profile per concurrent
+  session when that matters.
 - **Tools without a hook.** `mcp__*` tools and `WebFetch` are not covered by the
   file/bash hooks (their payload has no common shape); `WebFetch` only has the
   metadata-domain deny rules. A recursive Grep/Glob inside the project can

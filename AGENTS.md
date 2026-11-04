@@ -40,7 +40,7 @@ Shell script-based Docker wrapper for running [Claude Code](https://code.claude.
 - `tests/wrapper-dryrun.test.sh`, `tests/mounts.test.sh`, `tests/config-parse.test.sh`, `tests/self-update.test.sh`, `tests/cli-contract.test.sh` — Full `docker run` argv via a docker stub, mount/path validation, config parsing, self-update against a local bare origin, help/completion drift
 - `tests/integration/container.test.sh` — Container runtime contract (non-root, zero caps, no_new_privs, read-only mounts); skips without Docker
 - `tests/threat-matrix.test.sh`, `tests/hardening.test.sh`, `tests/integrity.test.sh`, `tests/supply-chain.test.sh`, `tests/lsp-install.test.sh`, `tests/ui.test.sh`, `tests/entrypoint.test.sh` — Docs↔tests traceability, hardening profiles, session integrity, supply-chain pins, LSP installs, CLI output, entrypoint PATH
-- `docs/security/` — THREAT-MODEL (T-01…T-30), RED, BLUE, YELLOW; `SECURITY.md` is the index
+- `docs/security/` — THREAT-MODEL (T-01…T-35), RED, BLUE, YELLOW; `SECURITY.md` is the index
 - `tests/lib/` — Shared helpers (`assert.sh`, `hook-runner.mjs`); known gaps are XFAIL and turn red once fixed
 - `SECURITY.md`, `CONTRIBUTING.md` — Security model and contribution guide
 - `examples/config.example` — Example user config (INI-style)

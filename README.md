@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Run [Claude Code](https://code.claude.com/docs) (native binary, pinned version) in a secure, isolated Docker container with controlled access to your projects. This setup provides Claude Code with just enough access to be useful while maintaining strong security boundaries.
+Run [Claude Code](https://code.claude.com/docs) (native binary, pinned version) inside a sandboxed Docker container that sees only the project you give it. The agent stays useful; the blast radius stays small.
 
 ## Table of Contents
 
@@ -10,36 +10,48 @@ Run [Claude Code](https://code.claude.com/docs) (native binary, pinned version) 
 - [Prerequisites](#-prerequisites)
 - [Quick Start](#-quick-start)
 - [Usage](#-usage)
+- [Multiple accounts (profiles)](#-multiple-accounts-profiles)
 - [Configuration](#-configuration)
 - [Portability & Sharing](#-portability--sharing)
 - [Advanced Usage](#-advanced-usage)
 - [Updates, trust and rollback](#-updates-trust-and-rollback)
 - [Hardening profiles and session integrity](#️-hardening-profiles-and-session-integrity)
-- [Performance Optimizations](#-performance-optimizations)
-- [Testcontainers Support](#-testcontainers-support)
 - [Troubleshooting](#-troubleshooting)
 - [File Reference](#-file-reference)
+- [Additional Resources](#-additional-resources)
+- [Important Notes](#️-important-notes)
+- [Performance Optimizations](#-performance-optimizations)
+- [Testcontainers Support](#-testcontainers-support)
+- [License](#-license)
+- [Contributing](#-contributing)
 
 ## 🔒 Security Features
 
-- **Isolated Environment** - Claude Code only has access to the mounted project directory
-- **Persistent Configuration** - All Claude Code state lives self-contained under `~/.config/claude-dockerized/profiles/default/home/`, so MCP servers, sessions, auth, plugins and LSP servers survive container restarts and image rebuilds. The security policy (`/etc/claude-code/managed-settings.json`) and hooks are mounted **read-only**; your own preferences (`~/.claude/settings.json`) stay writable, so `/model` and `/config` persist
-- **Native Security Layer** - A generated `~/.config/claude-dockerized/` directory (a managed policy with `permissions.deny/ask`, `allowManagedHooksOnly`, `disableBypassPermissionsMode`, `DISABLE_AUTOUPDATER=1`, plus native `PreToolUse` hooks and the vendored policy pattern sets) is never mounted as a whole: the policy reaches the container read-only as `/etc/claude-code/managed-settings.json`, the highest-precedence settings source, so user and project settings cannot relax it
-- **Configurable policy** - `setting.security_policy` selects `strict`, `balanced` (default, drops the noisy cloud/multi-tenant false positives) or `none`
-- **Remote flows allowed** - Git over SSH, remote MCP servers (`http`/`sse`), registries and APIs work in every policy mode; only destruction, exfiltration, secrets and Docker escapes are blocked
-- **No auto-updates** - The pinned Claude Code version (`2.1.311`) always runs; upgrades happen only through `claude-dockerized update` (image rebuild)
-- **No host Docker control by default** - The host Docker socket is **not** mounted unless you opt in with `setting.docker_socket=true` (it is root-equivalent on the host; see [SECURITY.md](SECURITY.md))
-- **Session Persistence** - Login, sessions, plugins, MCP state and LSP servers persist across container restarts and rebuilds
-- **Non-root User** - Runs as the host user via `--user <uid>:<gid>`; no root process ever starts in the container (plus `--cap-drop=ALL` and `no-new-privileges`)
-- **Limited Blast Radius** - Commands like `rm -rf .` only affect the project directory, not your entire system
+### Isolated by default
+
+- **The container is the boundary.** A session only sees the project directory you pass to `run`.
+- **No root, no privileges.** It runs as your host UID/GID (`--user`) with `--cap-drop=ALL` and `no-new-privileges`; the image ships no privilege-escalation binary.
+- **No Docker control unless you ask.** The host Docker socket is not mounted by default (`setting.docker_socket=true` opts in; it is root-equivalent on the host).
+- **Small blast radius.** `rm -rf .` destroys the mounted project, not your home.
+
+### A security layer the session cannot relax
+
+- **Managed policy, highest precedence.** `permissions.deny/ask`, `allowManagedHooksOnly`, `disableBypassPermissionsMode` and `DISABLE_AUTOUPDATER=1` reach the container read-only as `/etc/claude-code/managed-settings.json`, so user and project settings cannot weaken them.
+- **Fail-closed hooks.** Two native `PreToolUse` hooks (Bash, and every file tool) block whatever they cannot evaluate, backed by vendored pattern sets for destruction, exfiltration, secrets and Docker escapes.
+- **Configurable policy.** `setting.security_policy` selects `strict`, `balanced` (default: drops the noisy cloud/multi-tenant rules) or `none` (built-in backstops only).
+- **Remote flows keep working.** Git over SSH, remote MCP servers (`http`/`sse`), registries and APIs stay allowed in every mode.
+- **No auto-updates.** The pinned Claude Code version (`2.1.311`) runs until *you* run `claude-dockerized update`, which verifies a signed release first.
+
+### State that survives without touching your host
+
+- **One self-contained home.** Login, sessions, MCP state, plugins and LSP servers live under `~/.config/claude-dockerized/profiles/<name>/home/`, so they survive restarts and image rebuilds.
+- **The host stays clean.** `~/.claude`, `~/.local/...`, `~/.ssh` and `~/.gnupg` are never mounted. Agents are forwarded through sockets and only public GnuPG material is copied.
+- **Changes are reported.** After every session the wrapper fingerprints the persistent paths a session could plant code in and lists what changed (see [Hardening profiles and session integrity](#️-hardening-profiles-and-session-integrity)).
 
 ## 📋 Prerequisites
 
-1. **Docker** installed and running
-2. **Optional configuration files** (if you have them):
-   - `~/.gitconfig` - Git configuration (mount it explicitly, see below)
-
-**No local Claude Code installation required!** Authentication and all Claude Code operations run through Docker.
+- **Docker**, installed and running. Nothing else: no local Claude Code, Node.js or Python toolchain is needed on the host.
+- **Optional**, mounted only if you ask for it: `~/.gitconfig` (see [Custom configuration](#custom-global-configuration-optional)).
 
 ## 🚀 Quick Start
 
@@ -51,7 +63,7 @@ curl -fsSLO https://raw.githubusercontent.com/yukiteruamano/claude-dockerized/ma
 less install.sh && bash install.sh
 #    (one-liner: curl -fsSL .../install.sh | bash; from a clone: ./install.sh)
 #    Non-interactive: ./install.sh --yes · only some steps: ./install.sh --only completions,aliases
-#    Pin a release: CCODE_REF=v1.2.0 bash install.sh
+#    Pin a release: CCODE_REF=v0.4.5 bash install.sh
 
 # 2. Pin the release-signing key (enables verified updates; compare the fingerprint)
 claude-dockerized update --trust-key maintainer.asc
@@ -103,7 +115,6 @@ claude-dockerized version
 claude-dockerized update
 claude-dockerized rollback        # undo the last update if needed
 ```
-
 ### Global Installation
 
 No symlink, stub or copy is ever created in `~/.local/bin`. The binary lives
@@ -149,33 +160,46 @@ Every command, its subcommands and flags complete (including `update --channel`,
 
 ### Available Commands
 
+`claude-dockerized help <command>` (or `<command> --help`) prints one command's details. Global options: `-p/--profile NAME`, `--no-color`, `-V/--version`.
+
+#### Everyday
+
 ```bash
-claude-dockerized build          # Build Docker image
-claude-dockerized auth           # Authenticate (claude auth login)
-claude-dockerized run [DIR]      # Run Claude Code (default: current dir)
-claude-dockerized models         # Show the effective default model
-claude-dockerized exec "..."     # Non-interactive prompt (claude -p)
-claude-dockerized mcp list       # MCP servers and their status
-claude-dockerized mcp login NAME # OAuth login for an MCP server
-claude-dockerized plugin list    # Loaded plugins
-claude-dockerized stats          # Local session-storage statistics
-claude-dockerized debug paths    # Resolved generated-home paths
-claude-dockerized debug doctor   # Native claude doctor inside the container
-claude-dockerized doctor [--json] # Host + container checks, summary, exit 1 on failure
-claude-dockerized install        # Install / repair PATH, config, completions, aliases
-claude-dockerized update --check # 0 up to date, 100 update available, 1 error
-claude-dockerized update         # Verified self-update (signed tag, preview, confirm, sync, rebuild)
-claude-dockerized rollback       # Undo the last update (checkout + previous image)
-claude-dockerized build [--pull] # Build the image (--no-cache, --pull)
-claude-dockerized version [--json] # Wrapper, guard, policy and Claude Code versions (no Docker needed)
-claude-dockerized config show    # Show parsed configuration
-claude-dockerized config edit    # Edit wrapper config in $EDITOR
-claude-dockerized config path    # Print wrapper config file path
-claude-dockerized config sync [--check]  # Refresh security layer (hooks/policies/settings) from repo
-claude-dockerized config claude path     # Print the user settings.json path (edit|policy also available)
-claude-dockerized config credentials path # Print credentials file path (values never printed)
-claude-dockerized clean          # Remove the Docker image
-claude-dockerized help [COMMAND] # Overview, or one command's details (also: COMMAND --help)
+claude-dockerized run [DIR]        # Run Claude Code (default: current dir); args after -- go to claude
+claude-dockerized exec "..."       # Non-interactive prompt (claude -p)
+claude-dockerized auth             # Log in (claude auth login)
+claude-dockerized update [--check] # Verified self-update (exit: 0 up to date, 100 available, 1 error)
+claude-dockerized rollback         # Undo the last update (checkout + previous image)
+claude-dockerized doctor [--json]  # Host + container checks, exit 1 on failure
+```
+
+#### Accounts and inspection
+
+```bash
+claude-dockerized profiles                 # name, login, account, model, last use, size
+claude-dockerized profile --help           # create, login, use, bind, set, rename, delete, doctor, migrate
+claude-dockerized models                   # Effective default model
+claude-dockerized mcp list                 # MCP servers and their status (login/logout work here)
+claude-dockerized plugin list              # Loaded plugins (install/update/remove are host-only)
+claude-dockerized stats                    # Local session-storage statistics
+claude-dockerized debug paths              # Resolved generated-home paths
+claude-dockerized debug doctor             # Native claude doctor inside the container
+claude-dockerized version [--json]         # Wrapper, guard, policy and Claude Code versions (no Docker needed)
+```
+
+#### Image and configuration
+
+```bash
+claude-dockerized install                  # Install / repair PATH, config, completions, aliases
+claude-dockerized build [--no-cache|--pull] # Build the image
+claude-dockerized config show              # Parsed configuration
+claude-dockerized config edit              # Edit the wrapper config in $EDITOR
+claude-dockerized config path              # Config file path
+claude-dockerized config sync [--check]    # Refresh the security layer (hooks/policies/settings)
+claude-dockerized config claude [path|edit|policy]  # User settings.json (writable) / managed policy path
+claude-dockerized config credentials path  # Credentials file path (values never printed)
+claude-dockerized clean                    # Remove the Docker image and stale relays
+claude-dockerized help [COMMAND]           # Overview, or one command's details
 ```
 
 `run` passes everything after `--` to Claude Code: `claude-dockerized run . -- --resume`.
@@ -189,7 +213,7 @@ Preview the `docker run` command without executing it:
 DRY_RUN=true claude-dockerized run /path/to/project
 ```
 
-This prints the full Docker command with all volume mounts, environment variables, and flags — one flag per line — useful for debugging configuration issues. Secrets travel via `--env-file` (only the file path is shown).
+The full command is printed one flag per line, with every mount and environment variable — useful for debugging configuration issues. Secrets travel via `--env-file`, so only the file path is shown.
 
 Output is plain when it is not a terminal; `--no-color`, `NO_COLOR=1` or `TERM=dumb` force plain output and `CLICOLOR_FORCE=1` forces color. Warnings and errors go to stderr.
 
@@ -218,19 +242,15 @@ ccd profile use work                 # make it the default
 ccd profile bind work ~/code/app     # always use it for this project (kept outside the project)
 ```
 
-Everything you had before is the `default` profile: the first command after
-upgrading migrates `~/.config/claude-dockerized/home` and your env file into
-`~/.config/claude-dockerized/profiles/default/` **after taking a backup** in
-`~/.config/claude-dockerized/backups/pre-profiles-<time>/` (`profile migrate
---dry-run` previews it; `profile migrate --rollback` undoes it, and `ccd
-rollback` to a version that predates profiles reverts it for you, refusing
-while other profiles exist). If the backup cannot be made (disk space), nothing
-is changed and the command says why; `profile migrate --no-backup` migrates
-anyway (no data copy, but the record `--rollback` needs is still written). The backups hold the credentials of that moment:
-remove them with `profile migrate --prune-backups` once you no longer need
-them (`logout` and `delete` of `default` remind you).
+Everything you had before is the `default` profile. The first command after
+the upgrade migrates the old layout into `profiles/default/` automatically:
 
-```
+- **A backup comes first**, in `~/.config/claude-dockerized/backups/pre-profiles-<time>/` (`0700`). If it cannot be written (for example, no disk space), nothing is changed and the command says why.
+- **Preview or undo:** `profile migrate --dry-run` shows the move, `profile migrate --rollback` undoes it, and `claude-dockerized rollback` to a version that predates profiles reverts it for you (it refuses while other profiles exist).
+- **`--no-backup`** migrates without copying data, but still writes the record `--rollback` needs.
+- **The backups hold the credentials of that moment.** Delete them with `profile migrate --prune-backups` when you no longer need them (`logout` and `delete` of `default` remind you).
+
+```text
 ~/.config/claude-dockerized/
 ├── config                 global settings
 ├── profiles/<name>/
@@ -241,7 +261,7 @@ them (`logout` and `delete` of `default` remind you).
 ```
 
 | Command | What it does |
-|---|---|
+| --- | --- |
 | `profile list [--json]` / `profiles` | all profiles with login state and account |
 | `profile create NAME [--from SRC] [--login] [--model M] [--env-file F] [--share-skills] [--lsp-from default]` | new profile (`--from` copies preferences, never credentials) |
 | `profile login NAME` / `logout NAME` | log in / drop the OAuth login |
@@ -254,60 +274,67 @@ them (`logout` and `delete` of `default` remind you).
 **Which profile runs?** `--profile`/`-p`, then `CLAUDE_DOCKERIZED_PROFILE`, then
 the project bind, then `setting.profile`, then `default`.
 
-**Secrets are per profile.** There is no global env file: put API keys in
-`ccd profile edit NAME env` (a global key could override another account's
-login). A profile that logs in with OAuth should not have `ANTHROPIC_API_KEY`
-in its env file.
+**Secrets are per profile.** There is no global env file: API keys go in
+`ccd profile edit NAME env`, because a global key could override another
+account's login. A profile that logs in with OAuth should not have
+`ANTHROPIC_API_KEY` in its env file.
 
 **Security.** A profile may tighten any setting freely. Loosening the global
-security posture needs `ccd profile set NAME KEY VALUE --allow-loosen`, is
-flagged ⚠ in `profile list` and warned about on every run; an unapproved
-loosening in the overlay file is ignored (and `profile doctor` fails on it).
-What counts as loosening: `security_policy`, `hardening`, `docker_socket`, the
-SSH/GPG agents, `integrity_check`, `share_skills` and `lsp_from=default` (the
-only two ways a profile reads another profile's files; `create --share-skills`
-/ `--lsp-from` write their approval for you), a network that is really `host` where the
-global config gives `bridge` (including the bridge that `hardening=strict`
-implies), a `memory`/`cpus` limit that is removed or raised, and any `:rw`
-mount (`profile set NAME mount.<name> HOST:CONTAINER:rw --allow-loosen`).
-Read-only mounts are not guarded (the overlay is a file only you edit, and
-credential directories are refused anyway), so a profile can mount an extra
-read-only directory, e.g. its own `.gitconfig`. The approval stores the exact
-value, so editing the value afterwards voids it. `share_skills=true` /
-`lsp_from=default` mount the default profile's skills and `.local/bin`
-read-only instead of duplicating them (`lsp_from` only helps if the default
-profile has installed the binaries; note that sessions of the default profile
-can write that directory, which is why it needs approval). Other per-profile
-settings: `model`, LSP, formatters.
-Inside Claude Code the statusline shows `[profile] project` (seeded into every
-new `settings.json`, so new installs get it too).
+security posture needs an explicit approval:
 
-**What profiles do not isolate.** The project directory is shared: sessions of
-different accounts read and write the same files, the project's own `.claude/`
-and `CLAUDE.md`, and `~/.agents` (read-only) is mounted for all of them. A
-`CCODE_HOME` exported in your shell pins the state root and turns profiles off.
-The first run after this change also regenerates the managed `CLAUDE.md` (the
-previous copy is kept as `CLAUDE.md.bak`).
+```bash
+ccd profile set NAME KEY VALUE --allow-loosen
+```
+
+The approval stores the exact value, so editing the value afterwards voids it.
+An unapproved loosening in the overlay file is ignored (one warning per run)
+and `profile doctor` fails on it; `profile list` flags it with ⚠.
+
+What counts as loosening:
+
+- `security_policy` or `hardening` lowered;
+- `docker_socket`, `ssh_agent_support`, `gpg_agent_support` (or the main-socket fallback) enabled;
+- `integrity_check=false`;
+- `share_skills=true` or `lsp_from=default` — the only two ways a profile reads another profile's files (`create --share-skills` / `--lsp-from` write their approval for you);
+- a network that is really `host` where the global config says `bridge` (including the bridge `hardening=strict` implies);
+- a `memory`/`cpus` limit removed or raised;
+- any `:rw` mount: `profile set NAME mount.<name> HOST:CONTAINER:rw --allow-loosen`.
+
+Read-only mounts need no approval (the overlay is a file only you edit, and
+credential directories are refused anyway), so a profile can mount an extra
+read-only directory such as its own `.gitconfig`. `share_skills=true` and
+`lsp_from=default` mount the default profile's skills and `.local/bin`
+read-only instead of duplicating them; `lsp_from` only helps once the default
+profile installed the binaries, and sessions of that profile can write the
+directory — hence the approval. Other per-profile settings: `model`, LSP and
+formatters. The statusline shows `[profile] project`, seeded into every new
+`settings.json`.
+
+**What profiles do not isolate.**
+
+- **The project directory** is shared: sessions of different accounts read and write the same files, including the project's own `.claude/` and `CLAUDE.md`.
+- **`~/.agents`** is mounted read-only for every profile.
+- **`CCODE_HOME` in your shell** pins the state root and turns profiles off (advanced use and the test seam).
+- **The managed `CLAUDE.md`** is regenerated by the first run after the upgrade (the previous copy is kept as `CLAUDE.md.bak`).
 
 ## 🔧 Configuration
 
 ### Configuration File
 
 The wrapper is configured through `~/.config/claude-dockerized/config`
-(INI-style, created by `./install.sh`).
+(INI-style; `./install.sh` creates it, `config edit` opens it).
 
-There is **no `.env` file**: secrets live in each profile's `env` file
-(`~/.config/claude-dockerized/profiles/<name>/env`, loaded with
-`docker --env-file`; edit it with `ccd profile edit <name> env`; the
-wrapper refuses to start while the file is readable by group/others, so keep it
-at `chmod 600`), and `TERM` is forwarded automatically. The
-container runs as your host UID/GID (`--user`), so no `HOST_UID`/`HOST_GID`
-mapping is needed.
+There is **no `.env` file**:
+
+- **Secrets live per profile**, in `~/.config/claude-dockerized/profiles/<name>/env` (edit it with `ccd profile edit <name> env`). The file is passed with `docker --env-file`, so values never appear on the command line, and it is never mounted.
+- **The wrapper refuses to start** while that file is readable by group or others. Keep it at `chmod 600`.
+- **Passed automatically:** `TERM` and the forwarded agent sockets. Anything else needs an explicit entry.
+- **No UID mapping:** the container runs as your host UID/GID (`--user`), so there is no `HOST_UID`/`HOST_GID` to set.
 
 ### Volume Mounts
 
 | Host Path | Container Path | Mode | Purpose |
-|-----------|---------------|------|---------|
+| --- | --- | --- | --- |
 | `$PROJECT_DIR` | `$PROJECT_DIR` (with `$HOME` stripped) | read-write | Your project files |
 | `~/.config/claude-dockerized/profiles/default/home/etc/claude-code/` | `/etc/claude-code/` | **read-only** | Managed policy `managed-settings.json` (permissions, hooks, no-autoupdate), highest precedence |
 | `~/.config/claude-dockerized/profiles/default/home/.claude/` | `/home/coder/.claude/` | read-write | User settings (`/model`, `/config`), credentials (`0600`), plugins, agents, commands, `.lsp.json`, memory |
@@ -316,11 +343,11 @@ mapping is needed.
 | `~/.config/claude-dockerized/profiles/default/home/.claude/CLAUDE.md` | `/home/coder/.claude/CLAUDE.md` | **read-only** | Managed session rules (overlay) |
 | `~/.config/claude-dockerized/profiles/default/home/.claude.json` | `/home/coder/.claude.json` | read-write | MCP user-scope state |
 | `~/.config/claude-dockerized/profiles/default/home/.local/bin/` | `/home/coder/.local/bin/` | read-write | LSP/formatter binaries |
-| `~/.config/claude-dockerized/profiles/default/home/.local/share|state/claude/` + `.cache/claude/` | same | read-write | Sessions, history, caches |
+| `~/.config/claude-dockerized/profiles/default/home/.local/` (`share/claude`, `state/claude`, `cache/claude`) | `/home/coder/.local/` | read-write | Sessions, history, caches |
 | `~/.config/claude-dockerized/profiles/default/home/.mcp-auth/` | `/home/coder/.mcp-auth/` | read-write (`0700`) | OAuth tokens of `mcp-remote` proxy servers (native Claude MCP OAuth lives in `.credentials.json`); the host `~/.mcp-auth` is never shared |
 | `~/.config/claude-dockerized/profiles/default/home/.gnupg-sessions/<pid>/` | `/home/coder/.gnupg/` | read-write | Per-session mirror of the **public** GnuPG material + agent socket (only with `setting.gpg_agent_support=true`, one directory per session, removed when it ends); `private-keys-v1.d/` is never copied |
 
-The wrapper's own directory (`~/.config/claude-dockerized/`) is **not** mounted at all, and `~/.claude` is never mounted as a whole: managed files travel through fine-grained read-only mounts.
+The wrapper's own directory (`~/.config/claude-dockerized/`) is **not** mounted at all, and `~/.claude` is never mounted as a whole. Managed files travel through fine-grained read-only mounts; state is mounted read-write.
 
 ### Multiple concurrent sessions
 
@@ -350,55 +377,64 @@ See `docs/security/THREAT-MODEL.md` (T-35) for the threat this isolates.
 
 ### Persistent Configuration & Security Layer
 
-The wrapper is **self-contained and replaces native host usage**: all of Claude Code's
-state lives under a single host directory (`~/.config/claude-dockerized/profiles/default/home/`,
-override with `CCODE_HOME`), mirroring the container home layout. Back up or move
-that one directory and the whole setup travels with it. The host XDG dirs
-(`~/.claude`, `~/.local/...`) are never touched.
+The wrapper is **self-contained**: it replaces native host usage instead of
+sharing it. Claude Code's whole state lives under one host directory
+(`~/.config/claude-dockerized/profiles/<name>/home/`), which mirrors the
+container home layout. Copy that directory and the setup travels with you; the
+host XDG dirs (`~/.claude`, `~/.local/...`) are never touched.
 
 ```text
 ~/.config/claude-dockerized/
-│   config                          ← wrapper INI config (mounts, settings)
-│   env                             ← secrets dotenv (600, never mounted)
-│   CLAUDE.md                       ← session rules source
-│   hooks/claude-guard-*.sh         ← hook sources (versioned in the repo)
-│   hooks/guard-eval.js             ← policy evaluator source
-│   hooks/policies/*.json           ← policy pattern sets + local allowlist
-│
-└── home/                            ← mirrors /home/coder, mounted piece by piece
-    ├── etc/claude-code/
-    │   │   managed-settings.json    ← GENERATED policy (ro mount at /etc/claude-code) — do not edit
-    ├── .claude/                     ← rw mount
-    │   │   settings.json            ← your preferences (/model, /config); seeded from config/user-settings.default.json
-    │   │   .credentials.json        ← login, 0600, rw
-    │   │   hooks-guard/             ← mirrored hooks + policies, ro mount
-    │   │   CLAUDE.md                ← mirrored rules, ro mount
-    │   │   plugins/ agents/ commands/ ← yours, rw
-    │   │   skills/                  ← yours, ro mount (edit from the host)
-    │   │   .lsp.json                ← generated when setting.lsp=true, rw
-    ├── .claude.json                 ← MCP state, rw
-    ├── .local/bin/                  ← LSP/formatter binaries, rw
-    └── .local/share|state/claude/ + .cache/claude/ ← sessions/history/caches, rw
+├── config                        ← wrapper INI config (settings, mounts)
+├── profiles.map                  ← project -> profile binds (0600)
+├── trust                         ← release keys you pinned (update)
+├── state                         ← rollback point of the last update
+├── audit/sessions.jsonl          ← one integrity record per session
+├── backups/pre-profiles-*        ← layout-migration backup (0700, old logins)
+├── CLAUDE.md                     ← session rules source
+├── hooks/claude-guard-*.sh       ← hook sources (versioned in the repo)
+├── hooks/guard-eval.js           ← policy evaluator source
+├── hooks/policies/*.json         ← policy pattern sets + local allowlist
+├── agent-relay/<pid>-<kind>/     ← per-session agent relay sockets (gnupg, ssh)
+└── profiles/<name>/
+    ├── config                    ← overlay: setting.* / mount.* overrides
+    ├── env                       ← secrets dotenv (0600, never mounted)
+    └── home/                     ← mirrors /home/coder, mounted piece by piece
+        ├── etc/claude-code/managed-settings.json  ← GENERATED policy (ro) — do not edit
+        ├── .claude/                               ← rw mount
+        │   ├── settings.json                      ← your preferences, seeded; /model and /config write here
+        │   ├── .credentials.json                  ← login, 0600
+        │   ├── hooks-guard/                       ← mirrored hooks + policies, ro
+        │   ├── CLAUDE.md                          ← mirrored rules, ro
+        │   ├── plugins/ agents/ commands/         ← yours, rw
+        │   ├── skills/                            ← yours, ro (edit from the host)
+        │   └── .lsp.json                          ← generated with setting.lsp=true
+        ├── .claude.json                           ← MCP state, rw
+        ├── .local/bin/                            ← LSP/formatter binaries, rw
+        ├── .local/share|state/claude/ .cache/claude/  ← sessions, history, caches, rw
+        ├── .mcp-auth/                             ← MCP proxy OAuth tokens, 0700
+        └── .gnupg-sessions/<pid>/                 ← per-session GnuPG mirror (opt-in)
 ```
 
-Because everything lives on the host, all state persists across `docker` up/down
-cycles **and** image rebuilds:
+Because everything lives on the host, state persists across `docker` up/down
+cycles **and** image rebuilds.
 
-- **Editing config:** the policy is mounted **read-only**, so change it on the host (`claude-dockerized config edit` for wrapper settings, then `config sync`). Your preferences are writable: use `/model` or `/config` in a session, or `claude-dockerized config claude edit`. `claude mcp add/remove` and `claude plugin install/update/remove` are intentionally disabled inside the container; `claude mcp login/logout` keep working (tokens live in read-write mounts).
-- **Security layer:** generated on the host and mirrored on every run (wrapper-managed). The hooks are versioned in the repo (`hooks/claude-guard-*.sh`); bumping `CLAUDE_DOCKERIZED_GUARD_VERSION` refreshes installs (the previous copy is backed up to `.bak`).
-- **Policy mode:** `setting.security_policy` (default `balanced`) selects which patterns the hooks enforce. `balanced` drops cloud/multi-tenant rules and common false positives while keeping the dangerous ones; `strict` enforces everything; `none` disables the vendored patterns but keeps the built-in backstops. Local exceptions live in `hooks/policies/allow-patterns.json`.
-- **No auto-updates:** `env.DISABLE_AUTOUPDATER=1` is always set in the managed policy (verify with `claude-dockerized doctor`, which also runs the native `claude doctor`). Upgrades happen only via `claude-dockerized update`, which rebuilds the image with the pinned `CLAUDE_CODE_VERSION` (default `2.1.311`; override per-build with `update --claude-version X.Y.Z`).
+- **Editing.** The policy is mounted **read-only**: change wrapper settings on the host (`claude-dockerized config edit`, then `config sync`). Your preferences are writable — use `/model` or `/config` in a session, or `claude-dockerized config claude edit`.
+- **Host-only commands.** `claude mcp add/remove` and `claude plugin install/update/remove` are disabled inside the container. `claude mcp login/logout` keep working (tokens live in read-write mounts); the wrapper's `mcp`/`plugin` commands expose what is safe.
+- **Security layer.** Generated on the host from the repo copy and mirrored on every run. The hooks are versioned (`hooks/claude-guard-*.sh`); bumping `CLAUDE_DOCKERIZED_GUARD_VERSION` refreshes installs, keeping the previous copy as `.bak`.
+- **Policy mode.** `setting.security_policy` (default `balanced`) selects what the hooks enforce: `balanced` drops cloud/multi-tenant rules and common false positives, `strict` enforces everything, `none` keeps only the built-in backstops. Local exceptions live in `hooks/policies/allow-patterns.json`.
+- **No auto-updates.** `env.DISABLE_AUTOUPDATER=1` is always set in the managed policy (check with `claude-dockerized doctor`, which also runs the native `claude doctor`). Upgrades go through `claude-dockerized update`, which rebuilds with the pinned `CLAUDE_CODE_VERSION` (`2.1.311`; override with `update --claude-version X.Y.Z`).
 
 ### Custom Global Configuration (Optional)
 
-**Advanced Users:** You can configure custom volume mounts and settings for all projects:
+Settings and mounts apply to every project of the profile. The common ones:
 
-- **SSH agent forwarding**: Enable `setting.ssh_agent_support=true` for secure git over SSH (recommended). Forwards only the host `SSH_AUTH_SOCK` and mounts `~/.ssh/config` + `known_hosts` read-only; private keys are never mounted.
-- **GnuPG agent forwarding**: Enable `setting.gpg_agent_support=true` to sign commits (`git commit -S`) with the keys held by your host gpg-agent (private keys never enter the container). Run `claude-dockerized doctor` to verify.
-- **Global git configuration**: Mount `~/.gitconfig`
-- **Default model**: Set `setting.model=sonnet` (passed as `--model`; `/model` still works per session)
-- **LSP servers**: Set `setting.lsp=true` and `setting.lsp_servers=go,ts,python,rust` to install language servers into the generated home and generate `.lsp.json`
-- **Formatters**: Set `setting.formatters=true` to install formatters and enable the formatter plugins
+- **SSH agent forwarding** — `setting.ssh_agent_support=true` (recommended for git over SSH). Only the host `SSH_AUTH_SOCK` is forwarded; `~/.ssh/config` and `known_hosts` are mounted read-only and private keys are never mounted.
+- **GnuPG agent forwarding** — `setting.gpg_agent_support=true` signs commits (`git commit -S`) with the keys in your host gpg-agent. Private keys never enter the container. Verify with `claude-dockerized doctor`.
+- **Global git configuration** — mount `~/.gitconfig` (see the examples below).
+- **Default model** — `setting.model=sonnet` (passed as `--model`; `/model` still works per session).
+- **LSP servers** — `setting.lsp=true` plus `setting.lsp_servers=go,ts,python,rust` installs them into the generated home and writes `.lsp.json`.
+- **Formatters** — `setting.formatters=true` installs the formatters and enables their plugins.
 
 #### Config Format
 
@@ -426,86 +462,87 @@ mount.gitconfig=~/.gitconfig:/home/coder/.gitconfig
 #   CLAUDE_CODE_OAUTH_TOKEN=...
 ```
 
-#### Examples
+Common setups:
 
-**Example 1: Git configuration with SSH agent forwarding (Recommended)**
+#### Example 1: Git configuration with SSH agent forwarding (recommended)
+
 ```ini
 setting.ssh_agent_support=true
 mount.gitconfig=~/.gitconfig:/home/coder/.gitconfig
 ```
 
-Your private keys never enter the container: only `SSH_AUTH_SOCK` and the non-secret `~/.ssh/config`/`known_hosts` are shared (read-only). Do not mount `~/.ssh` — it is refused.
+Private keys never enter the container: only `SSH_AUTH_SOCK` and the non-secret `~/.ssh/config` / `known_hosts` are shared read-only. Mounting `~/.ssh` is refused.
 
-**Example 2: Commit signing with the host GnuPG agent**
+#### Example 2: Commit signing with the host GnuPG agent
+
 ```ini
 setting.gpg_agent_support=true
 mount.gitconfig=~/.gitconfig:/home/coder/.gitconfig
 ```
-Inside the container, configure git to use your signing key (e.g. `git config --global user.signingkey <KEYID>` and `commit.gpgsign true`). Only the public keyring and the host `gpg-agent` socket are shared; private keys stay on the host. It prefers the restricted `S.gpg-agent.extra` socket. Verify with `claude-dockerized doctor`.
 
-**Important:** many Docker setups cannot bind a socket under a per-user tmpfs (`/run/user/<uid>/gnupg/…`) — they create an empty directory instead. The wrapper transparently relays the agent socket through a socket on a normal filesystem (under `~/.config/claude-dockerized/gnupg-relay/`) using `socat`, and mounts that. Install `socat` on the host.
+Inside the container, point git at your key (`git config --global user.signingkey <KEYID>` and `commit.gpgsign true`). Only the public keyring and the host `gpg-agent` socket are shared; private keys stay on the host. The restricted `S.gpg-agent.extra` socket is preferred. Verify with `claude-dockerized doctor`.
 
-Pinentry runs on the **host** agent, so it is independent of the container's desktop.
+Two details that surprise people:
 
-**Example 3: API keys and credentials (per-profile secrets file)**
+- **Socket relay.** Many Docker setups cannot bind a socket that lives on a per-user tmpfs (`/run/user/<uid>/...`), where `gpg-agent` and common SSH agents keep theirs. The wrapper then relays it through a socket on a normal filesystem (`~/.config/claude-dockerized/agent-relay/<pid>-<kind>/`) with `socat`, and mounts the relay. Install `socat` on the host; without it you get a warning and the raw socket is mounted.
+- **Pinentry** runs on the **host** agent, so it is independent of the container's desktop.
+
+#### Example 3: API keys (per-profile secrets file)
+
 ```bash
 ccd profile edit work env      # creates ~/.config/claude-dockerized/profiles/work/env (chmod 600)
 ```
 
 Add one `KEY=VALUE` per line. The file is passed with `docker --env-file`, so values never appear on the command line; the file itself is never mounted, and a profile never sees another profile's file.
 
-**Example 4: LSP servers**
+#### Example 4: LSP servers
+
 ```ini
 setting.lsp=true
 setting.lsp_servers=ts,python
 ```
+
 Binaries install into `~/.config/claude-dockerized/profiles/default/home/.local/bin/` (on `PATH` in the container) and `.lsp.json` is generated. Everything persists across rebuilds. Check with `claude-dockerized doctor`.
 
-**Note:**
-- **SSH Agent Support**: Use `setting.ssh_agent_support=true` instead of mounting `~/.ssh` (refused). Several sessions can forward the same agent at once; a socket on the `/run` tmpfs is relayed per session
-- **GnuPG Agent Support**: Use `setting.gpg_agent_support=true` instead of mounting `~/.gnupg` (refused). Each session gets its own mirror of the public material and its own relay
-- Mounts are **read-only by default** (append `:rw` for read-write)
-- Paths use `~` which is expanded to your home directory at runtime
-- Re-run `./install.sh` anytime to update your custom configuration
+#### Notes
+
+- **Never mount `~/.ssh` or `~/.gnupg`**: both are refused. Forward the agents instead (`setting.ssh_agent_support`, `setting.gpg_agent_support`).
+- **Several sessions can share one agent**: each session forwards the same host agent through its own relay, and GnuPG gets its own mirror of the public material.
+- **Mounts are read-only by default**; append `:rw` for read-write.
+- **`~` expands** to your home directory at run time.
+- **Re-run `./install.sh`** any time to refresh your configuration.
 
 ## 🌍 Portability & Sharing
 
-**This setup is fully portable!** It uses `$HOME` instead of hardcoded paths and works across different users and systems.
+The wrapper is portable by design: it resolves everything from `$HOME`, and all
+of its state lives in one directory.
 
-```bash
-git init
-git add .
-git commit -m "Initial Claude Docker setup"
-git remote add origin <your-repo-url>
-git push -u origin master
-```
-
-Users can then:
-```bash
-curl -fsSL https://raw.githubusercontent.com/yukiteruamano/claude-dockerized/master/install.sh | bash
-claude-dockerized build
-claude-dockerized run
-```
+- **Move machines:** copy `~/.config/claude-dockerized/`, then re-run `./install.sh` on the target and rebuild the image.
+- **New machine:** `curl -fsSLO .../install.sh`, inspect it, `bash install.sh`, `claude-dockerized build`, `claude-dockerized auth`, `claude-dockerized run`.
+- **Reinstall/repair:** `claude-dockerized install` is idempotent; `config sync` refreshes the security layer from the repo.
+- **No host toolchain:** Docker is the only requirement; Claude Code, Node.js and Python tooling live in the image.
 
 ### Platform Compatibility
 
-- **Linux**: Works out of the box
-- **macOS**: Works with Docker Desktop
-- **Windows (WSL2)**: Works in WSL2 terminal
-- **Windows (Native)**: Use WSL2 instead
+| Platform | Status |
+| --- | --- |
+| Linux | works out of the box |
+| macOS | works with Docker Desktop |
+| Windows (WSL2) | works from the WSL2 terminal |
+| Windows (native) | use WSL2 instead |
 
 ### What to Share
 
-✅ Safe to share:
-- Dockerfile
-- Shell scripts and hooks
-- Documentation
-- .gitignore
+**Safe to share** — no secrets, no personal state: the `Dockerfile`, `install.sh` and the other scripts, the hooks and policies, and the docs.
 
-❌ Never share:
-- Secrets file (`env`) or `.credentials.json`
-- Personal `~/.config/claude-dockerized/profiles/default/home/` state
-- Personal `.mcp-auth/` (MCP OAuth tokens)
+**Never share** — everything under your own state:
+
+- a profile's `env` file and `.credentials.json` (your logins);
+- `~/.config/claude-dockerized/profiles/<name>/home/` (sessions, plugins, MCP state);
+- `.mcp-auth/` (OAuth tokens of MCP proxy servers);
+- `backups/pre-profiles-*` (they keep the credentials of that moment).
+
+None of these live in the repo: the wrapper writes them under `$CONFIG_DIR` with `0600` and never mounts that directory.
 
 ## 🔍 Advanced Usage
 
@@ -521,18 +558,22 @@ uv run python script.py         # Run scripts in isolated environment
 
 ### Adding Additional Tools
 
-Edit `Dockerfile`:
+System packages belong in the image, so edit the `Dockerfile` (one `RUN` layer,
+cache cleaned in the same layer) and rebuild:
 
 ```dockerfile
-RUN apt-get update && apt-get install -y \
-    git \
-    curl \
-    bash \
-    ca-certificates \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    some-tool \
     && rm -rf /var/lib/apt/lists/*
 ```
 
-Then rebuild: `claude-dockerized build`.
+```bash
+claude-dockerized build
+```
+
+Language tooling that you want to keep across rebuilds (LSP servers,
+formatters) does not belong in the image: install it with `setting.lsp` /
+`setting.formatters`, or drop it in the generated home's `.local/bin`.
 
 ### Pinned Claude Code version
 
@@ -570,7 +611,7 @@ needs a typed interactive confirmation. Maintainers: see
 [.github/release-keys/README.md](.github/release-keys/README.md).
 
 | Command | Exit status |
-|---------|-------------|
+| --- | --- |
 | `update --check` | 0 up to date · 100 update available · 1 error |
 | `update`, `rollback`, `build` | 0 success · 1 error |
 | `doctor` | 0 all checks pass · 1 any check failed |
@@ -581,7 +622,7 @@ needs a typed interactive confirmation. Maintainers: see
 Defaults keep the runtime unchanged. Opt in with `setting.hardening`:
 
 | Profile | Adds |
-|---------|------|
+| --- | --- |
 | `off` (default) | — |
 | `standard` | `--init`, `--pids-limit 4096`, private IPC |
 | `strict` | standard + read-only root filesystem (tmpfs for `/tmp` and caches), read-only plugins / agents / commands / `~/.local/bin` and project `.git` hooks/config (skills are read-only in every profile), bridge network unless `setting.network` is set |
@@ -626,13 +667,31 @@ claude-dockerized build
 ### Container Won't Start
 
 ```bash
-# Check Docker is running
+# Is the daemon running?
 docker info
 
-# Remove and rebuild
-docker rm -f claude-dockerized
+# Leftover containers? Names are claude-<project>-<suffix> (or claude-<profile>-...)
+docker ps -a --filter name=claude-
+
+# Rebuild the image and re-run the checks
 claude-dockerized build
+claude-dockerized doctor
 ```
+
+### "GnuPG agent socket not available"
+
+- Launch the agent: `gpgconf --launch gpg-agent` (or leave `setting.gpg_autostart_agent=true`, the default, which does it for you).
+- The restricted `S.gpg-agent.extra` socket is preferred; the full-control socket needs `setting.gpg_allow_main_socket=true`.
+- If the socket lives under `/run/user/<uid>/`, the relay needs `socat` on the host.
+
+### "Could not start the ... relay"
+
+Install `socat` on the host (`apt install socat`, `brew install socat`) and re-run. Without it the agent socket is mounted directly, which fails on a `/run/user/<uid>` tmpfs.
+
+### Leftover session directories
+
+- `claude-dockerized clean` drops stale relays.
+- Per-session GnuPG mirrors (`profiles/<name>/home/.gnupg-sessions/`) are removed when their session ends, and purged by the next run when the PID is gone or belonged to a previous boot. They are safe to delete by hand while no session runs.
 
 ### Claude Code Not Updating
 
@@ -652,7 +711,11 @@ something, `claude-dockerized rollback`.
 
 ### Login Lost / MCP needing re-auth
 
-Your login lives in `~/.config/claude-dockerized/profiles/default/home/.claude/.credentials.json`. If it is missing, re-run `claude-dockerized auth`. Check `claude-dockerized doctor` first.
+Your login lives in `~/.config/claude-dockerized/profiles/<name>/home/.claude/.credentials.json` (`config credentials path` prints the exact path). If it is missing, re-run `claude-dockerized auth`. Run `claude-dockerized doctor` first if you are not sure what broke.
+
+### Two sessions interfere with each other
+
+They should not: agents are forwarded per session (see [Multiple concurrent sessions](#multiple-concurrent-sessions)). What is still shared is the profile home — two sessions of the *same* profile share `.claude.json`, `settings.json` and the login — so use one profile per concurrent session if you see preference or re-login churn.
 
 ## 📁 File Reference
 
@@ -669,16 +732,18 @@ Your login lives in `~/.config/claude-dockerized/profiles/default/home/.claude/.
 
 ### Shared Modules
 
-- **`lib/config-lib.sh`** - Entry point of the shared library: constants, config parsing/saving and image helpers; sources the modules below
-- **`lib/mounts-lib.sh`** - Docker arguments: mounts and their validation, env, hardening profiles, project path checks
-- **`lib/layer-lib.sh`** - Security layer: managed policy and settings generation, hooks mirror, sync and checks
-- **`lib/agent-lib.sh`** - Forwarded GnuPG/SSH agents and the socket relay
-- **`lib/lsp-lib.sh`** - Opt-in LSP servers and formatters
+- **`lib/config-lib.sh`** - Entry point of the shared library: constants, config parsing/saving and image helpers; sources the modules below. Sourced by every script; not executable directly
+- **`lib/mounts-lib.sh`** - `docker run` arguments: mount plan and its validation, env, hardening profiles, project path checks
+- **`lib/layer-lib.sh`** - Security layer: managed policy and settings generation, hooks/policies mirror, sync and checks
+- **`lib/agent-lib.sh`** - Forwarded GnuPG/SSH agents: per-session public GnuPG mirror, agent socket resolution and the socket relay
+- **`lib/profile-lib.sh`**, **`lib/profile-cmd-lib.sh`** - Account profiles: selection, per-profile home, config overlay with the loosening guard, legacy migration, and the `profile`/`profiles` commands
+- **`lib/lsp-lib.sh`** - Opt-in LSP servers and formatters (installed into the generated home)
 - **`lib/wizard-lib.sh`** - Interactive configuration prompts
 - **`lib/install-lib.sh`** - Install wizard library sourced by the wrapper's `install` command
 - **`lib/update-lib.sh`** - Verified self-update (trust store, signature checks, origin pin, rollback)
 - **`lib/integrity-lib.sh`** - Session integrity check and audit log
 - **`lib/ui-lib.sh`**, **`lib/help-lib.sh`**, **`lib/diag-lib.sh`** - Output helpers, help texts, Docker preflight / doctor / version
+- **`lib/migrate-settings.js`** - Node helper that strips policy keys from a legacy `settings.json`
 - **`lib/doctor-container.sh`** - Diagnostics run inside the container by `doctor`
 
 ### Security Layer
@@ -687,14 +752,16 @@ Your login lives in `~/.config/claude-dockerized/profiles/default/home/.claude/.
 - **`hooks/guard-eval.js`** - Vendored-pattern evaluator used by the bash hook
 - **`policies/unsafe-tool-patterns.json`**, **`policies/prompt-injection-patterns.json`** - Vendored pattern sets
 - **`policies/allow-patterns.json`** - Local allowlist (e.g. `.env.example`)
+- **`policies/VERSION`** - Mirror marker: a newer repo copy refreshes the installed one
 - **`policies/README.md`** - Provenance and refresh instructions
 
 ### Tests
 
-- **`tests/run-all.sh`** - Runs every suite (`--integration` adds the Docker runtime checks, `--verbose` lists known gaps)
+- **`tests/run-all.sh`** - Runs every suite (`--integration` adds the Docker runtime checks, `--verbose` lists known gaps, `--no-skip` fails on self-skipped suites)
 - **`tests/*.test.mjs`** - Guard: regression cases, bypass corpus (`tests/fixtures/guard-corpus.json`), fail-closed behavior, policy data, hook wiring, settings merge
-- **`tests/*.test.sh`** - Wrapper: docker argv, mounts, config, hardening, integrity, self-update, supply chain, LSP installs, CLI/UI contract, threat-matrix traceability
+- **`tests/*.test.sh`** - Wrapper: docker argv, mounts, profiles, config parsing, hardening, integrity, self-update, supply chain, LSP installs, CLI/UI contract, threat-matrix traceability
 - **`tests/integration/container.test.sh`** - Runtime contract inside the real image (skips without Docker)
+- **`tests/lib/`** - Shared helpers (`assert.sh`, `hook-runner.mjs`); known gaps are XFAIL and turn red once fixed
 
 ### Shell Completion (`completions/`)
 
@@ -708,8 +775,9 @@ Your login lives in `~/.config/claude-dockerized/profiles/default/home/.claude/.
 ### Documentation & Meta
 
 - **`SECURITY.md`** - Security overview, known limitations, vulnerability reporting
-- **`docs/security/`** - Threat model (T-01…T-30) and the Red (attacks), Blue (controls, detection, response) and Yellow (secure development) playbooks
+- **`docs/security/`** - Threat model (T-01…T-35) with the Red (attacks), Blue (controls, detection, response) and Yellow (secure development) playbooks
 - **`CONTRIBUTING.md`** - Contribution workflow and local checks (CI parity)
+- **`AGENTS.md`** - Conventions for humans and agents working on the repo
 - **`.shellcheckrc`**, **`.hadolint.yaml`**, **`.editorconfig`** - Linter/formatter configuration
 
 ### Configuration
@@ -719,22 +787,22 @@ Your login lives in `~/.config/claude-dockerized/profiles/default/home/.claude/.
 
 ### How It Works
 
-1. **Base Image**: Uses Debian Trixie slim for minimal footprint
-2. **Docker CLI Only**: Installs only Docker CLI (uses host's Docker daemon via the opt-in socket)
-3. **Development Tools**: Includes Node.js (via NVM), Python tooling (via uv), Git, jq, ripgrep and essential CLI tools
-4. **Claude Code Installation**: Installs the pinned native binary (`v2.1.311`) via the official installer (`https://claude.ai/install.sh`)
-5. **User Management**: Creates non-root `coder` user; the wrapper runs the container as your host UID/GID with `--user` and joins the image's `coder` group with `--group-add coder` (group-writable home), so no root process and no runtime remapping
-6. **Entrypoint**: Resolves the project workdir, loads NVM/Node and execs Claude Code as the unprivileged user
-7. **Volume Mounting**: Mounts only necessary files/dirs with appropriate permissions (managed files read-only, state read-write)
+1. **Base image** — Debian Trixie slim, pinned by digest.
+2. **Docker CLI only** — no daemon; the host daemon is used through the opt-in socket, with no privileges.
+3. **Development tools** — Node.js (via NVM), Python tooling (uv), git, jq, ripgrep and the usual CLI tools, all pinned.
+4. **Claude Code** — the pinned native binary (`2.1.311`) from the official installer (`https://claude.ai/install.sh`), never npm.
+5. **User** — a non-root `coder` user exists in the image, but the wrapper runs the container as *your* UID/GID (`--user`) and joins the `coder` group (`--group-add`), so no root process and no runtime remapping.
+6. **Entrypoint** — resolves the project workdir, loads NVM/Node and execs the command unprivileged.
+7. **Mounts** — only what is needed, with the right mode: managed files read-only, state read-write.
 
 ### The Blast Radius Concept
 
-If Claude Code runs a dangerous command like `rm -rf .`:
+If Claude Code runs something dangerous like `rm -rf .`:
 
-- ❌ **Without Docker**: Could delete your entire home directory
-- ✅ **With Docker**: Only affects the mounted project directory
+- **Without the container**: it could delete your entire home directory.
+- **With the container**: it can only affect the project directory you mounted.
 
-This significantly reduces risk while maintaining full functionality.
+That is the whole point of the sandbox: full functionality, bounded damage.
 
 ## 📚 Additional Resources
 
@@ -743,35 +811,35 @@ This significantly reduces risk while maintaining full functionality.
 
 ## ⚠️ Important Notes
 
-1. **Docker Socket (opt-in)**: Not mounted by default. Set `setting.docker_socket=true` to use the host's Docker daemon — it is root-equivalent on the host, so enable it only when required.
-2. **Network Access**: Container uses host network mode by default for convenience (`setting.network=bridge` for more isolation)
-3. **Configuration Updates**: The managed policy and hooks live in the generated home and are mounted **read-only**; modify wrapper settings on the host (`config edit`) and re-run. Auth/MCP-OAuth live in read-write mounts, so `auth`/`mcp login` keep working
-4. **Persistent Data**: Project files plus the whole `~/.config/claude-dockerized/profiles/default/home/` state tree persist across restarts and rebuilds
-5. **No sudo/apt inside**: The image ships no sudo — the agent runs as the host user, never as root, with all Linux capabilities dropped and `no-new-privileges` set, so it cannot escalate by design
-6. **No self-updates**: Claude Code never updates itself inside the container (`DISABLE_AUTOUPDATER=1`); use `claude-dockerized update`
-7. **Not a Replacement for Caution**: Review Claude Code's actions, especially with permissive settings
+1. **Docker socket (opt-in).** Never mounted by default. `setting.docker_socket=true` gives the session the host daemon, which is root-equivalent on the host: enable it only when you need it.
+2. **Network.** `--network host` is the default for convenience (host loopback services are reachable). Use `setting.network=bridge` or `setting.hardening=strict` for more isolation.
+3. **Configuration.** The managed policy and hooks are mounted **read-only**: change wrapper settings on the host (`config edit`, then `config sync`). Auth and MCP OAuth live in read-write mounts, so `auth` and `mcp login` keep working.
+4. **Persistence.** Project files and the whole `profiles/<name>/home/` state tree survive restarts and rebuilds.
+5. **No privilege escalation.** The image ships no `sudo`, the container runs as your host user with all capabilities dropped and `no-new-privileges`, so it cannot become root inside.
+6. **No self-updates.** Claude Code never updates itself in the container (`DISABLE_AUTOUPDATER=1`); use `claude-dockerized update`.
+7. **Not a replacement for caution.** Review what the agent does, especially with permissive settings or the Docker socket enabled.
 
 ## 🚀 Performance Optimizations
 
-This setup is optimized for minimal overhead:
+The setup is built for minimal overhead:
 
-- **Docker CLI Only**: Only installs Docker CLI (not the full daemon), saving ~200MB
-- **Host Docker Daemon (opt-in)**: Uses your existing Docker daemon via socket mounting when `setting.docker_socket=true`
-- **No Privileged Mode**: No need for `--privileged` flag or Docker-in-Docker
-- **Shared Resources**: Shares Docker images/containers with host (no duplication)
-- **Fast Startup**: No daemon initialization delay
-- **Slim image**: LSP servers and formatters live in the generated home, not the image
+- **Docker CLI only** — no daemon in the image (about 200 MB saved).
+- **Host daemon, opt-in** — reuse the running daemon through the socket when `setting.docker_socket=true`; no Docker-in-Docker.
+- **No privileged mode** — none of the `--privileged` machinery.
+- **Shared image cache** — the image and layers are the host's.
+- **Fast startup** — nothing to initialize; `docker run` and go.
+- **Slim image** — LSP servers and formatters live in the generated home, not in the image.
 
 ## 🧪 Testcontainers Support
 
-**Testcontainers support is available** (opt-in). Enable the host Docker socket first:
+**Testcontainers support is opt-in.** Enable the host Docker socket first:
 
 ```ini
 # ~/.config/claude-dockerized/config
 setting.docker_socket=true
 ```
 
-Then your integration tests can spin up Docker containers (they run on your **host's** Docker daemon, not inside the Claude container).
+Your integration tests can then start containers — on the **host's** Docker daemon, not inside the Claude container. Remember that this socket is root-equivalent on the host.
 
 ## 📄 License
 
@@ -788,21 +856,19 @@ This project uses and packages the following third-party software:
 
 ## 🤝 Contributing
 
-Contributions are welcome! Here's how you can help:
+Contributions are welcome.
 
-1. **Fork the repository**
-2. **Create a feature branch** (`git checkout -b feature/amazing-feature`)
-3. **Make your changes** and test them (`node tests/claude-guard.test.mjs`, `bash tests/wrapper-args.test.sh`)
-4. **Commit your changes** (`git commit -m 'Add amazing feature'`)
-5. **Push to the branch** (`git push origin feature/amazing-feature`)
-6. **Open a Pull Request**
+1. **Fork** the repository and create a branch (`git checkout -b feature/amazing-feature`).
+2. **Make your change** and run the checks: `bash tests/run-all.sh`, `uvx --from shellcheck-py shellcheck -x -S warning …`.
+3. **Commit** (`git commit -m 'Add amazing feature'`) and **push** the branch.
+4. **Open a Pull Request**.
 
 ### Guidelines
 
-- Follow existing shell script style (see [AGENTS.md](AGENTS.md) for conventions)
-- Test changes with both `claude-dockerized` and `run-simple.sh`
-- Update documentation for new features
-- Keep security as a priority
+- Follow the conventions in [AGENTS.md](AGENTS.md): kebab-case scripts, snake_case functions, quoted variables, arrays for Docker arguments.
+- Read [CONTRIBUTING.md](CONTRIBUTING.md) for the full check list (CI parity) and [docs/security/YELLOW.md](docs/security/YELLOW.md) before touching the hooks or the mount plan.
+- Update the docs for user-visible changes: this README, [SECURITY.md](SECURITY.md) and the [threat model](docs/security/THREAT-MODEL.md) when you add or close a threat.
+- Keep security the priority: never weaken a deny rule without a documented reason and a test.
 
 ---
 

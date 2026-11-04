@@ -31,9 +31,10 @@ docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:stable -x -S warning 
 cat Dockerfile | docker run --rm -i hadolint/hadolint:latest hadolint -
 
 # 4. All test suites (Node.js 22+; no Docker needed)
-bash tests/run-all.sh             # guard, bypass corpus, wrapper, mounts, config, update, CLI
-bash tests/run-all.sh --verbose   # …and list every documented known gap
-bash tests/run-all.sh --integration  # + container runtime checks (needs Docker)
+bash tests/run-all.sh                 # every suite: guard, corpus, wrapper, mounts, profiles, config, update, CLI, threat matrix
+bash tests/run-all.sh --verbose       # …and list every documented known gap
+bash tests/run-all.sh --no-skip       # fail instead of skipping a suite that skips itself
+bash tests/run-all.sh --integration   # + container runtime checks (needs Docker)
 ```
 
 ## Style
@@ -42,7 +43,7 @@ bash tests/run-all.sh --integration  # + container runtime checks (needs Docker)
   snake_case functions, UPPER_SNAKE constants, quoted variables, `$()`, arrays
   for Docker arguments).
 - Every executable script starts with `#!/bin/bash` + `set -e`;
-  every `lib/*.sh` file is a sourced library and must **not** use `set -e`. Keep one responsibility per module (config-lib, mounts-lib, layer-lib, agent-lib, lsp-lib, wizard-lib, ...) and split a file before it passes ~500 lines.
+  every `lib/*.sh` file is a sourced library and must **not** use `set -e`. Keep one responsibility per module (`config-lib`, `mounts-lib`, `layer-lib`, `agent-lib`, `profile-lib`, `profile-cmd-lib`, `lsp-lib`, `wizard-lib`, ...) and split a file before it passes ~500 lines.
 - The binary is `bin/claude-dockerized` (no extension), reached via
   `<install>/bin` on PATH. Nothing is ever placed in `~/.local/bin`
   (no symlink, stub or copy).
@@ -79,5 +80,12 @@ attack" workflow ([RED](docs/security/RED.md) / [BLUE](docs/security/BLUE.md)).
 
 ## Docs
 
-Update `README.md` (and `SECURITY.md` where relevant) for user-visible
-changes. The wrapper config lives at `~/.config/claude-dockerized/config`.
+The documentation is part of the change, not an afterthought:
+
+- **`README.md`** — user-visible behavior: commands, settings, mounts, troubleshooting. Keep it accurate; it is the first thing anyone reads.
+- **`SECURITY.md`** — the index of the security documents and the summary of what is enforced, the known limitations and how to report a vulnerability.
+- **`docs/security/THREAT-MODEL.md`**, **`RED.md`**, **`BLUE.md`**, **`YELLOW.md`** — the matrix, the attacks, the controls and the rules. `tests/threat-matrix.test.sh` keeps them in sync with the tests: a new threat id needs a row, a RED entry, a BLUE control and a test that references it.
+- **`AGENTS.md`** — the map of the repo and the conventions, for humans and agents alike.
+- **`examples/config.example`** — every setting with its default; it is the reference for `setting.*`.
+
+The wrapper config lives at `~/.config/claude-dockerized/config` (never committed).
