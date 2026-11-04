@@ -2,6 +2,20 @@
 
 Releases are signed annotated tags (`docs/security/YELLOW.md#releases`).
 
+## 0.4.6
+
+### Changed
+
+- Documentation only: no code or behavior change.
+  - `README.md` re-synced with the profile layout and the per-session agent state: accurate state tree (`profiles/<name>/{config,env,home/}` plus `profiles.map`, `trust`, `state`, `audit/`, `backups/`, `agent-relay/<pid>-<kind>/`), the relay paths, the current command list, working troubleshooting steps (no more `docker rm -f claude-dockerized`) and a complete File Reference.
+  - Long run-on bullets became sub-sections and one-idea bullets; the examples are headings now; one mounts row used a `|` inside inline code and broke the table, which is fixed.
+  - `SECURITY.md`, `docs/security/THREAT-MODEL.md` and `AGENTS.md` follow the matrix to T-35 and state the limits of concurrent sessions (shared profile home, one pinentry at a time).
+  - Quick Start pins `CCODE_REF=v0.4.5` instead of the stale `v1.2.0`.
+
+### Fixed
+
+- The `0.4.4` heading was missing from this file, so its entry (LSP/formatter installs) appeared under `0.4.5`.
+
 ## 0.4.5
 
 ### Fixed
@@ -14,6 +28,7 @@ Releases are signed annotated tags (`docs/security/YELLOW.md#releases`).
   - An enabled GnuPG forwarding with no host `GNUPGHOME` no longer mounts an empty `~/.gnupg`.
 - Documented the multi-session model (per-session agent state, the profile home still shared, one pinentry at a time) and added the threat it isolates (T-35).
 
+## 0.4.4
 
 ### Fixed
 
