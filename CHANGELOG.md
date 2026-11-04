@@ -2,6 +2,18 @@
 
 Releases are signed annotated tags (`docs/security/YELLOW.md#releases`).
 
+## 0.4.2
+
+### Fixed
+
+- `update`:
+  - A rebuild that fails after the code was fast-forwarded is now finished by the next `update` (it used to answer "Already up to date" and leave the old image); `update --check` reports the pending rebuild.
+  - `rollback` restores `:prev` only when the last update rebuilt the image (a `--no-build` update used to be rolled back onto an older image), and an image-only rebuild (`--claude-version` with the code up to date) gets its own rollback point instead of moving the code back.
+  - The rollback point is committed only after the fast-forward succeeds, so a refused merge keeps the previous one.
+  - A release tag must carry its own name in the signed payload: a validly signed tag republished under another name is refused.
+  - A checkout ahead of upstream is "up to date" (not "diverged"), and a newer release that does not descend from the checkout is reported as a divergence instead of being ignored.
+  - A failed security-layer refresh after an update is reported (exit 1) instead of "Update complete"; a worktree checkout (`.git` as a file) can update; a pin that differs from the Dockerfile default is called out.
+
 ## 0.4.1
 
 ### Changed
