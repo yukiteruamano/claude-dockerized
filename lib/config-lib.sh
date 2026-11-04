@@ -33,10 +33,11 @@ else
 fi
 CCODE_HOME="${CCODE_HOME:-$PROFILES_DIR/default/home}"
 
-# Directory holding active GPG relay sockets (one subdir per session). The relay
-# lives on a normal filesystem so Docker can bind it (it cannot bind sockets
-# under the per-user /run/user tmpfs).
-GPG_RELAY_DIR="${GPG_RELAY_DIR:-$CONFIG_DIR/gnupg-relay}"
+# Directory holding the active agent relay sockets, one subdir per session and
+# kind (GnuPG, SSH). The relay lives on a normal filesystem so Docker can bind
+# it (it cannot bind sockets under the per-user /run/user tmpfs). GPG_RELAY_DIR
+# is the historical name of the override and still honored.
+SOCKET_RELAY_DIR="${SOCKET_RELAY_DIR:-${GPG_RELAY_DIR:-$CONFIG_DIR/agent-relay}}"
 
 # Self-contained install location (Doom-style). The git checkout lives here;
 # the binary is always <install>/bin/claude-dockerized, reached via PATH.
@@ -137,39 +138,42 @@ declare -a DOCKER_MOUNT_ARGS=() # Array of docker -v arguments (populated by bui
 declare -a DOCKER_ENV_ARGS=()   # Array of docker -e arguments (populated by build_env_args)
 # shellcheck disable=SC2034 # populated here, consumed by callers (bin/claude-dockerized, tests)
 declare -a DOCKER_ENV_FILE_ARGS=() # Array of docker --env-file arguments (populated by build_env_file_args)
-declare -a VOLUME_ARGS=()       # Array of standard volume mount arguments (populated by build_standard_volume_args)
-declare -a GIT_WORKTREE_ARGS=() # Array of docker args for git worktree support (populated by build_git_worktree_args)
+declare -a VOLUME_ARGS=()          # Array of standard volume mount arguments (populated by build_standard_volume_args)
+declare -a GIT_WORKTREE_ARGS=()    # Array of docker args for git worktree support (populated by build_git_worktree_args)
 # Every setting.* default, in one place: sourced once and re-applied by
 # load_config before it reads the file.
 config_reset_settings() {
-    SSH_AGENT_SUPPORT=false         # Boolean flag for SSH agent forwarding support
-    GPG_AGENT_SUPPORT=false         # Boolean flag for GnuPG agent forwarding (git signing)
-    GPG_ALLOW_MAIN_SOCKET=false     # Allow fallback to the full-control agent socket
-    GPG_AUTOSTART_AGENT=true        # Launch the host gpg-agent when its socket is missing
-    GPG_RELAY=true                  # Relay the agent socket through a normal-fs socket
-    DOCKER_SOCKET=false             # Boolean flag: mount the host Docker socket (opt-in, root-equivalent)
-    NETWORK="host"                  # Container network: host (default, simple) | bridge (more isolated)
-    SECURITY_POLICY="balanced"      # Security policy mode: strict | balanced | none ("off" accepted as alias for none)
-    HARDENING="off"                 # Runtime hardening profile: off (default, unchanged) | standard | strict (opt-in)
-    INTEGRITY_CHECK=true            # Fingerprint persistent paths before/after each session and report changes
-    IMAGE_STRIP_SETUID=false        # Build the image without setuid/setgid bits (opt-in)
-    IMAGE_DOCKER_CLI=true           # Build the image with the Docker CLI (needed only with docker_socket)
-    NETWORK_EXPLICIT=false          # setting.network was set in the config (strict keeps an explicit choice)
-    MEMORY=""                       # Optional container memory limit (docker --memory), e.g. 4g
-    CPUS=""                         # Optional container CPU limit (docker --cpus), e.g. 2
-    DEFAULT_PROFILE=""              # setting.profile: profile used when nothing selects one (empty = default)
-    ENV_FILE=""                     # Per-profile dotenv secrets file (docker --env-file); load_config sets it to <profile>/env when present
-    SHARE_SKILLS=false              # Mount the default profile's skills read-only instead of this profile's own
-    LSP_FROM=""                     # "default": mount the default profile's .local/bin read-only (no per-profile LSP installs)
-    CLAUDE_MODEL=""                 # Optional default model (passed as --model); empty = Claude default / last /model choice
-    CLEANUP_DAYS="7"                # Local session-data retention (managed cleanupPeriodDays); empty = Claude default
-    LSP_ENABLED=false               # Enable native LSP support (binaries + .lsp.json live in CCODE_HOME)
-    LSP_SERVERS="ts,python"         # CSV of language servers to configure when setting.lsp=true
-    FORMATTERS_ENABLED=false        # Enable native formatters (binaries + enabledPlugins in CCODE_HOME)
+    SSH_AGENT_SUPPORT=false     # Boolean flag for SSH agent forwarding support
+    GPG_AGENT_SUPPORT=false     # Boolean flag for GnuPG agent forwarding (git signing)
+    GPG_ALLOW_MAIN_SOCKET=false # Allow fallback to the full-control agent socket
+    GPG_AUTOSTART_AGENT=true    # Launch the host gpg-agent when its socket is missing
+    GPG_RELAY=true              # Relay the agent socket through a normal-fs socket
+    DOCKER_SOCKET=false         # Boolean flag: mount the host Docker socket (opt-in, root-equivalent)
+    NETWORK="host"              # Container network: host (default, simple) | bridge (more isolated)
+    SECURITY_POLICY="balanced"  # Security policy mode: strict | balanced | none ("off" accepted as alias for none)
+    HARDENING="off"             # Runtime hardening profile: off (default, unchanged) | standard | strict (opt-in)
+    INTEGRITY_CHECK=true        # Fingerprint persistent paths before/after each session and report changes
+    IMAGE_STRIP_SETUID=false    # Build the image without setuid/setgid bits (opt-in)
+    IMAGE_DOCKER_CLI=true       # Build the image with the Docker CLI (needed only with docker_socket)
+    NETWORK_EXPLICIT=false      # setting.network was set in the config (strict keeps an explicit choice)
+    MEMORY=""                   # Optional container memory limit (docker --memory), e.g. 4g
+    CPUS=""                     # Optional container CPU limit (docker --cpus), e.g. 2
+    DEFAULT_PROFILE=""          # setting.profile: profile used when nothing selects one (empty = default)
+    ENV_FILE=""                 # Per-profile dotenv secrets file (docker --env-file); load_config sets it to <profile>/env when present
+    SHARE_SKILLS=false          # Mount the default profile's skills read-only instead of this profile's own
+    LSP_FROM=""                 # "default": mount the default profile's .local/bin read-only (no per-profile LSP installs)
+    CLAUDE_MODEL=""             # Optional default model (passed as --model); empty = Claude default / last /model choice
+    CLEANUP_DAYS="7"            # Local session-data retention (managed cleanupPeriodDays); empty = Claude default
+    LSP_ENABLED=false           # Enable native LSP support (binaries + .lsp.json live in CCODE_HOME)
+    LSP_SERVERS="ts,python"     # CSV of language servers to configure when setting.lsp=true
+    FORMATTERS_ENABLED=false    # Enable native formatters (binaries + enabledPlugins in CCODE_HOME)
 }
 config_reset_settings
-GPG_RELAY_SOCKET=""             # Active relay socket for the current session
-GPG_SOCKET=""                   # Resolved host agent socket (set by build_mount_args)
+GPG_RELAY_SOCKET=""   # Active GnuPG relay socket for the current session
+SSH_RELAY_SOCKET=""   # Active SSH relay socket for the current session
+SSH_CONTAINER_SOCK="" # SSH_AUTH_SOCK path inside the container (set by build_mount_args)
+GPG_SOCKET=""         # Resolved host agent socket (set by build_mount_args)
+GPG_MIRROR_DIR=""     # Per-session GnuPG mirror (set by ensure_gpg_mirror)
 
 # ============================================
 # SHARED HELPERS

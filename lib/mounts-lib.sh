@@ -460,8 +460,8 @@ build_standard_volume_args() {
 mount_bind() {
     local src="$1" dst="$2"
     case "$src$dst" in
-        *,*) DOCKER_MOUNT_ARGS+=(-v "$src:$dst") ;;
-        *) DOCKER_MOUNT_ARGS+=(--mount "type=bind,source=$src,target=$dst") ;;
+    *,*) DOCKER_MOUNT_ARGS+=(-v "$src:$dst") ;;
+    *) DOCKER_MOUNT_ARGS+=(--mount "type=bind,source=$src,target=$dst") ;;
     esac
 }
 
@@ -574,11 +574,16 @@ validate_mount_spec() {
 build_mount_args() {
     DOCKER_MOUNT_ARGS=()
     GPG_SOCKET=""
-    # Stop a relay left over from a previous call in the same process.
+    SSH_CONTAINER_SOCK=""
+    # Stop the relays a previous call in the same process left behind.
     if [ -n "$GPG_RELAY_SOCKET" ]; then
-        stop_gpg_relay "$GPG_RELAY_SOCKET"
+        stop_socket_relay "$GPG_RELAY_SOCKET"
     fi
     GPG_RELAY_SOCKET=""
+    if [ -n "$SSH_RELAY_SOCKET" ]; then
+        stop_socket_relay "$SSH_RELAY_SOCKET"
+    fi
+    SSH_RELAY_SOCKET=""
 
     # Host-side preflight for the forwarded agents (no-op when disabled). It
     # launches the GPG agent if needed and reports why a socket is unusable.
@@ -615,10 +620,28 @@ build_mount_args() {
     # reported why a socket is unusable, so only a valid socket is mounted here.
     if [ "$SSH_AGENT_SUPPORT" = true ]; then
         if [ -n "${SSH_AUTH_SOCK:-}" ] && [ -S "$SSH_AUTH_SOCK" ]; then
+            local ssh_src="$SSH_AUTH_SOCK"
+            # The socket may live on the per-user /run tmpfs, which Docker
+            # cannot bind: relay it through a socket on a normal filesystem.
+            # Every concurrent session gets its own relay, all pointing at the
+            # same host agent (which serves many clients at once).
+            if { [[ "$ssh_src" == /run/* ]] || [ "${SSH_RELAY_FORCE:-false}" = true ]; } && [ "$GPG_RELAY" = true ]; then
+                local ssh_relay
+                if ssh_relay=$(start_socket_relay "$ssh_src" ssh); then
+                    SSH_RELAY_SOCKET="$ssh_relay"
+                    ssh_src="$ssh_relay"
+                    # The relay path is host-side only: point the container at a
+                    # stable path of its own.
+                    SSH_CONTAINER_SOCK="/home/coder/.ssh-agent/ssh"
+                else
+                    config_warning "Could not start the SSH agent relay; is 'socat' installed on the host?"
+                fi
+            fi
+            [ -n "$SSH_CONTAINER_SOCK" ] || SSH_CONTAINER_SOCK="$SSH_AUTH_SOCK"
             # --mount (not -v) so a stale/missing source fails loudly instead
             # of Docker creating a directory at the host socket path, which
             # would break the real ssh-agent.
-            mount_bind "$SSH_AUTH_SOCK" "$SSH_AUTH_SOCK"
+            mount_bind "$ssh_src" "$SSH_CONTAINER_SOCK"
         fi
 
         # Mount only the non-secret SSH files (read-only) so host-key
@@ -641,10 +664,10 @@ build_mount_args() {
     if [ "$GPG_AGENT_SUPPORT" = true ]; then
         GPG_SOCKET=""
         ensure_gpg_mirror
-        if [ -d "$CCODE_HOME/.gnupg" ]; then
-            mount_bind "$CCODE_HOME/.gnupg" "/home/coder/.gnupg"
+        if [ -n "$GPG_MIRROR_DIR" ] && [ -d "$GPG_MIRROR_DIR" ]; then
+            mount_bind "$GPG_MIRROR_DIR" "/home/coder/.gnupg"
         else
-            config_warning "GnuPG agent support enabled but $CCODE_HOME/.gnupg could not be prepared"
+            config_warning "GnuPG agent support enabled but the GnuPG mirror under $CCODE_HOME/.gnupg-sessions could not be prepared"
         fi
 
         local main_socket extra_socket gpg_socket
@@ -671,7 +694,7 @@ build_mount_args() {
             # a normal filesystem and mount that.
             if { [[ "$gpg_socket" == /run/* ]] || [ "${GPG_RELAY_FORCE:-false}" = true ]; } && [ "$GPG_RELAY" = true ]; then
                 local relay
-                if relay=$(start_gpg_relay "$gpg_socket"); then
+                if relay=$(start_socket_relay "$gpg_socket" gnupg); then
                     GPG_RELAY_SOCKET="$relay"
                     mount_socket="$relay"
                 else
@@ -687,9 +710,9 @@ build_mount_args() {
             mount_bind "$mount_socket" "/home/coder/.gnupg-agent/S.gpg-agent"
             # Expose it to gpg through GNUPGHOME with a symlink (gpg follows it).
             # ensure_gpg_mirror clears any previous link before each run.
-            if [ -d "$CCODE_HOME/.gnupg" ]; then
-                ln -sfn "/home/coder/.gnupg-agent/S.gpg-agent" "$CCODE_HOME/.gnupg/S.gpg-agent" 2>/dev/null ||
-                    config_warning "Could not create the GnuPG agent socket symlink in $CCODE_HOME/.gnupg"
+            if [ -n "$GPG_MIRROR_DIR" ] && [ -d "$GPG_MIRROR_DIR" ]; then
+                ln -sfn "/home/coder/.gnupg-agent/S.gpg-agent" "$GPG_MIRROR_DIR/S.gpg-agent" 2>/dev/null ||
+                    config_warning "Could not create the GnuPG agent socket symlink in $GPG_MIRROR_DIR"
             fi
         else
             config_warning "GnuPG agent support enabled but no usable agent socket (extra socket missing and main fallback disabled)"
@@ -707,7 +730,9 @@ build_env_args() {
 
     # Handle SSH agent forwarding if enabled
     if [ "$SSH_AGENT_SUPPORT" = true ]; then
-        if [ -n "$SSH_AUTH_SOCK" ]; then
+        if [ -n "${SSH_CONTAINER_SOCK:-}" ]; then
+            DOCKER_ENV_ARGS+=(-e "SSH_AUTH_SOCK=$SSH_CONTAINER_SOCK")
+        elif [ -n "${SSH_AUTH_SOCK:-}" ]; then
             DOCKER_ENV_ARGS+=(-e "SSH_AUTH_SOCK=$SSH_AUTH_SOCK")
         fi
     fi
@@ -762,9 +787,9 @@ build_env_file_args() {
         exit 1
         ;;
     esac
-    # The generated home (and the GnuPG relay dir) are mounted: a secrets file
+    # The generated home (and the agent relay dir) are mounted: a secrets file
     # there would be readable and rewritable from the session (T-18).
-    if path_within "$env_file" "$(canonical_host_path "$CCODE_HOME")" || path_within "$env_file" "$(canonical_host_path "$GPG_RELAY_DIR")"; then
+    if path_within "$env_file" "$(canonical_host_path "$CCODE_HOME")" || path_within "$env_file" "$(canonical_host_path "$SOCKET_RELAY_DIR")"; then
         config_error "Refusing env file inside the generated home ($CCODE_HOME): it is mounted into the container."
         exit 1
     fi

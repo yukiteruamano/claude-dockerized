@@ -170,13 +170,20 @@ tilde_env_report() {
 }
 check_not "layer check finds an env file written with ~" has_text "env file not found" "$(tilde_env_report)"
 check "layer check accepts its permissions" has_text "env file permissions ok" "$(tilde_env_report)"
-tilde_summary() { (ENV_FILE="~/.config/claude-dockerized/env"; print_config 2>&1); }
+tilde_summary() { (
+    ENV_FILE="~/.config/claude-dockerized/env"
+    print_config 2>&1
+); }
 check "config summary counts the keys of a ~ env file" has_text "(1 keys)" "$(tilde_summary)"
 
 # --- relay dir: stale relays are removed with rm -rf, so the override is constrained ------
-relay_ok() { (GPG_RELAY_DIR="$1"; relay_dir_ok); }
-check "relay dir inside CONFIG_DIR accepted" relay_ok "$CONFIG_DIR/gnupg-relay"
-check "relay dir named like a relay dir under \$HOME accepted" relay_ok "$HOME/run/gnupg-relay"
+relay_ok() { (
+    SOCKET_RELAY_DIR="$1"
+    relay_dir_ok
+); }
+check "relay dir inside CONFIG_DIR accepted" relay_ok "$CONFIG_DIR/agent-relay"
+check "relay dir named like a relay dir under \$HOME accepted" relay_ok "$HOME/run/agent-relay"
+check "legacy gnupg-relay dir name accepted" relay_ok "$HOME/run/gnupg-relay"
 check_not "arbitrary \$HOME directory refused as relay dir" relay_ok "$HOME/Documents"
 check_not "\$HOME itself refused as relay dir" relay_ok "$HOME"
 check_not "/ refused as relay dir" relay_ok /

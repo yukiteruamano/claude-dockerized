@@ -352,7 +352,10 @@ if [ "$have_node" = true ]; then
     ssh_sock="$TMP/ssh-agent.sock"
     node -e 'require("net").createServer().listen(process.argv[1])' "$ssh_sock" >/dev/null 2>&1 &
     ssh_sock_pid=$!
-    for _ in 1 2 3 4 5 6 7 8 9 10; do [ -S "$ssh_sock" ] && break; sleep 0.1; done
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        [ -S "$ssh_sock" ] && break
+        sleep 0.1
+    done
     SSH_AUTH_SOCK="$ssh_sock"
     build_mount_args
     build_env_args
@@ -377,7 +380,8 @@ fi
 SSH_AGENT_SUPPORT=false
 unset SSH_AUTH_SOCK
 
-# GnuPG agent forwarding: only public material is mirrored and mounted.
+# GnuPG agent forwarding: only public material is mirrored and mounted, into a
+# per-session directory (concurrent sessions must never share a keyring).
 mkdir -p "$HOME/.gnupg/private-keys-v1.d"
 : >"$HOME/.gnupg/pubring.kbx"
 : >"$HOME/.gnupg/gpg.conf"
@@ -388,21 +392,29 @@ GPG_AGENT_EXTRA_SOCKET=""
 GPG_AGENT_SUPPORT=true
 # Keep the test hermetic: never launch a real gpg-agent here.
 GPG_AUTOSTART_AGENT=false
+# A shared mirror left by an earlier version must be removed, not mounted.
+mkdir -p "$CCODE_HOME/.gnupg"
+: >"$CCODE_HOME/.gnupg/pubring.kbx"
 build_mount_args
 build_env_args
 gpg_mounts="$(printf '%s\n' "${DOCKER_MOUNT_ARGS[@]}")"
 gpg_envs="$(printf '%s\n' "${DOCKER_ENV_ARGS[@]}")"
-grep -qxF -- "type=bind,source=$CCODE_HOME/.gnupg,target=/home/coder/.gnupg" <<<"$gpg_mounts" ||
-    fail "GnuPG public keyring must be mounted"
+session_mirror="$CCODE_HOME/.gnupg-sessions/$$"
+[ -d "$session_mirror" ] || fail "the GnuPG mirror must live in a per-session directory"
+grep -qxF -- "type=bind,source=$session_mirror,target=/home/coder/.gnupg" <<<"$gpg_mounts" ||
+    fail "GnuPG public keyring must be mounted from the session mirror"
+if [ -e "$CCODE_HOME/.gnupg" ]; then
+    fail "the legacy shared GnuPG mirror must be removed"
+fi
 if grep -q 'private-keys-v1.d' <<<"$gpg_mounts"; then
     fail "private-keys-v1.d must never be mounted"
 fi
 if grep -qF -- "source=$HOME/.gnupg,target" <<<"$gpg_mounts"; then
     fail "host ~/.gnupg must not be mounted directly"
 fi
-[ -f "$CCODE_HOME/.gnupg/pubring.kbx" ] ||
+[ -f "$session_mirror/pubring.kbx" ] ||
     fail "public keyring was not mirrored"
-if [ -e "$CCODE_HOME/.gnupg/private-keys-v1.d" ]; then
+if [ -e "$session_mirror/private-keys-v1.d" ]; then
     fail "private keys must not be mirrored"
 fi
 grep -qx -- 'GNUPGHOME=/home/coder/.gnupg' <<<"$gpg_envs" ||
@@ -411,7 +423,7 @@ grep -qx -- 'CLAUDE_DOCKERIZED_GPG_AGENT=true' <<<"$gpg_envs" ||
     fail "doctor GPG flag must be true when forwarding is enabled"
 
 # The mirrored gpg.conf must disable auto-start (the real agent is on the host).
-grep -qE '^[[:space:]]*no-autostart([[:space:]]|$)' "$CCODE_HOME/.gnupg/gpg.conf" ||
+grep -qE '^[[:space:]]*no-autostart([[:space:]]|$)' "$session_mirror/gpg.conf" ||
     fail "mirrored gpg.conf must contain no-autostart"
 
 # `use-keyboxd` must be mirrored verbatim.
@@ -419,16 +431,111 @@ printf 'use-keyboxd\n' >"$HOME/.gnupg/common.conf"
 mkdir -p "$HOME/.gnupg/public-keys.d"
 : >"$HOME/.gnupg/public-keys.d/pubring.db"
 ensure_gpg_mirror
-grep -qiE '^[[:space:]]*use-keyboxd([[:space:]]|$)' "$CCODE_HOME/.gnupg/common.conf" ||
+grep -qiE '^[[:space:]]*use-keyboxd([[:space:]]|$)' "$GPG_MIRROR_DIR/common.conf" ||
     fail "use-keyboxd must be mirrored into common.conf"
-[ -f "$CCODE_HOME/.gnupg/public-keys.d/pubring.db" ] ||
+[ -f "$GPG_MIRROR_DIR/public-keys.d/pubring.db" ] ||
     fail "keyboxd public DB must be mirrored"
 
-# A stale keyboxd socket from a previous run must be cleared before mounting.
-: >"$CCODE_HOME/.gnupg/S.keyboxd"
+# A stale keyboxd socket in the session directory must be cleared before mounting.
+: >"$GPG_MIRROR_DIR/S.keyboxd"
 ensure_gpg_mirror
-[ ! -e "$CCODE_HOME/.gnupg/S.keyboxd" ] ||
+[ ! -e "$GPG_MIRROR_DIR/S.keyboxd" ] ||
     fail "stale keyboxd socket must be cleared from the mirror"
+
+# Without a host GnuPG home there is nothing to mirror: no empty GNUPGHOME mount.
+gnupghome_saved="$GNUPGHOME"
+export GNUPGHOME="$TMP/no-such-gnupg-home"
+build_mount_args
+if grep -qF -- 'target=/home/coder/.gnupg' <<<"$(printf '%s\n' "${DOCKER_MOUNT_ARGS[@]}")"; then
+    fail "a missing host GnuPG home must not be mounted as an empty keyring"
+fi
+export GNUPGHOME="$gnupghome_saved"
+
+# The legacy shared mirror is removed, unless the user pointed GNUPGHOME at it.
+mkdir -p "$CCODE_HOME/.gnupg"
+export GNUPGHOME="$CCODE_HOME/.gnupg"
+ensure_gpg_mirror
+[ -d "$CCODE_HOME/.gnupg" ] ||
+    fail "a GNUPGHOME that points at the legacy path must be left alone"
+export GNUPGHOME="$gnupghome_saved"
+ensure_gpg_mirror
+[ ! -e "$CCODE_HOME/.gnupg" ] ||
+    fail "the legacy shared GnuPG mirror must be removed"
+
+# A mirror left by a previous boot is stale even when its PID now belongs to a
+# live process (PIDs restart from a low number after a reboot).
+foreign_boot="00000000-0000-0000-0000-000000000000"
+mkdir -p "$(gpg_mirror_root)/1"
+printf '%s\n' "$foreign_boot" >"$(gpg_mirror_root)/1/boot-id"
+cleanup_stale_gpg_mirrors
+if [ -n "$(kernel_boot_id)" ] && [ "$(kernel_boot_id)" != "$foreign_boot" ]; then
+    [ ! -d "$(gpg_mirror_root)/1" ] ||
+        fail "a mirror from a previous boot must be removed even if the PID is alive"
+fi
+
+# Cleanup must only ever remove session directories (<root>/<pid>).
+mkdir -p "$(gpg_mirror_root)/not-a-session"
+cleanup_stale_gpg_mirrors
+[ -d "$(gpg_mirror_root)/not-a-session" ] ||
+    fail "cleanup must only remove session directories"
+rm -rf "$(gpg_mirror_root)/not-a-session"
+
+# Two concurrent sessions (one process each) must never share a mirror, and
+# ending one must leave the other intact (T-35).
+cat >"$TMP/session.sh" <<'EOF'
+#!/bin/bash
+# One simulated wrapper session: build the mirror, hold it open, tear it down.
+set -u
+export HOME="$1" CONFIG_DIR="$2" CCODE_HOME="$3" GNUPGHOME="$4"
+# shellcheck source=/dev/null
+source "$5/lib/config-lib.sh"
+GPG_AGENT_SUPPORT=true
+ensure_gpg_mirror
+[ -n "$GPG_MIRROR_DIR" ] || exit 1
+: >"$GPG_MIRROR_DIR/peer-marker"
+printf '%s\n' "$GPG_MIRROR_DIR" >"$6"
+while [ -f "$7" ]; do sleep 0.05; done
+remove_gpg_mirror
+EOF
+stop_file="$TMP/stop-session"
+peer_file="$TMP/peer-mirror"
+: >"$stop_file"
+rm -f "$peer_file"
+bash "$TMP/session.sh" "$HOME" "$CONFIG_DIR" "$CCODE_HOME" "$GNUPGHOME" \
+    "$REPO_DIR" "$peer_file" "$stop_file" &
+peer_pid=$!
+for _ in $(seq 1 200); do
+    [ -s "$peer_file" ] && break
+    sleep 0.05
+done
+peer_mirror=$(cat "$peer_file" 2>/dev/null)
+[ -n "$peer_mirror" ] || fail "the concurrent session did not create its mirror"
+ensure_gpg_mirror
+[ "$GPG_MIRROR_DIR" != "$peer_mirror" ] ||
+    fail "concurrent sessions must not share the GnuPG mirror"
+cleanup_stale_gpg_mirrors
+[ -d "$peer_mirror" ] ||
+    fail "a live session's mirror must survive another session's cleanup"
+[ -f "$peer_mirror/peer-marker" ] ||
+    fail "another session's mirror contents must not be touched"
+rm -f "$stop_file"
+wait "$peer_pid" 2>/dev/null || true
+[ ! -d "$peer_mirror" ] ||
+    fail "a session must remove its own mirror"
+[ -d "$GPG_MIRROR_DIR" ] ||
+    fail "another session's teardown must not delete this mirror"
+remove_gpg_mirror
+[ ! -d "$GPG_MIRROR_DIR" ] ||
+    fail "remove_gpg_mirror must delete the session mirror"
+ensure_gpg_mirror
+
+# The wrapper must tear down both relays and the mirror on every exit path.
+grep -q 'stop_socket_relay "$GPG_RELAY_SOCKET"' "$REPO_DIR/bin/claude-dockerized" ||
+    fail "the session teardown must stop the GnuPG relay"
+grep -q 'stop_socket_relay "$SSH_RELAY_SOCKET"' "$REPO_DIR/bin/claude-dockerized" ||
+    fail "the session teardown must stop the SSH relay"
+grep -q 'remove_gpg_mirror' "$REPO_DIR/bin/claude-dockerized" ||
+    fail "the session teardown must remove the GnuPG mirror"
 
 # The image entrypoint must start keyboxd so gpg can read that DB.
 grep -q 'gpgconf --launch keyboxd' "$REPO_DIR/entrypoint.sh" ||
@@ -463,9 +570,9 @@ if [ "$have_node" = true ]; then
 
     # The agent socket must be exposed through a symlink in the mirror, never a
     # nested bind mount (Docker can shadow the latter).
-    [ -L "$CCODE_HOME/.gnupg/S.gpg-agent" ] ||
+    [ -L "$GPG_MIRROR_DIR/S.gpg-agent" ] ||
         fail "the mirror must contain an S.gpg-agent symlink"
-    [ "$(readlink "$CCODE_HOME/.gnupg/S.gpg-agent")" = "/home/coder/.gnupg-agent/S.gpg-agent" ] ||
+    [ "$(readlink "$GPG_MIRROR_DIR/S.gpg-agent")" = "/home/coder/.gnupg-agent/S.gpg-agent" ] ||
         fail "S.gpg-agent symlink must point at the dedicated agent path"
     if grep -qF -- "target=/home/coder/.gnupg/S.gpg-agent" <<<"$gpg_sel"; then
         fail "the agent socket must not be mounted inside the mirror (nested bind)"
@@ -542,7 +649,10 @@ if [ "$have_node" = true ]; then
     live_extra="$TMP/live-extra.sock"
     node -e 'require("net").createServer().listen(process.argv[1])' "$live_extra" >/dev/null 2>&1 &
     live_pid=$!
-    for _ in 1 2 3 4 5 6 7 8 9 10; do [ -S "$live_extra" ] && break; sleep 0.1; done
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        [ -S "$live_extra" ] && break
+        sleep 0.1
+    done
     GPG_AGENT_SUPPORT=true
     GPG_AGENT_SOCKET=""
     GPG_AGENT_EXTRA_SOCKET="$live_extra"
@@ -565,8 +675,8 @@ if [ "$have_node" = true ]; then
     unset GPG_AGENT_PROBE_CMD GPG_AGENT_LAUNCH_CMD
 fi
 
-# GPG socket relay: a socket Docker cannot bind (e.g. on tmpfs) is relayed
-# through a socket on a normal filesystem.
+# Agent socket relay: a socket Docker cannot bind (e.g. on tmpfs) is relayed
+# through a socket on a normal filesystem, one relay per session and kind.
 if [ "$have_node" = true ]; then
     cat >"$TMP/relay.js" <<'EOF'
 require("net").createServer().listen(process.env.RELAY_SOCK)
@@ -574,34 +684,47 @@ EOF
     real_sock="$TMP/real-agent.sock"
     node -e 'require("net").createServer().listen(process.argv[1])' "$real_sock" >/dev/null 2>&1 &
     real_pid=$!
-    for _ in 1 2 3 4 5 6 7 8 9 10; do [ -S "$real_sock" ] && break; sleep 0.1; done
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        [ -S "$real_sock" ] && break
+        sleep 0.1
+    done
 
     GPG_RELAY_CMD="node $TMP/relay.js"
-    relay=$(start_gpg_relay "$real_sock")
-    [ -S "$relay" ] || fail "start_gpg_relay must create a listening socket"
-    case "$relay" in "$GPG_RELAY_DIR"/*) ;; *) fail "relay socket must live under GPG_RELAY_DIR" ;; esac
-    stop_gpg_relay "$relay"
-    [ ! -e "$relay" ] || fail "stop_gpg_relay must remove the relay socket"
+    relay=$(start_socket_relay "$real_sock" gnupg)
+    [ -S "$relay" ] || fail "start_socket_relay must create a listening socket"
+    case "$relay" in "$SOCKET_RELAY_DIR"/*) ;; *) fail "relay socket must live under SOCKET_RELAY_DIR" ;; esac
+    stop_socket_relay "$relay"
+    [ ! -e "$relay" ] || fail "stop_socket_relay must remove the relay socket"
 
-    # stop_gpg_relay must only touch paths under GPG_RELAY_DIR.
+    # stop_socket_relay must only touch paths under SOCKET_RELAY_DIR.
     victim="$TMP/victim-dir"
     mkdir -p "$victim"
-    stop_gpg_relay "$victim/S.gpg-agent.extra"
-    [ -d "$victim" ] || fail "stop_gpg_relay must not delete paths outside GPG_RELAY_DIR"
+    stop_socket_relay "$victim/S.gpg-agent.extra"
+    [ -d "$victim" ] || fail "stop_socket_relay must not delete paths outside SOCKET_RELAY_DIR"
     rm -rf "$victim"
 
     # relay_dir_ok rejects unsafe roots.
-    if GPG_RELAY_DIR=/ relay_dir_ok; then
+    if SOCKET_RELAY_DIR=/ relay_dir_ok; then
         fail "relay_dir_ok must reject /"
     fi
-    GPG_RELAY_DIR="$TMP/cfg/gnupg-relay"
+    SOCKET_RELAY_DIR="$TMP/cfg/agent-relay"
 
     # Stale relay dirs (dead pid) are purged.
-    stale_dir="$GPG_RELAY_DIR/stale-test"
+    stale_dir="$SOCKET_RELAY_DIR/stale-test"
     mkdir -p "$stale_dir"
     echo 999999 >"$stale_dir/pid"
     cleanup_stale_relays
     [ ! -d "$stale_dir" ] || fail "cleanup_stale_relays must remove dead relay dirs"
+
+    # Relay directories from a previous boot are stale too (PID reuse).
+    foreign_relay="$SOCKET_RELAY_DIR/1-gnupg"
+    mkdir -p "$foreign_relay"
+    printf '%s\n' 00000000-0000-0000-0000-000000000000 >"$foreign_relay/boot-id"
+    cleanup_stale_relays
+    if [ -n "$(kernel_boot_id)" ]; then
+        [ ! -d "$foreign_relay" ] || fail "a relay from a previous boot must be removed"
+    fi
+    rm -rf "$foreign_relay"
 
     # build_mount_args must use the relay when forced (tmpfs case).
     GPG_AGENT_SUPPORT=true
@@ -612,10 +735,10 @@ EOF
     GPG_RELAY_FORCE=true
     build_mount_args
     relay_mounts="$(printf '%s\n' "${DOCKER_MOUNT_ARGS[@]}")"
-    case "$GPG_RELAY_SOCKET" in "$GPG_RELAY_DIR"/*) ;; *) fail "build_mount_args must start a relay" ;; esac
+    case "$GPG_RELAY_SOCKET" in "$SOCKET_RELAY_DIR"/*) ;; *) fail "build_mount_args must start a relay" ;; esac
     grep -qF -- "source=$GPG_RELAY_SOCKET,target=/home/coder/.gnupg-agent/S.gpg-agent" <<<"$relay_mounts" ||
         fail "the mount must use the relay socket"
-    stop_gpg_relay "$GPG_RELAY_SOCKET"
+    stop_socket_relay "$GPG_RELAY_SOCKET"
     GPG_RELAY_SOCKET=""
 
     # With the relay disabled, the real socket is mounted directly.
@@ -627,19 +750,64 @@ EOF
     GPG_RELAY=true
     GPG_RELAY_FORCE=false
 
+    # SSH agent: the same relay serves a socket Docker cannot bind, mounted at a
+    # stable container path (concurrent sessions each get their own relay and
+    # all talk to the same host agent).
+    ssh_real="$TMP/real-ssh.sock"
+    node -e 'require("net").createServer().listen(process.argv[1])' "$ssh_real" >/dev/null 2>&1 &
+    ssh_real_pid=$!
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        [ -S "$ssh_real" ] && break
+        sleep 0.1
+    done
+
+    GPG_AGENT_SUPPORT=false
+    SSH_AGENT_SUPPORT=true
+    SSH_AUTH_SOCK="$ssh_real"
+    SSH_RELAY_FORCE=true
+    build_mount_args
+    build_env_args
+    ssh_mounts="$(printf '%s\n' "${DOCKER_MOUNT_ARGS[@]}")"
+    ssh_envs="$(printf '%s\n' "${DOCKER_ENV_ARGS[@]}")"
+    case "$SSH_RELAY_SOCKET" in "$SOCKET_RELAY_DIR"/*) ;; *) fail "the SSH relay must live under SOCKET_RELAY_DIR" ;; esac
+    [ "$SSH_RELAY_SOCKET" != "$ssh_real" ] || fail "the SSH relay must be its own socket"
+    grep -qxF -- "type=bind,source=$SSH_RELAY_SOCKET,target=/home/coder/.ssh-agent/ssh" <<<"$ssh_mounts" ||
+        fail "the relayed SSH socket must be mounted at a stable container path"
+    grep -qx -- 'SSH_AUTH_SOCK=/home/coder/.ssh-agent/ssh' <<<"$ssh_envs" ||
+        fail "SSH_AUTH_SOCK must point at the mounted relay socket"
+
+    # Without the relay (or off tmpfs) the host socket path is kept as-is.
+    stop_socket_relay "$SSH_RELAY_SOCKET"
+    SSH_RELAY_SOCKET=""
+    SSH_RELAY_FORCE=false
+    build_mount_args
+    build_env_args
+    ssh_mounts="$(printf '%s\n' "${DOCKER_MOUNT_ARGS[@]}")"
+    ssh_envs="$(printf '%s\n' "${DOCKER_ENV_ARGS[@]}")"
+    [ -z "$SSH_RELAY_SOCKET" ] || fail "a non-tmpfs SSH socket must not be relayed"
+    grep -qxF -- "type=bind,source=$ssh_real,target=$ssh_real" <<<"$ssh_mounts" ||
+        fail "without the relay the host SSH socket path is mounted as-is"
+    grep -qx -- "SSH_AUTH_SOCK=$ssh_real" <<<"$ssh_envs" ||
+        fail "SSH_AUTH_SOCK must keep the host path when not relayed"
+
+    kill "$ssh_real_pid" 2>/dev/null || true
+    wait "$ssh_real_pid" 2>/dev/null || true
+    SSH_AGENT_SUPPORT=false
+    unset SSH_AUTH_SOCK
+
     kill "$real_pid" 2>/dev/null || true
     wait "$real_pid" 2>/dev/null || true
     unset GPG_RELAY_CMD
 
     # Overlong relay paths must fail gracefully.
     long_base="$TMP/cfg/$(printf 'd%.0s' $(seq 1 120))"
-    GPG_RELAY_DIR_SAVED="$GPG_RELAY_DIR"
-    GPG_RELAY_DIR="$long_base"
-    if start_gpg_relay "$real_sock" >/dev/null 2>&1; then
-        GPG_RELAY_DIR="$GPG_RELAY_DIR_SAVED"
-        fail "start_gpg_relay must refuse an overlong socket path"
+    SOCKET_RELAY_DIR_SAVED="$SOCKET_RELAY_DIR"
+    SOCKET_RELAY_DIR="$long_base"
+    if start_socket_relay "$real_sock" >/dev/null 2>&1; then
+        SOCKET_RELAY_DIR="$SOCKET_RELAY_DIR_SAVED"
+        fail "start_socket_relay must refuse an overlong socket path"
     fi
-    GPG_RELAY_DIR="$GPG_RELAY_DIR_SAVED"
+    SOCKET_RELAY_DIR="$SOCKET_RELAY_DIR_SAVED"
 fi
 GPG_AGENT_SUPPORT=false
 unset GNUPGHOME
@@ -962,7 +1130,10 @@ rm -f "$HOME/.local/bin/claude-dockerized" 2>/dev/null
 
 # sync is host-only: inside a container it must refuse (unless overridden).
 if [ -f /.dockerenv ] || [ -f /run/.containerenv ]; then
-    if (unset CLAUDE_DOCKERIZED_ALLOW_CONTAINER_SYNC; sync_security_layer --check) >/dev/null 2>&1; then
+    if (
+        unset CLAUDE_DOCKERIZED_ALLOW_CONTAINER_SYNC
+        sync_security_layer --check
+    ) >/dev/null 2>&1; then
         fail "sync must refuse inside containers"
     fi
 fi
@@ -1144,19 +1315,19 @@ CCODE_BIN_DIR="$CCODE_BIN_DIR_SAVED"
 
 # No previous-generation names anywhere except marked migration lines and
 # vendored-policy attribution (rename acceptance).
-if grep -rniE 'opencode|OCODE|OPENCODE' --exclude-dir=.git "$REPO_DIR" 2>/dev/null \
-    | grep -v 'policies/LICENSE.opencode-policy' \
-    | grep -v 'policies/README.md' \
-    | grep -v 'tests/security-guard.test.mjs' \
-    | grep -v 'tests/wrapper-args.test.sh' \
-    | grep -v 'legacy-migration' \
-    | grep -q .; then
-    grep -rniE 'opencode|OCODE|OPENCODE' --exclude-dir=.git "$REPO_DIR" 2>/dev/null \
-        | grep -v 'policies/LICENSE.opencode-policy' \
-        | grep -v 'policies/README.md' \
-        | grep -v 'tests/security-guard.test.mjs' \
-        | grep -v 'tests/wrapper-args.test.sh' \
-        | grep -v 'legacy-migration'
+if grep -rniE 'opencode|OCODE|OPENCODE' --exclude-dir=.git "$REPO_DIR" 2>/dev/null |
+    grep -v 'policies/LICENSE.opencode-policy' |
+    grep -v 'policies/README.md' |
+    grep -v 'tests/security-guard.test.mjs' |
+    grep -v 'tests/wrapper-args.test.sh' |
+    grep -v 'legacy-migration' |
+    grep -q .; then
+    grep -rniE 'opencode|OCODE|OPENCODE' --exclude-dir=.git "$REPO_DIR" 2>/dev/null |
+        grep -v 'policies/LICENSE.opencode-policy' |
+        grep -v 'policies/README.md' |
+        grep -v 'tests/security-guard.test.mjs' |
+        grep -v 'tests/wrapper-args.test.sh' |
+        grep -v 'legacy-migration'
     fail "previous-generation names must not remain outside migration markers and attribution"
 fi
 

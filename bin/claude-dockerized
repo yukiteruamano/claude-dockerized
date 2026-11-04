@@ -13,7 +13,7 @@ IMAGE_NAME="claude-dockerized:latest"
 
 # Wrapper release line, shown by the version command next to the Claude Code
 # version and the bundled guard version.
-WRAPPER_VERSION="0.4.4"
+WRAPPER_VERSION="0.4.5"
 
 
 
@@ -141,27 +141,36 @@ build_session_args() {
     build_standard_volume_args "$1" "$2"
 }
 
-# DRY_RUN: print the command (secrets redacted) and drop the GnuPG relay.
+# Stop the per-session agent relays and delete the session's GnuPG mirror.
+# Usage: end_agent_session
+end_agent_session() {
+    stop_socket_relay "$GPG_RELAY_SOCKET"
+    GPG_RELAY_SOCKET=""
+    stop_socket_relay "$SSH_RELAY_SOCKET"
+    SSH_RELAY_SOCKET=""
+    remove_gpg_mirror
+}
+
+# DRY_RUN: print the command (secrets redacted) and drop the agent session state.
 # Usage: dry_run_session <docker_cmd...>
 dry_run_session() {
     print_info "Dry run — would execute:"
     dry_run_print "$@"
-    stop_gpg_relay "$GPG_RELAY_SOCKET"
-    GPG_RELAY_SOCKET=""
+    end_agent_session
 }
 
-# Run a docker command and always stop the per-session GnuPG relay afterwards;
-# returns docker's own status. Only EXIT is trapped while docker owns the TTY:
-# trapping INT/TERM here would run the cleanup twice (trap + explicit call) and
-# could steal Ctrl-C from `docker run -it`, leaving the terminal looking hung.
+# Run a docker command and always end the per-session agent state (relays and
+# GnuPG mirror) afterwards; returns docker's own status. Only EXIT is trapped
+# while docker owns the TTY: trapping INT/TERM here would run the cleanup twice
+# (trap + explicit call) and could steal Ctrl-C from `docker run -it`, leaving
+# the terminal looking hung.
 # Usage: run_docker_session <docker_cmd...>
 run_docker_session() {
     local rc=0
-    trap 'stop_gpg_relay "$GPG_RELAY_SOCKET"' EXIT
+    trap end_agent_session EXIT
     "$@" || rc=$?
     trap - EXIT
-    stop_gpg_relay "$GPG_RELAY_SOCKET"
-    GPG_RELAY_SOCKET=""
+    end_agent_session
     return "$rc"
 }
 
@@ -880,7 +889,7 @@ clean_image() {
     # Drop any relay processes/dirs left by crashed sessions.
     cleanup_stale_relays
     if relay_dir_ok; then
-        rm -rf "$GPG_RELAY_DIR" 2>/dev/null || true
+        rm -rf "$SOCKET_RELAY_DIR" 2>/dev/null || true
     fi
     if docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
         print_info "Removing Docker image '$IMAGE_NAME'..."

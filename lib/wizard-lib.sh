@@ -646,22 +646,22 @@ prompt_gpg_agent_options() {
     fi
 
     if [ "$GPG_RELAY" = true ]; then
-        echo "The relay forwards the agent socket through a normal filesystem when"
-        echo "socketdir is on tmpfs (requires socat on the host)."
-        read -r -p "Keep the GPG socket relay enabled? (Y/n): " gpg_relay || gpg_relay=""
+        echo "The relay forwards an agent socket (GnuPG or SSH) through a normal"
+        echo "filesystem when it lives on tmpfs (requires socat on the host)."
+        read -r -p "Keep the agent socket relay enabled? (Y/n): " gpg_relay || gpg_relay=""
         if [[ "$gpg_relay" =~ ^[Nn]$ ]]; then
             GPG_RELAY=false
-            config_info "GPG socket relay disabled"
+            config_info "Agent socket relay disabled"
         else
-            config_success "GPG socket relay remains enabled"
+            config_success "Agent socket relay remains enabled"
         fi
     else
-        read -r -p "Relay the agent socket through a normal filesystem when needed? (y/N): " gpg_relay || gpg_relay=""
+        read -r -p "Relay an agent socket through a normal filesystem when needed? (y/N): " gpg_relay || gpg_relay=""
         if [[ "$gpg_relay" =~ ^[Yy]$ ]]; then
             GPG_RELAY=true
-            config_success "GPG socket relay enabled"
+            config_success "Agent socket relay enabled"
         else
-            config_info "GPG socket relay disabled"
+            config_info "Agent socket relay disabled"
         fi
     fi
 }

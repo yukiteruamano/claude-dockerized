@@ -318,9 +318,35 @@ mapping is needed.
 | `~/.config/claude-dockerized/profiles/default/home/.local/bin/` | `/home/coder/.local/bin/` | read-write | LSP/formatter binaries |
 | `~/.config/claude-dockerized/profiles/default/home/.local/share|state/claude/` + `.cache/claude/` | same | read-write | Sessions, history, caches |
 | `~/.config/claude-dockerized/profiles/default/home/.mcp-auth/` | `/home/coder/.mcp-auth/` | read-write (`0700`) | OAuth tokens of `mcp-remote` proxy servers (native Claude MCP OAuth lives in `.credentials.json`); the host `~/.mcp-auth` is never shared |
-| `~/.config/claude-dockerized/profiles/default/home/.gnupg/` | `/home/coder/.gnupg/` | read-write | Mirrored **public** GnuPG material + agent socket (only with `setting.gpg_agent_support=true`); `private-keys-v1.d/` is never copied |
+| `~/.config/claude-dockerized/profiles/default/home/.gnupg-sessions/<pid>/` | `/home/coder/.gnupg/` | read-write | Per-session mirror of the **public** GnuPG material + agent socket (only with `setting.gpg_agent_support=true`, one directory per session, removed when it ends); `private-keys-v1.d/` is never copied |
 
 The wrapper's own directory (`~/.config/claude-dockerized/`) is **not** mounted at all, and `~/.claude` is never mounted as a whole: managed files travel through fine-grained read-only mounts.
+
+### Multiple concurrent sessions
+
+Several `claude-dockerized run` sessions can run at the same time, on the
+same profile or on different ones. What they share is read-only or per-session:
+
+- **Forwarded agents are per session.** `gpg_agent_support` mirrors the public
+  GnuPG material into `profiles/<name>/home/.gnupg-sessions/<pid>/` (the
+  container's keyboxd runs on its own copy) and relays the agent socket through
+  `agent-relay/<pid>-gnupg/`; `ssh_agent_support` relays through
+  `agent-relay/<pid>-ssh/`. A session only ever removes its own directories,
+  and directories left by a crash (or by a previous boot) are cleaned up by the
+  next run. Both agents are the host's, so all sessions use the same keys.
+- **The SSH agent socket is never copied or written**, and `~/.ssh/config` and
+  `~/.ssh/known_hosts` are mounted read-only: concurrent sessions cannot
+  corrupt them.
+- **The profile home is shared**, as before: `.claude.json`, `settings.json`
+  and `.credentials.json` are read-write for every session of that profile.
+  Two sessions of the same profile can therefore race on preference changes
+  and on the OAuth refresh; use one profile per concurrent session if that
+  matters.
+- **One pinentry at a time.** The host gpg-agent serves many clients, but a
+  passphrase prompt cannot be answered twice at once. Cache the key (or set
+  `default-cache-ttl`) so concurrent sign/commit does not block on it.
+
+See `docs/security/THREAT-MODEL.md` (T-35) for the threat this isolates.
 
 ### Persistent Configuration & Security Layer
 
@@ -436,8 +462,8 @@ setting.lsp_servers=ts,python
 Binaries install into `~/.config/claude-dockerized/profiles/default/home/.local/bin/` (on `PATH` in the container) and `.lsp.json` is generated. Everything persists across rebuilds. Check with `claude-dockerized doctor`.
 
 **Note:**
-- **SSH Agent Support**: Use `setting.ssh_agent_support=true` instead of mounting `~/.ssh` (refused)
-- **GnuPG Agent Support**: Use `setting.gpg_agent_support=true` instead of mounting `~/.gnupg` (refused)
+- **SSH Agent Support**: Use `setting.ssh_agent_support=true` instead of mounting `~/.ssh` (refused). Several sessions can forward the same agent at once; a socket on the `/run` tmpfs is relayed per session
+- **GnuPG Agent Support**: Use `setting.gpg_agent_support=true` instead of mounting `~/.gnupg` (refused). Each session gets its own mirror of the public material and its own relay
 - Mounts are **read-only by default** (append `:rw` for read-write)
 - Paths use `~` which is expanded to your home directory at runtime
 - Re-run `./install.sh` anytime to update your custom configuration

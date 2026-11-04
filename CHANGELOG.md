@@ -2,7 +2,18 @@
 
 Releases are signed annotated tags (`docs/security/YELLOW.md#releases`).
 
-## 0.4.4
+## 0.4.5
+
+### Fixed
+
+- Concurrent sessions (`gpg_agent_support` / `ssh_agent_support`) no longer interfere with each other:
+  - The mirrored **public** GnuPG material is now per session (`profiles/<name>/home/.gnupg-sessions/<pid>`, `0700`, deleted when the session ends). A shared mirror let a second session delete the `keyboxd` database and the `S.gpg-agent` symlink of a running one, and the container's own keyboxd vanished with the first session. Mirrors left by a crash (or by a previous boot, which reuses PIDs) are purged by the next run; the pre-0.4.5 shared `home/.gnupg` is removed unless `GNUPGHOME` points at it.
+  - Keyring files are copied through a temporary file and a rename, so a host `keyboxd` writing `pubring.kbx` while a session starts can no longer leave a torn keyring in the container.
+  - Relay sockets are one directory per session **and** kind (`agent-relay/<pid>-gnupg`, `<pid>-ssh`) under the renamed `SOCKET_RELAY_DIR` (`GPG_RELAY_DIR` is still honored, its default moved from `gnupg-relay` to `agent-relay`).
+  - `ssh_agent_support` relays `SSH_AUTH_SOCK` through the same mechanism when the socket lives on the per-user `/run` tmpfs (which Docker cannot bind), mounting it at `/home/coder/.ssh-agent/ssh` and pointing `SSH_AUTH_SOCK` there. Sessions keep sharing the one host agent.
+  - An enabled GnuPG forwarding with no host `GNUPGHOME` no longer mounts an empty `~/.gnupg`.
+- Documented the multi-session model (per-session agent state, the profile home still shared, one pinentry at a time) and added the threat it isolates (T-35).
+
 
 ### Fixed
 

@@ -170,6 +170,14 @@ Result on the current code is in the matrix of THREAT-MODEL.md.
 - **T-34 — Weaken the posture through a profile overlay** (`security_policy`,
   `docker_socket`, agents, `network=host`). *Tests:* `profiles`.
 
+### Concurrent sessions
+
+- **T-35 — Break a running session through its agent state.** Start a second
+  session so that starting it deletes or rewrites the first one's GnuPG mirror,
+  keyboxd database, agent socket symlink or relay socket, and make the first
+  session sign (or push) afterwards. *Tests:* `wrapper-args` (one mirror and one
+  relay per session, and the surviving session teardown).
+
 ## Tabletop scenarios
 
 1. *A README in a cloned repo tells the agent to "register the project's

@@ -23,6 +23,8 @@
 #   - Passes the SSH_AUTH_SOCK environment variable
 #   - Mounts ~/.ssh/config and known_hosts read-only (host keys/aliases work)
 # Private keys (id_*, *.pem, *.key) are never mounted; mounting ~/.ssh is refused.
+# Several sessions can forward the same agent at once (see 'Concurrent
+# sessions' in the README).
 #
 # This is the recommended way to use SSH in the container for git operations.
 #
@@ -33,8 +35,11 @@
 # gpg-agent, without copying any private key into the container.
 # When enabled, this automatically:
 #   - Mirrors the public keyring (pubring.kbx / public-keys.d) and gpg.conf into
-#     the container and mounts it read-write (GPG needs to write lock files),
-#     with no-autostart added so the container never starts a keyless local agent
+#     a per-session directory and mounts it read-write (GPG needs to write lock
+#     files), with no-autostart added so the container never starts a keyless
+#     local agent. One directory per session, removed when it ends, so
+#     concurrent sessions never share a keyring (see 'Concurrent sessions' in
+#     the README)
 #   - Keeps use-keyboxd and starts keyboxd at boot, so gpg can read hosts whose
 #     public keyring lives in the keyboxd database (public-keys.d/)
 #   - Mounts the host gpg-agent socket (preferring the restricted
@@ -58,8 +63,10 @@
 # setting.gpg_autostart_agent=true
 
 # Relay the agent socket through a socket on a normal filesystem when it lives
-# on tmpfs (/run/user/<uid>/gnupg), which Docker cannot bind. Requires `socat`
-# on the host. Default: true.
+# on tmpfs (/run/user/<uid>/gnupg or /run/user/<uid>/keyring), which Docker
+# cannot bind. Applies to both forwarded agents (GnuPG and SSH; for SSH the
+# socket is mounted at /home/coder/.ssh-agent/ssh). Requires `socat` on the
+# host. Default: true.
 #
 # setting.gpg_relay=true
 

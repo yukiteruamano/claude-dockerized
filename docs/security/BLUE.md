@@ -91,6 +91,15 @@ reduces noise and blocks the obvious.
 | The layout migration is automatic and backed up (`$CONFIG_DIR/backups/pre-profiles-*`, `0700`); `profile migrate --rollback` restores it | T-31 | `profiles` |
 | `config sync` and `doctor` cover every profile's mirror of the security layer | T-15 | `profiles` |
 
+### Concurrent sessions
+
+| Control | Threat | Verified by |
+|---------|--------|-------------|
+| One GnuPG mirror per session (`$CCODE_HOME/.gnupg-sessions/<pid>`, `0700`), removed when the session ends; a live session's directory is never removed; crash and previous-boot leftovers are purged; files are copied through a rename so a live keyboxd cannot hand out a torn keyring | T-35 | `wrapper-args` |
+| One relay socket per session **and kind** (`agent-relay/<pid>-gnupg`, `<pid>-ssh`), so no session can take another's relay | T-35 | `wrapper-args` |
+| The SSH agent socket is only mounted (never copied); a socket on the `/run` tmpfs is relayed per session and `SSH_AUTH_SOCK` points at the mounted path | T-35 | `wrapper-args` |
+| `~/.ssh/config` and `known_hosts` are mounted read-only, so no session can rewrite them for another | T-35 | `wrapper-args` |
+
 ## Detection
 
 | Signal | Where | What it means |
