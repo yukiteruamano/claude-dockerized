@@ -108,6 +108,15 @@ write_managed_settings() {
     if [ "$FORMATTERS_ENABLED" = true ]; then
         sed_args+=(-e 's/^  "allowManagedHooksOnly": true,/  "enabledPlugins": {"prettier@claude": true, "ruff@claude": true},/')
     fi
+    # The active profile's own deny/ask rules go first in their arrays (the
+    # template's entries follow, so every inserted line keeps its comma).
+    # profile_permission_rules only lets JSON-safe rules through.
+    local kind rule
+    while IFS=$'\t' read -r kind rule; do
+        [ -n "$kind" ] || continue
+        sed_args+=(-e "/^    \"$kind\": \[\$/a\\
+      \"$rule\",")
+    done < <(profile_permission_rules)
 
     sed "${sed_args[@]}" "$src" >"$output" 2>/dev/null || return 1
     local v=0

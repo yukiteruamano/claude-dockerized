@@ -496,6 +496,48 @@ profile_overlay_state() {
     )
 }
 
+# Why a profile permission line is invalid, or nothing (and status 0). Only
+# the tightening kinds exist (deny, ask); a rule is a tool name with an
+# optional specifier and must stay JSON-safe without escaping (no quotes,
+# backslashes or control characters), since write_managed_settings
+# inserts it with sed. Usage: profile_permission_rule_error <kind> <rule>
+profile_permission_rule_error() {
+    case "$1" in
+    deny | ask) ;;
+    *)
+        echo "'$1' is not deny or ask (a profile can only add restrictions)"
+        return 1
+        ;;
+    esac
+    if ! [[ "$2" =~ ^[A-Za-z][A-Za-z0-9_]*(\([^\"\\[:cntrl:]]*\))?$ ]]; then
+        echo "'$2' is not a permission rule like Tool or Tool(specifier) (no quotes or backslashes)"
+        return 1
+    fi
+}
+
+# Extra permission rules of the active profile (profiles/<name>/permissions:
+# lines "deny RULE" or "ask RULE", # comments), merged into its managed
+# policy. Prints "kind<TAB>rule" per valid line; an invalid line is skipped
+# with a warning. Usage: profile_permission_rules
+profile_permission_rules() {
+    local file="${PROFILE_DIR:-}/permissions" line kind rule reason lineno=0
+    [ -n "${PROFILE_DIR:-}" ] && [ -f "$file" ] || return 0
+    while IFS= read -r line || [ -n "$line" ]; do
+        lineno=$((lineno + 1))
+        line="${line#"${line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
+        case "$line" in "" | \#*) continue ;; esac
+        kind="${line%%[[:space:]]*}"
+        rule="${line#"$kind"}"
+        rule="${rule#"${rule%%[![:space:]]*}"}"
+        if ! reason=$(profile_permission_rule_error "$kind" "$rule"); then
+            _profile_warn_once "$PROFILE_NAME:permissions:$lineno" "Ignoring line $lineno of $file: $reason"
+            continue
+        fi
+        printf '%s\t%s\n' "$kind" "$rule"
+    done <"$file"
+}
+
 # One warning per run when the profile weakens the global posture on purpose.
 # Usage: profile_report_loosened
 profile_report_loosened() {

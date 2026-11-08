@@ -13,6 +13,7 @@ Releases are signed annotated tags (`docs/security/YELLOW.md#releases`).
 - Profiles can drop a global mount: `profile set NAME mount.<name> -` (an overlay line `mount.<name>=-`). Removing access needs no approval; a `-` mount in the global config is ignored with a warning.
 - `profile edit NAME` checks the overlay on save like `profile set` does (unknown lines, settings a profile cannot override, invalid values or mounts, unapproved loosenings), offers to reopen it on a terminal, and exits 1 while problems remain.
 - Per-profile session rules: `profile edit NAME rules` edits `profiles/<name>/CLAUDE.md`, appended after the global rules in the profile's read-only `CLAUDE.md` (never a replacement; outside every mount).
+- Per-profile permission rules: `profile edit NAME permissions` edits `profiles/<name>/permissions` (`deny RULE` / `ask RULE` lines), merged into that profile's managed policy. There is no `allow`; invalid lines are skipped with a warning.
 - `config show` and `profile show` mark where each value comes from: `[profile]`, `[profile, approved loosening]` or `[global; profile value dropped]` (unmarked = global config or default), and list the global mounts a profile drops.
 
 ### Security

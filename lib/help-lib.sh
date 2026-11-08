@@ -146,8 +146,10 @@ setting.profile, default.
     login NAME | logout NAME [--yes]
     use NAME                    default profile (setting.profile)
     bind NAME [DIR] | unbind [DIR]   pin a project to a profile (kept outside the project)
-    edit NAME [config|env|rules] overlay config / secrets / session rules in \$EDITOR
-                                (rules: profiles/<name>/CLAUDE.md, added after the global rules)
+    edit NAME [config|env|rules|permissions]
+                                overlay config / secrets / session rules / extra
+                                deny|ask permission rules in \$EDITOR (rules and
+                                permissions add to the global ones, never replace them)
     set NAME KEY VALUE [--allow-loosen] | unset NAME KEY    (KEY: a setting or mount.<name>;
                                 mount.<name> - drops that global mount for the profile)
     rename OLD NEW | delete NAME [--yes] [--force]

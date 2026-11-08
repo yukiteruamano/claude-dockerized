@@ -416,6 +416,23 @@ check "the session still mounts the rules read-only" argv_has_text "/home/coder/
 rm -f "$P/guard/CLAUDE.md"
 wrapper run "$PROJECT" --profile guard
 check_not "removing the rules file drops them on the next run" grep -q 'Profile rules' "$P/guard/home/.claude/CLAUDE.md"
+# profile permissions add deny/ask rules to that profile's managed policy only
+printf '# comment\ndeny WebFetch\nask Bash(npm publish *)\nallow Bash(rm -rf *)\ndeny Bad"Rule\n' >"$P/guard/permissions"
+wrapper run "$PROJECT" --profile guard
+managed="$P/guard/home/etc/claude-code/managed-settings.json"
+check "the managed policy stays valid JSON" node -e 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))' "$managed"
+perm_in() { node -e 'const p=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).permissions;process.exit((p[process.argv[2]]||[]).includes(process.argv[3])?0:1)' "$managed" "$1" "$2"; }
+check "a profile deny rule lands in permissions.deny" perm_in deny WebFetch
+check "a profile ask rule lands in permissions.ask" perm_in ask "Bash(npm publish *)"
+check "the global deny rules stay" perm_in deny "Read(./.env)"
+check_not "an allow line is never merged" grep -q 'rm -rf \*)",$' <(node -e 'const p=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).permissions;console.log(JSON.stringify(p.allow||[]))' "$managed")
+check "the allow line is reported" has_text "can only add restrictions" "$OUT"
+check "a rule with a quote is refused" has_text "not a permission rule" "$OUT"
+wrapper run "$PROJECT"
+check_not "other profiles keep the global policy" grep -q '"WebFetch",' "$P/default/home/etc/claude-code/managed-settings.json"
+rm -f "$P/guard/permissions"
+wrapper run "$PROJECT" --profile guard
+check_not "removing the file drops the rules on the next run" grep -q '"WebFetch",' "$managed"
 # profile show says where each value comes from
 wrapper profile set guard model opus
 printf 'setting.docker_socket=true\n' >>"$P/guard/config"

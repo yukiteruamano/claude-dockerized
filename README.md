@@ -309,6 +309,11 @@ approval), e.g. to keep the work `.gitconfig` out of a personal profile.
 added after the global session rules (under `## Profile rules (<name>)`) in
 the read-only `CLAUDE.md` that profile's sessions read; it cannot replace the
 global rules, and like them it lives outside every mount.
+`ccd profile edit NAME permissions` writes `profiles/<name>/permissions`, one
+`deny RULE` or `ask RULE` per line (e.g. `deny WebFetch`,
+`ask Bash(npm publish *)`); the rules are merged into that profile's managed
+policy. There is no `allow`: a profile can only add restrictions, and an
+invalid line is skipped with a warning.
 `share_skills=true` and
 `lsp_from=default` mount the default profile's skills and `.local/bin`
 read-only instead of duplicating them; `lsp_from` only helps once the default

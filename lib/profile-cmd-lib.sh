@@ -525,8 +525,16 @@ profile_cmd_edit() {
         "$editor" "$target"
         config_info "Profile '$name': rules take effect on the next run."
         ;;
+    permissions)
+        # Extra deny/ask rules merged into this profile's managed policy
+        # (profile_permission_rules); there is no allow.
+        target="$(profile_dir_of "$name")/permissions"
+        [ -f "$target" ] || printf '# Extra managed permission rules of profile %s (one per line):\n#   deny Tool(specifier)   e.g. deny WebFetch\n#   ask  Tool(specifier)   e.g. ask Bash(npm publish *)\n# Only deny and ask exist: a profile cannot allow what the global policy denies.\n' "$name" >"$target"
+        "$editor" "$target"
+        config_info "Profile '$name': permission rules take effect on the next run."
+        ;;
     *)
-        config_error "Usage: claude-dockerized profile edit NAME [config|env|rules]"
+        config_error "Usage: claude-dockerized profile edit NAME [config|env|rules|permissions]"
         return 1
         ;;
     esac
