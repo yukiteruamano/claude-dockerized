@@ -39,6 +39,9 @@ lsp_repair_uv_link() {
     [ -n "$bindir" ] || return 0
     link="$bindir/.lsp/uv-bin/ruff"
     [ -L "$link" ] || return 0
+    # Both directories live in the read-write .local/bin: never create the
+    # link through a directory symlink a session planted.
+    [ ! -L "$bindir/.lsp" ] && [ ! -L "$bindir/.lsp/uv-bin" ] || return 0
     lsp_bin_ok "$link" && return 0
     target=$(readlink "$link" 2>/dev/null) || return 0
     case "$target" in
@@ -107,8 +110,10 @@ ensure_lsp_formatters() {
     # log per `run`). A failed attempt also skips the retry here and is
     # retried on the next wrapper invocation.
     [ -n "${_LSP_FORMATTERS_DONE:-}" ] && return 0
+    # .local/bin is mounted read-write: everything the host writes in it goes
+    # through the generated-home helpers (a planted symlink is never followed).
     local bindir="$CCODE_HOME/.local/bin"
-    mkdir -p "$bindir" 2>/dev/null || return 0
+    ensure_home_dir "$bindir" || return 0
     # Heal a container-absolute uv link from a previous install before
     # deciding what is missing: a repaired tree skips docker entirely.
     lsp_repair_uv_link "$bindir" || true
@@ -140,6 +145,8 @@ ensure_lsp_formatters() {
                 ;;
             go)
                 if ! lsp_bin_ok "$bindir/gopls" && command -v go >/dev/null 2>&1; then
+                    # A dangling link left in .local/bin must not redirect the write.
+                    [ -L "$bindir/gopls" ] && rm -f "$bindir/gopls"
                     config_info "Installing gopls $LSP_GOPLS_VERSION with the host Go toolchain..."
                     if ! GOBIN="$bindir" go install "golang.org/x/tools/gopls@$LSP_GOPLS_VERSION"; then
                         config_warning "gopls install failed (see above)"
@@ -148,7 +155,7 @@ ensure_lsp_formatters() {
                 ;;
             rust)
                 if ! lsp_bin_ok "$bindir/rust-analyzer" && command -v rustup >/dev/null 2>&1; then
-                    if ! { rustup component add rust-analyzer && ln -sf "$(rustup which rust-analyzer)" "$bindir/rust-analyzer"; }; then
+                    if ! { rustup component add rust-analyzer && ln -sfn "$(rustup which rust-analyzer)" "$bindir/rust-analyzer"; }; then
                         config_warning "rust-analyzer install failed (see above)"
                     fi
                 fi
@@ -167,7 +174,7 @@ ensure_lsp_formatters() {
     if [ "$need_npm" = false ] && [ "$want_ruff" = false ]; then
         # Nothing missing: record the stamp so future version bumps are
         # detected, then stay silent (no per-run "Installing..." noise).
-        lsp_expected_stamp >"$bindir/.lsp-versions" 2>/dev/null || true
+        lsp_expected_stamp | safe_write_file "$bindir/.lsp-versions" 644 || true
         _LSP_FORMATTERS_DONE=1
         return 0
     fi
@@ -211,13 +218,14 @@ ensure_lsp_formatters() {
         _LSP_FORMATTERS_DONE=1
         return 0
     fi
-    lsp_expected_stamp >"$bindir/.lsp-versions" 2>/dev/null || true
+    lsp_expected_stamp | safe_write_file "$bindir/.lsp-versions" 644 || true
     _LSP_FORMATTERS_DONE=1
     config_success "LSP/formatters installed into $bindir"
 }
 
 # Write the .lsp.json for the configured servers (paths point at the generated
-# home binaries, which are on PATH inside the container).
+# home binaries, which are on PATH inside the container). The file sits in the
+# read-write ~/.claude, so it is staged and renamed (safe_write_file).
 # Usage: write_lsp_json <output>
 write_lsp_json() {
     local output="$1" first=true
@@ -240,5 +248,5 @@ write_lsp_json() {
         done
         IFS="$IFS_save"
         printf '\n}\n'
-    } >"$output" 2>/dev/null || true
+    } | safe_write_file "$output" 644 || true
 }
