@@ -433,6 +433,42 @@ check_not "other profiles keep the global policy" grep -q '"WebFetch",' "$P/defa
 rm -f "$P/guard/permissions"
 wrapper run "$PROJECT" --profile guard
 check_not "removing the file drops the rules on the next run" grep -q '"WebFetch",' "$managed"
+# T-36: a profile's own guard allow rules apply only with an approval pinned to their content
+global_allow="$CONFIG_DIR/hooks/policies/allow-patterns.json"
+mirror_allow="$P/guard/home/.claude/hooks-guard/policies/allow-patterns.json"
+printf '[{"id":"team-deploy","pattern":"^make deploy-staging$","reason":"team deploy target"}]\n' >"$P/guard/allow-patterns.json"
+wrapper run "$PROJECT" --profile guard
+check "T-36: unapproved profile allow rules are reported" has_text "not approved or changed since" "$OUT"
+check "T-36: unapproved profile allow rules never reach the guard" cmp -s "$global_allow" "$mirror_allow"
+wrapper profile approve guard allow-patterns </dev/null
+check_not "T-36: approving without a terminal needs --yes" [ "$RC" -eq 0 ]
+wrapper profile approve guard allow-patterns --yes
+assert_eq "$RC" 0 "T-36: approve --yes pins the content"
+check "the approval lists the rules it lets through" has_text "team-deploy" "$OUT"
+check "the approval is a sha256 in the overlay" grep -qE '^allow_loosen\.allow_patterns=[0-9a-f]{64}$' "$P/guard/config"
+wrapper run "$PROJECT" --profile guard
+check "T-36: approved rules are merged after the global ones" grep -q '"team-deploy"' "$mirror_allow"
+check "…the global rules stay" grep -q '"dotenv-example"' "$mirror_allow"
+check "…and every run reports the loosening" has_text "loosens the global security posture: allow_patterns=" "$OUT"
+eval_allow() { CGB_POLICIES_DIR="$(dirname "$mirror_allow")" CGB_CMD="make deploy-staging" CGB_POLICY_MODE=strict node "$REPO_DIR/hooks/guard-eval.js"; }
+assert_eq "$(eval_allow)" allow "T-36: the guard evaluator loads the merged rules"
+wrapper config sync --check
+check_not "config sync --check accepts the approved merged mirror" has_text "allow-patterns.json mirror differs" "$OUT"
+wrapper profile doctor guard
+check "doctor names the approved allow rules" has_text "allow_patterns" "$OUT"
+wrapper run "$PROJECT"
+check_not "T-36: other profiles keep the global allow rules" grep -q '"team-deploy"' "$P/default/home/.claude/hooks-guard/policies/allow-patterns.json"
+printf '[{"id":"team-deploy","pattern":".*","reason":"widened"}]\n' >"$P/guard/allow-patterns.json"
+wrapper run "$PROJECT" --profile guard
+check "T-36: editing the rules voids the approval" cmp -s "$global_allow" "$mirror_allow"
+printf '[{"id":"bad","pattern":"(","reason":"x"}]\n' >"$P/guard/allow-patterns.json"
+wrapper profile approve guard allow-patterns --yes
+check_not "T-36: a pattern that does not compile is refused" [ "$RC" -eq 0 ]
+printf '[{"id":"dotenv-example","pattern":"x","reason":"x"}]\n' >"$P/guard/allow-patterns.json"
+wrapper profile approve guard allow-patterns --yes
+check_not "T-36: a global id cannot be shadowed" [ "$RC" -eq 0 ]
+rm -f "$P/guard/allow-patterns.json"
+sed -i '/^allow_loosen\.allow_patterns=/d' "$P/guard/config"
 # profile show says where each value comes from
 wrapper profile set guard model opus
 printf 'setting.docker_socket=true\n' >>"$P/guard/config"

@@ -66,7 +66,7 @@ _claude_dockerized() {
             ;;
         profile)
             if [ "$COMP_CWORD" -eq 2 ]; then
-                mapfile -t COMPREPLY < <(compgen -W "list current show path create login logout use bind unbind edit set unset rename delete doctor migrate" -- "${cur}")
+                mapfile -t COMPREPLY < <(compgen -W "list current show path create login logout use bind unbind edit set unset approve rename delete doctor migrate" -- "${cur}")
             else
                 case "${COMP_WORDS[2]}" in
                     list) mapfile -t COMPREPLY < <(compgen -W "--json" -- "${cur}") ;;
@@ -74,8 +74,22 @@ _claude_dockerized() {
                     migrate) mapfile -t COMPREPLY < <(compgen -W "--dry-run --rollback" -- "${cur}") ;;
                     create) [ "$COMP_CWORD" -gt 3 ] && mapfile -t COMPREPLY < <(compgen -W "--from --login --model --env-file --share-skills --lsp-from" -- "${cur}") ;;
                     set) [ "$COMP_CWORD" -gt 3 ] && mapfile -t COMPREPLY < <(compgen -W "--allow-loosen" -- "${cur}") ;;
-                    show | path | login | logout | use | bind | edit | unset | rename | doctor)
+                    show | path | login | logout | use | bind | unset | rename | doctor)
                         [ "$COMP_CWORD" -eq 3 ] && mapfile -t COMPREPLY < <(compgen -W "${pnames}" -- "${cur}")
+                        ;;
+                    edit)
+                        if [ "$COMP_CWORD" -eq 3 ]; then
+                            mapfile -t COMPREPLY < <(compgen -W "${pnames}" -- "${cur}")
+                        elif [ "$COMP_CWORD" -eq 4 ]; then
+                            mapfile -t COMPREPLY < <(compgen -W "config env rules permissions allow-patterns" -- "${cur}")
+                        fi
+                        ;;
+                    approve)
+                        if [ "$COMP_CWORD" -eq 3 ]; then
+                            mapfile -t COMPREPLY < <(compgen -W "${pnames}" -- "${cur}")
+                        else
+                            mapfile -t COMPREPLY < <(compgen -W "allow-patterns --yes" -- "${cur}")
+                        fi
                         ;;
                 esac
             fi

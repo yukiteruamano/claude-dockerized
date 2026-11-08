@@ -72,6 +72,7 @@ jobs:
         run: |
           node --check hooks/guard-eval.js
           node --check lib/migrate-settings.js
+          node --check lib/merge-allow-patterns.js
           for f in tests/*.mjs tests/lib/*.mjs; do node --check "$f"; done
 
       - name: All suites (guard, corpus, wrapper, mounts, config, update, CLI)

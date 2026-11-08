@@ -533,11 +533,71 @@ profile_cmd_edit() {
         "$editor" "$target"
         config_info "Profile '$name': permission rules take effect on the next run."
         ;;
+    allow-patterns)
+        # Guard allow rules of this profile (T-36): inert until approved.
+        target="$(profile_dir_of "$name")/allow-patterns.json"
+        [ -f "$target" ] || printf '[]\n' >"$target"
+        "$editor" "$target"
+        config_info "Profile '$name': review and activate them with: claude-dockerized profile approve $name allow-patterns"
+        ;;
     *)
-        config_error "Usage: claude-dockerized profile edit NAME [config|env|rules|permissions]"
+        config_error "Usage: claude-dockerized profile edit NAME [config|env|rules|permissions|allow-patterns]"
         return 1
         ;;
     esac
+}
+
+# Usage: profile_cmd_approve NAME allow-patterns [--yes]
+# Approve the current content of profiles/<name>/allow-patterns.json (T-36):
+# validate it, list its rules, confirm, then pin its sha256 in the overlay.
+# An allow rule only skips the vendored deny rules; the built-in backstops
+# still run, which the confirmation says.
+profile_cmd_approve() {
+    local name="${1:-}" what="${2:-}" yes=false rules cfg sha listing answer
+    _profile_require "$name" || return 1
+    [ "${3:-}" = --yes ] && yes=true
+    if [ "$what" != allow-patterns ]; then
+        config_error "Usage: claude-dockerized profile approve NAME allow-patterns [--yes]"
+        return 1
+    fi
+    rules="$(profile_dir_of "$name")/allow-patterns.json"
+    if [ ! -f "$rules" ]; then
+        config_error "Profile '$name' has no allow rules (create them with: claude-dockerized profile edit $name allow-patterns)"
+        return 1
+    fi
+    if ! command -v node >/dev/null 2>&1; then
+        config_error "node is needed to validate the allow rules"
+        return 1
+    fi
+    local repo_dir
+    repo_dir="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+    if ! listing=$(node "$repo_dir/lib/merge-allow-patterns.js" "$CONFIG_DIR/hooks/policies/allow-patterns.json" "$rules" 2>&1); then
+        config_error "Invalid allow rules in $rules: $listing"
+        return 1
+    fi
+    config_warning "These rules let matching commands skip the vendored deny rules of the guard in profile '$name' (the built-in backstops still apply):"
+    printf '%s\n' "${listing:-  (no rules)}" | sed 's/^/  /' >&2
+    if [ "$yes" != true ]; then
+        if [ ! -t 0 ]; then
+            config_error "Confirm with --yes (no terminal to ask on)."
+            return 1
+        fi
+        read -r -p "Approve exactly this content? (y/N): " answer || answer=""
+        [[ "$answer" =~ ^[Yy]$ ]] || {
+            config_info "Not approved."
+            return 1
+        }
+    fi
+    sha=$(profile_sha256_file "$rules")
+    [ -n "$sha" ] || {
+        config_error "Cannot hash $rules (sha256sum or shasum needed)"
+        return 1
+    }
+    cfg="$(profile_dir_of "$name")/config"
+    [ -f "$cfg" ] || : >"$cfg"
+    profile_file_unset "$cfg" allow_loosen.allow_patterns
+    profile_file_set "$cfg" allow_loosen.allow_patterns "$sha" || return 1
+    config_success "Profile '$name': allow rules approved (sha256 ${sha:0:12}…); editing the file voids the approval."
 }
 
 # Edit an overlay and check it on save the way `profile set` would; on a TTY
@@ -905,6 +965,7 @@ manage_profiles() {
     edit) profile_cmd_edit "$@" ;;
     set) profile_cmd_set "$@" ;;
     unset) profile_cmd_unset "$@" ;;
+    approve) profile_cmd_approve "$@" ;;
     rename | mv) profile_cmd_rename "$@" ;;
     delete | rm) profile_cmd_delete "$@" ;;
     doctor) profile_cmd_doctor "$@" ;;

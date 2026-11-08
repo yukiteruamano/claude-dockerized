@@ -314,6 +314,14 @@ global rules, and like them it lives outside every mount.
 `ask Bash(npm publish *)`); the rules are merged into that profile's managed
 policy. There is no `allow`: a profile can only add restrictions, and an
 invalid line is skipped with a warning.
+
+A profile can also carry its own guard allow rules (T-36), in the format of
+`policies/allow-patterns.json`: `ccd profile edit NAME allow-patterns`, then
+`ccd profile approve NAME allow-patterns` to review and pin them. The
+approval stores the file's sha256, so any edit voids it until approved
+again; unapproved rules are ignored with a warning. An allow rule only skips
+the vendored deny rules — the built-in backstops still run — and the rules
+are appended to the global ones in that profile's mirror only.
 `share_skills=true` and
 `lsp_from=default` mount the default profile's skills and `.local/bin`
 read-only instead of duplicating them; `lsp_from` only helps once the default
@@ -767,6 +775,7 @@ They should not: agents are forwarded per session (see [Multiple concurrent sess
 - **`lib/integrity-lib.sh`** - Session integrity check and audit log
 - **`lib/ui-lib.sh`**, **`lib/help-lib.sh`**, **`lib/diag-lib.sh`** - Output helpers, help texts, Docker preflight / doctor / version
 - **`lib/migrate-settings.js`** - Node helper that strips policy keys from a legacy `settings.json`
+- **`lib/merge-allow-patterns.js`** - Node helper that validates a profile's guard allow rules and merges them after the global ones
 - **`lib/doctor-container.sh`** - Diagnostics run inside the container by `doctor`
 
 ### Security Layer

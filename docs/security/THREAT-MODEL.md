@@ -90,7 +90,7 @@ deliberately mounts or puts in the env file.
 | B4 | impostor release (T-12) | rewritten tags, unpinned inputs (T-24), CI actions (T-29), LSP installs (T-14) | release-verify workflow | — | bad update without rollback (T-13) | — |
 | Host-side wrapper | — | layer drift/tampering (T-15), merge keeps `disableAllHooks` (T-16), env file in a mounted dir (T-18) | — | — | — | shared temp race (T-17) |
 | Settings | false assurance from an inert sandbox (T-30) | — | — | — | — | — |
-| Profiles | a project file picks the account (T-32), a global key overrides a profile login (T-33) | — | — | another account's home and secrets (T-31) | — | a profile weakens the global posture (T-34) |
+| Profiles | a project file picks the account (T-32), a global key overrides a profile login (T-33) | — | — | another account's home and secrets (T-31) | — | a profile weakens the global posture (T-34) or widens the guard with its own allow rules (T-36) |
 
 Network exposure through `--network host` (T-06) spans B1 (information
 disclosure of loopback services); since 0.5.0 it is opt-in (`bridge` is the
@@ -139,6 +139,7 @@ Status legend: **mitigated** (control in place, test green) · **detected**
 | T-33 | A global secret (e.g. `ANTHROPIC_API_KEY`) overrides a profile's own login or leaks across accounts | mitigated (no global env file; only the profile's own env file is passed) | profiles `only the profile's own env file is passed` |
 | T-34 | A profile weakens the global security posture silently (policy, hardening, docker socket, agents, effective network, integrity, memory/cpus limits, read-write mounts) | mitigated (loosening needs `--allow-loosen`, which approves the exact value; an unapproved loosening is dropped; flagged in `list`, `doctor` and on every run) | profiles `an unapproved loosening in the overlay is dropped`, `network=host under global strict hardening is refused`, `editing the value after the approval voids it`, `a higher memory limit is refused`, `a read-write mount is refused without approval` |
 | T-35 | A concurrent session deletes or corrupts another session's forwarded agent state (GnuPG mirror, keyboxd database, relay sockets) | mitigated (one mirror and one relay per session, named by PID and kind; a live session's directory is never removed, and a returned keyring is copied through a rename) | wrapper-args `concurrent sessions must not share the GnuPG mirror`, `a live session's mirror must survive another session's cleanup`, `the SSH relay must live under SOCKET_RELAY_DIR` |
+| T-36 | A profile's own guard allow rules (`profiles/<name>/allow-patterns.json`) silently widen what its sessions may run, or shadow a global rule | mitigated (inert until `profile approve NAME allow-patterns` pins the file's sha256 in the overlay; editing the file voids it; validated like the evaluator builds rules, global ids cannot be reused, appended after the global rules; an allow rule only skips the vendored deny rules, the built-in backstops still run; flagged on every run, in `list` and `doctor`; files outside every mount) | profiles `T-36: unapproved profile allow rules never reach the guard`, `T-36: editing the rules voids the approval`, `T-36: a global id cannot be shadowed` |
 
 ## 7. Residual risk (accepted)
 

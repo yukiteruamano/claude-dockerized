@@ -26,6 +26,7 @@ declare -a PROFILE_LOOSENED=() # "key=value" pairs the active profile loosened o
 declare -a PROFILE_UNAPPROVED=() # settings the overlay tried to loosen without approval (dropped)
 declare -a PROFILE_SET_KEYS=()   # settings and mount.<name> keys the overlay applied (config show sources)
 declare -a PROFILE_DROPPED_MOUNTS=() # global mounts the overlay removed (mount.<name>=-)
+PROFILE_ALLOW_PATTERNS=""        # the profile's approved allow-patterns.json (T-36), or empty
 _PROFILE_WARNED=""               # ids of warnings already printed by this process
 
 # ============================================
@@ -443,6 +444,33 @@ _profile_overlay_post_checks() {
     done
 }
 
+# sha256 of a file (sha256sum, or shasum on macOS); empty when neither works.
+# Usage: profile_sha256_file <file>
+profile_sha256_file() {
+    { sha256sum "$1" 2>/dev/null || shasum -a 256 "$1" 2>/dev/null; } | cut -d' ' -f1
+}
+
+# A profile's own guard allow rules (profiles/<name>/allow-patterns.json,
+# T-36) apply only while the overlay approves that exact content: the line
+# allow_loosen.allow_patterns=<sha256 of the file>, written by
+# `profile approve NAME allow-patterns`. Editing the file voids it. Sets
+# PROFILE_ALLOW_PATTERNS to the file when approved.
+# Usage: _profile_allow_patterns_check <overlay_file>
+_profile_allow_patterns_check() {
+    local overlay="$1" rules sha
+    PROFILE_ALLOW_PATTERNS=""
+    rules="$(dirname "$overlay")/allow-patterns.json"
+    [ -f "$rules" ] || return 0
+    sha=$(profile_sha256_file "$rules")
+    if [ -n "$sha" ] && profile_loosen_approved "$overlay" allow_patterns "$sha"; then
+        PROFILE_ALLOW_PATTERNS="$rules"
+        PROFILE_LOOSENED+=("allow_patterns=${sha:0:12}")
+        return 0
+    fi
+    PROFILE_UNAPPROVED+=("allow_patterns")
+    _profile_warn_once "$PROFILE_NAME:allow_patterns" "Profile '$PROFILE_NAME' has guard allow rules ($rules) that are not approved or changed since; ignoring them (review and approve with: claude-dockerized profile approve $PROFILE_NAME allow-patterns)"
+}
+
 # Layer an overlay file on top of the settings loaded so far. Fills
 # PROFILE_LOOSENED (approved loosenings) and PROFILE_UNAPPROVED (dropped ones).
 # Usage: profile_apply_overlay_file <file>
@@ -452,6 +480,7 @@ profile_apply_overlay_file() {
     PROFILE_UNAPPROVED=()
     PROFILE_SET_KEYS=()
     PROFILE_DROPPED_MOUNTS=()
+    _profile_allow_patterns_check "$file"
     [ -f "$file" ] || return 0
     _load_config_file "$file" overlay
     _profile_overlay_post_checks "$file" "$g_n" "$g_e" "$g_m" "$g_c"

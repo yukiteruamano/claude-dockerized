@@ -51,12 +51,26 @@ _claude_dockerized() {
                     ;;
                 profile)
                     if (( CURRENT == 2 )); then
-                        _values 'profile subcommand' list current show path create login logout use bind unbind edit set unset rename delete doctor migrate
+                        _values 'profile subcommand' list current show path create login logout use bind unbind edit set unset approve rename delete doctor migrate
                     else
                         case $words[2] in
                             list) _values 'flag' --json ;;
-                            show|path|login|logout|use|bind|edit|unset|rename|delete|doctor)
+                            show|path|login|logout|use|bind|unset|rename|delete|doctor)
                                 (( CURRENT == 3 )) && _describe -t profiles 'profile' profile_names
+                                ;;
+                            edit)
+                                if (( CURRENT == 3 )); then
+                                    _describe -t profiles 'profile' profile_names
+                                elif (( CURRENT == 4 )); then
+                                    _values 'file' config env rules permissions allow-patterns
+                                fi
+                                ;;
+                            approve)
+                                if (( CURRENT == 3 )); then
+                                    _describe -t profiles 'profile' profile_names
+                                else
+                                    _values 'item' allow-patterns --yes
+                                fi
                                 ;;
                             create) _values 'flag' --from --login --model --env-file --share-skills --lsp-from ;;
                             set) _values 'flag' --allow-loosen ;;

@@ -24,6 +24,7 @@ Shell script-based Docker wrapper for running [Claude Code](https://code.claude.
 - `lib/install-lib.sh` — Install wizard library sourced by the wrapper's `install` command (`--yes`, `--only config,completions,aliases,global[,path][,build]`). **Not executable directly.**
 - `config/managed-settings.json`, `config/user-settings.default.json` — Managed policy template (rendered by `write_managed_settings`) and user-settings seed
 - `lib/migrate-settings.js` — Node helper for `ensure_user_settings`: strips policy keys (and `disableAllHooks`) from a legacy `settings.json`, keeping the user's own keys
+- `lib/merge-allow-patterns.js` — Node helper for `allow_patterns_render` / `profile approve`: validates a profile's guard allow rules and appends them to the global ones (T-36)
 - `Dockerfile` — Container image (Debian trixie-slim + Node.js/NVM + pnpm + uv + Claude Code native binary v2.1.311, no sudo, no npm install)
 - `entrypoint.sh` — Container entrypoint (unprivileged; resolves workdir, loads NVM, execs the command)
 - `run-simple.sh` — Simplified alternative runner (delegates to `claude-dockerized run`)
@@ -40,7 +41,7 @@ Shell script-based Docker wrapper for running [Claude Code](https://code.claude.
 - `tests/wrapper-dryrun.test.sh`, `tests/mounts.test.sh`, `tests/config-parse.test.sh`, `tests/self-update.test.sh`, `tests/cli-contract.test.sh` — Full `docker run` argv via a docker stub, mount/path validation, config parsing, self-update against a local bare origin, help/completion drift
 - `tests/integration/container.test.sh` — Container runtime contract (non-root, zero caps, no_new_privs, read-only mounts); skips without Docker
 - `tests/threat-matrix.test.sh`, `tests/hardening.test.sh`, `tests/integrity.test.sh`, `tests/supply-chain.test.sh`, `tests/lsp-install.test.sh`, `tests/ui.test.sh`, `tests/entrypoint.test.sh` — Docs↔tests traceability, hardening profiles, session integrity, supply-chain pins, LSP installs, CLI output, entrypoint PATH
-- `docs/security/` — THREAT-MODEL (T-01…T-35), RED, BLUE, YELLOW; `SECURITY.md` is the index
+- `docs/security/` — THREAT-MODEL (T-01…T-36), RED, BLUE, YELLOW; `SECURITY.md` is the index
 - `tests/lib/` — Shared helpers (`assert.sh`, `hook-runner.mjs`); known gaps are XFAIL and turn red once fixed
 - `SECURITY.md`, `CONTRIBUTING.md` — Security model and contribution guide
 - `examples/config.example` — Example user config (INI-style)

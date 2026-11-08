@@ -340,6 +340,28 @@ session_rules_render() {
     }
 }
 
+# Write the allow-patterns.json the guard of this profile reads: the installed
+# global rules, plus the profile's approved rules (PROFILE_ALLOW_PATTERNS,
+# T-36) merged by lib/merge-allow-patterns.js. Fails closed to the global
+# rules alone when the merge is impossible (no node, invalid file).
+# Usage: allow_patterns_render <dest>
+allow_patterns_render() {
+    local dest="$1" global="$CONFIG_DIR/hooks/policies/allow-patterns.json" repo_dir tmp
+    [ -f "$global" ] || return 1
+    tmp=$(mktemp "$dest.tmp.XXXXXX" 2>/dev/null) || return 1
+    repo_dir="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+    if [ -n "${PROFILE_ALLOW_PATTERNS:-}" ]; then
+        if command -v node >/dev/null 2>&1 &&
+            node "$repo_dir/lib/merge-allow-patterns.js" "$global" "$PROFILE_ALLOW_PATTERNS" "$tmp" 2>/dev/null; then
+            mv -f "$tmp" "$dest" && return 0
+        fi
+        config_warning "Could not merge the allow rules of profile '${PROFILE_NAME:-default}' (node missing or invalid file); using the global rules only"
+    fi
+    cp "$global" "$tmp" && mv -f "$tmp" "$dest" && return 0
+    rm -f "$tmp"
+    return 1
+}
+
 # Mirror the security layer into the generated home.
 # Usage: mirror_security_layer
 mirror_security_layer() {
@@ -359,11 +381,12 @@ mirror_security_layer() {
         if [ -f "$CONFIG_DIR/hooks/guard-eval.js" ]; then
             cp "$CONFIG_DIR/hooks/guard-eval.js" "$claude_dir/hooks-guard/guard-eval.js" 2>/dev/null || true
         fi
-        for pf in unsafe-tool-patterns.json prompt-injection-patterns.json allow-patterns.json; do
+        for pf in unsafe-tool-patterns.json prompt-injection-patterns.json; do
             if [ -f "$CONFIG_DIR/hooks/policies/$pf" ]; then
                 cp "$CONFIG_DIR/hooks/policies/$pf" "$claude_dir/hooks-guard/policies/$pf" 2>/dev/null || true
             fi
         done
+        allow_patterns_render "$claude_dir/hooks-guard/policies/allow-patterns.json" || true
         if [ -f "$CONFIG_DIR/hooks/policies/VERSION" ]; then
             cp "$CONFIG_DIR/hooks/policies/VERSION" "$claude_dir/hooks-guard/policies/VERSION" 2>/dev/null || true
         fi
@@ -550,10 +573,16 @@ check_security_layer() {
             content_ok=false
         fi
     done
-    if ! cmp -s "$CONFIG_DIR/hooks/policies/allow-patterns.json" "$mirror/policies/allow-patterns.json" 2>/dev/null; then
+    # The mirror must be what allow_patterns_render produces for this profile
+    # (global rules, plus its approved own rules).
+    local expected_allow
+    expected_allow=$(mktemp 2>/dev/null) || expected_allow=""
+    if [ -z "$expected_allow" ] || ! allow_patterns_render "$expected_allow" 2>/dev/null ||
+        ! cmp -s "$expected_allow" "$mirror/policies/allow-patterns.json" 2>/dev/null; then
         config_warning "allow-patterns.json mirror differs from the installed copy (re-mirrored on sync)"
         content_ok=false
     fi
+    [ -z "$expected_allow" ] || rm -f "$expected_allow"
     if [ "$content_ok" = true ]; then
         config_success "guard and policy content verified (byte-identical to the repo)"
     else

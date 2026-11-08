@@ -100,6 +100,7 @@ reduces noise and blocks the obvious.
 | One relay socket per session **and kind** (`agent-relay/<pid>-gnupg`, `<pid>-ssh`), so no session can take another's relay | T-35 | `wrapper-args` |
 | The SSH agent socket is only mounted (never copied); a socket on the `/run` tmpfs is relayed per session and `SSH_AUTH_SOCK` points at the mounted path | T-35 | `wrapper-args` |
 | `~/.ssh/config` and `known_hosts` are mounted read-only, so no session can rewrite them for another | T-35 | `wrapper-args` |
+| A profile's allow rules apply only while `allow_loosen.allow_patterns=<sha256>` (written by `profile approve`) matches the file; they are validated like `guard-eval.js` builds rules, cannot reuse a global id, are appended to the global rules in that profile's mirror only, and are reported on every run; without node the mirror keeps the global rules | T-36 | `profiles` |
 
 ## Detection
 

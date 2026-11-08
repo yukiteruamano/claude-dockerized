@@ -14,6 +14,8 @@ Releases are signed annotated tags (`docs/security/YELLOW.md#releases`).
 - `profile edit NAME` checks the overlay on save like `profile set` does (unknown lines, settings a profile cannot override, invalid values or mounts, unapproved loosenings), offers to reopen it on a terminal, and exits 1 while problems remain.
 - Per-profile session rules: `profile edit NAME rules` edits `profiles/<name>/CLAUDE.md`, appended after the global rules in the profile's read-only `CLAUDE.md` (never a replacement; outside every mount).
 - Per-profile permission rules: `profile edit NAME permissions` edits `profiles/<name>/permissions` (`deny RULE` / `ask RULE` lines), merged into that profile's managed policy. There is no `allow`; invalid lines are skipped with a warning.
+- Per-profile guard allow rules (T-36): `profile edit NAME allow-patterns` and `profile approve NAME allow-patterns [--yes]`. The rules stay inert until approved; the approval pins the file's sha256, so editing it voids the approval. They are validated like the evaluator builds rules, cannot reuse a global id, and are appended to the global rules in that profile's mirror only (new helper `lib/merge-allow-patterns.js`).
+- `profile edit` completes its file argument (`config env rules permissions allow-patterns`).
 - `config show` and `profile show` mark where each value comes from: `[profile]`, `[profile, approved loosening]` or `[global; profile value dropped]` (unmarked = global config or default), and list the global mounts a profile drops.
 
 ### Security
