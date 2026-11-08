@@ -447,11 +447,19 @@ allow_patterns_render() {
     tmp=$(mktemp "$dest.tmp.XXXXXX" 2>/dev/null) || return 1
     repo_dir="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
     if [ -n "${PROFILE_ALLOW_PATTERNS:-}" ]; then
-        if command -v node >/dev/null 2>&1 &&
-            node "$repo_dir/lib/merge-allow-patterns.js" "$global" "$PROFILE_ALLOW_PATTERNS" "$tmp" 2>/dev/null; then
+        # Merge a private snapshot whose hash is the approved one, so a change
+        # after the approval check cannot slip into the guard (T-36).
+        local snap
+        snap=$(mktemp 2>/dev/null) || snap=""
+        if [ -n "$snap" ] && cp "$PROFILE_ALLOW_PATTERNS" "$snap" 2>/dev/null &&
+            [ "$(profile_sha256_file "$snap")" = "${PROFILE_ALLOW_PATTERNS_SHA:-}" ] &&
+            command -v node >/dev/null 2>&1 &&
+            node "$repo_dir/lib/merge-allow-patterns.js" "$global" "$snap" "$tmp" 2>/dev/null; then
+            rm -f "$snap"
             mv -f "$tmp" "$dest" && return 0
         fi
-        config_warning "Could not merge the allow rules of profile '${PROFILE_NAME:-default}' (node missing or invalid file); using the global rules only"
+        [ -z "$snap" ] || rm -f "$snap"
+        config_warning "Could not merge the allow rules of profile '${PROFILE_NAME:-default}' (node missing, invalid file or changed since approval); using the global rules only"
     fi
     cp "$global" "$tmp" && mv -f "$tmp" "$dest" && return 0
     rm -f "$tmp"

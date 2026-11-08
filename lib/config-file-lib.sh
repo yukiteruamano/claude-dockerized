@@ -373,7 +373,8 @@ load_config() {
     CUSTOM_MOUNTS=()
     CUSTOM_MOUNT_KEYS=()
     config_reset_settings
-    _load_config_file "$CONFIG_FILE"
+    CONFIG_REJECTED=""
+    _load_config_file "$CONFIG_FILE" || CONFIG_REJECTED="$CONFIG_FILE"
     profile_resolve_env_file
     return 0
 }

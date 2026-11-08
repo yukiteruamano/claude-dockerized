@@ -265,11 +265,13 @@ profile_sha256_file() {
 _profile_allow_patterns_check() {
     local overlay="$1" rules sha
     PROFILE_ALLOW_PATTERNS=""
+    PROFILE_ALLOW_PATTERNS_SHA=""
     rules="$(dirname "$overlay")/allow-patterns.json"
     [ -f "$rules" ] || return 0
     sha=$(profile_sha256_file "$rules")
     if [ -n "$sha" ] && profile_loosen_approved allow_patterns "$sha"; then
         PROFILE_ALLOW_PATTERNS="$rules"
+        PROFILE_ALLOW_PATTERNS_SHA="$sha"
         PROFILE_LOOSENED+=("allow_patterns=${sha:0:12}")
         return 0
     fi

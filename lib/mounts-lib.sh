@@ -293,6 +293,14 @@ build_standard_volume_args() {
     # directories/files the -v sources below need.
     ensure_claude_mount_sources
 
+    # A refused config or overlay may have carried tightenings (strict policy,
+    # limits, read-only mounts): running on the defaults would be looser.
+    local rejected="${CONFIG_REJECTED:-${PROFILE_REJECTED:-}}"
+    if [ -n "$rejected" ]; then
+        config_error "Refusing to start: $rejected contains control bytes and was ignored; fix it first."
+        exit 1
+    fi
+
     # The guard must be complete before a session starts: Claude Code skips a
     # hook whose script is missing, which would fail open.
     local guard_problem

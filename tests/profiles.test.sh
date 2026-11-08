@@ -1075,11 +1075,15 @@ printf 'setting.memory=4g\nsetting.cpus=2\n' >>"$CONFIG_DIR/config"
 wrapper profile create nul
 printf 'setting.netw\0ork=host\nsetting.mem\0ory=\nsetting.cp\0us=64\nsetting.model=opus\n' >"$P/nul/config"
 wrapper run "$PROJECT" --profile nul
-check "T-34: a NUL-split network key does not reach the session" argv_pair --network bridge
-check "T-34: a NUL-split memory key does not lift the limit" argv_pair --memory 4g
-check "T-34: a NUL-split cpus key does not raise the limit" argv_pair --cpus 2
-check_not "the refused overlay applies nothing at all" argv_has opus
+check_not "T-34: a session with a refused overlay does not start" [ "$RC" -eq 0 ]
+check "…and says why" has_text "Refusing to start: $P/nul/config contains control bytes" "$OUT"
 check "the refusal names the file" has_text "Ignoring $P/nul/config: it contains NUL" "$OUT"
+cp "$CONFIG_DIR/config" "$TMP/config.nul-bak"
+printf 'setting.hardening=str\0ict\n' >>"$CONFIG_DIR/config"
+wrapper run "$PROJECT"
+check_not "a global config with control bytes refuses the session (no looser defaults)" [ "$RC" -eq 0 ]
+check "…and names the global file" has_text "Refusing to start: $CONFIG_DIR/config contains control bytes" "$OUT"
+cp "$TMP/config.nul-bak" "$CONFIG_DIR/config"
 wrapper profile doctor nul
 check_not "doctor fails on an overlay with control bytes" [ "$RC" -eq 0 ]
 check "…and says why" has_text "control bytes and is ignored" "$OUT"
@@ -1100,7 +1104,7 @@ check "…with the value trimmed" argv_pair --cpus 1
 printf 'setting.model=opus\rsetting.network=host\n' >"$P/nul/config"
 wrapper run "$PROJECT" --profile nul
 check "a carriage return inside a line refuses the overlay" has_text "carriage return inside a line" "$OUT"
-check "…and nothing of it applies" argv_pair --network bridge
+check_not "…and the session does not start" [ "$RC" -eq 0 ]
 : >"$P/nul/config"
 printf 'deny WebFetch\nask Bash(x\001)\n' >"$P/nul/permissions"
 wrapper run "$PROJECT" --profile nul

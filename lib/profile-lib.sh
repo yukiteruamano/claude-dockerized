@@ -32,9 +32,11 @@ declare -a PROFILE_DROPPED_MOUNTS=() # global mounts the overlay removed (mount.
 declare -a PROFILE_APPROVALS=()  # allow_loosen.<key>=<value> of the overlay, as "key=value" (read by the loader)
 declare -a PROFILE_RAW_KEYS=() PROFILE_RAW_VALUES=() # setting keys/values the loader applied from the overlay
 PROFILE_REJECTED=""              # the overlay file when it was refused as a whole (control bytes)
+CONFIG_REJECTED=""               # the global config when it was refused as a whole (control bytes)
 PROFILE_BOUND_PATH=""            # set by profile_bound_entry: the map entry that applies...
 PROFILE_BOUND_NAME=""            # ...and its profile
 PROFILE_ALLOW_PATTERNS=""        # the profile's approved allow-patterns.json (T-36), or empty
+PROFILE_ALLOW_PATTERNS_SHA=""    # the approved sha256 of that file
 _PROFILE_WARNED=""               # ids of warnings already printed by this process
 
 # ============================================
