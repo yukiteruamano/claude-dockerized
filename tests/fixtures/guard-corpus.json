@@ -1259,6 +1259,380 @@
         }
       },
       "expect": "deny"
+    },
+    {
+      "id": "write-tilde-home-dotfile",
+      "threat": "T-05",
+      "hook": "file",
+      "payload": {
+        "tool_name": "Write",
+        "tool_input": {
+          "file_path": "~/.bashrc",
+          "content": "x"
+        }
+      },
+      "expect": "deny"
+    },
+    {
+      "id": "write-tilde-local-bin",
+      "threat": "T-04",
+      "hook": "file",
+      "payload": {
+        "tool_name": "Write",
+        "tool_input": {
+          "file_path": "~/.local/bin/git",
+          "content": "x"
+        }
+      },
+      "expect": "deny"
+    },
+    {
+      "id": "edit-tilde-user-settings",
+      "threat": "T-03",
+      "hook": "file",
+      "payload": {
+        "tool_name": "Edit",
+        "tool_input": {
+          "file_path": "~/.claude/settings.json",
+          "old_string": "a",
+          "new_string": "b"
+        }
+      },
+      "expect": "deny"
+    },
+    {
+      "id": "write-dollar-home",
+      "threat": "T-05",
+      "hook": "file",
+      "payload": {
+        "tool_name": "Write",
+        "tool_input": {
+          "file_path": "$HOME/.profile",
+          "content": "x"
+        }
+      },
+      "expect": "deny"
+    },
+    {
+      "id": "grep-tilde-home",
+      "threat": "T-26",
+      "hook": "file",
+      "payload": {
+        "tool_name": "Grep",
+        "tool_input": {
+          "pattern": "sk-ant",
+          "path": "~"
+        }
+      },
+      "expect": "deny"
+    },
+    {
+      "id": "grep-tilde-slash-home",
+      "threat": "T-26",
+      "hook": "file",
+      "payload": {
+        "tool_name": "Grep",
+        "tool_input": {
+          "pattern": "x",
+          "path": "~/"
+        }
+      },
+      "expect": "deny"
+    },
+    {
+      "id": "grep-tilde-claude-dir",
+      "threat": "T-26",
+      "hook": "file",
+      "payload": {
+        "tool_name": "Grep",
+        "tool_input": {
+          "pattern": "accessToken",
+          "path": "~/.claude"
+        }
+      },
+      "expect": "deny"
+    },
+    {
+      "id": "glob-tilde-claude-dir",
+      "threat": "T-26",
+      "hook": "file",
+      "payload": {
+        "tool_name": "Glob",
+        "tool_input": {
+          "pattern": "**/*",
+          "path": "~/.claude"
+        }
+      },
+      "expect": "deny"
+    },
+    {
+      "id": "read-tilde-ssh-dir",
+      "threat": "T-26",
+      "hook": "file",
+      "payload": {
+        "tool_name": "Read",
+        "tool_input": {
+          "file_path": "~/.ssh/config"
+        }
+      },
+      "expect": "deny"
+    },
+    {
+      "id": "read-tilde-plain-file-allowed",
+      "threat": "T-26",
+      "hook": "file",
+      "payload": {
+        "tool_name": "Read",
+        "tool_input": {
+          "file_path": "~/notes.txt"
+        }
+      },
+      "expect": "allow"
+    },
+    {
+      "id": "write-tilde-inside-name-allowed",
+      "threat": "T-05",
+      "hook": "file",
+      "payload": {
+        "tool_name": "Write",
+        "tool_input": {
+          "file_path": "src/~draft.txt",
+          "content": "x"
+        }
+      },
+      "expect": "allow"
+    },
+    {
+      "id": "grep-proc-self-root",
+      "threat": "T-19",
+      "hook": "file",
+      "payload": {
+        "tool_name": "Grep",
+        "tool_input": {
+          "pattern": "ANTHROPIC",
+          "path": "/proc/self"
+        }
+      },
+      "expect": "deny"
+    },
+    {
+      "id": "grep-proc-root",
+      "threat": "T-19",
+      "hook": "file",
+      "payload": {
+        "tool_name": "Grep",
+        "tool_input": {
+          "pattern": "ANTHROPIC",
+          "path": "/proc"
+        }
+      },
+      "expect": "deny"
+    },
+    {
+      "id": "grep-proc-pid-environ-glob",
+      "threat": "T-19",
+      "hook": "file",
+      "payload": {
+        "tool_name": "Grep",
+        "tool_input": {
+          "pattern": "KEY",
+          "path": "/proc/1",
+          "glob": "envi*"
+        }
+      },
+      "expect": "deny"
+    },
+    {
+      "id": "glob-proc-self-root",
+      "threat": "T-19",
+      "hook": "file",
+      "payload": {
+        "tool_name": "Glob",
+        "tool_input": {
+          "pattern": "**/environ",
+          "path": "/proc/self"
+        }
+      },
+      "expect": "deny"
+    },
+    {
+      "id": "grep-sys-root",
+      "threat": "T-19",
+      "hook": "file",
+      "payload": {
+        "tool_name": "Grep",
+        "tool_input": {
+          "pattern": "x",
+          "path": "/sys"
+        }
+      },
+      "expect": "deny"
+    },
+    {
+      "id": "grep-dev-root",
+      "threat": "T-19",
+      "hook": "file",
+      "payload": {
+        "tool_name": "Grep",
+        "tool_input": {
+          "pattern": "x",
+          "path": "/dev"
+        }
+      },
+      "expect": "deny"
+    },
+    {
+      "id": "tool-name-number",
+      "threat": "T-11",
+      "hook": "file",
+      "payload": {
+        "tool_name": 5,
+        "tool_input": {
+          "file_path": "{OUTSIDE}/x",
+          "content": "x"
+        }
+      },
+      "expect": "deny"
+    },
+    {
+      "id": "tool-name-object",
+      "threat": "T-11",
+      "hook": "file",
+      "payload": {
+        "tool_name": {
+          "a": 1
+        },
+        "tool_input": {
+          "file_path": "{HOME}/x",
+          "content": "x"
+        }
+      },
+      "expect": "deny"
+    },
+    {
+      "id": "tool-name-number-inside-project",
+      "threat": "T-11",
+      "hook": "file",
+      "payload": {
+        "tool_name": 5,
+        "tool_input": {
+          "file_path": "{PROJECT}/src/x",
+          "content": "x"
+        }
+      },
+      "expect": "allow"
+    },
+    {
+      "id": "project-dir-is-home",
+      "threat": "T-03",
+      "hook": "file",
+      "payload": {
+        "tool_name": "Write",
+        "tool_input": {
+          "file_path": "{HOME}/.local/bin/git",
+          "content": "x"
+        }
+      },
+      "env": {
+        "CLAUDE_PROJECT_DIR": "{HOME}"
+      },
+      "expect": "deny"
+    },
+    {
+      "id": "project-dir-inside-local",
+      "threat": "T-04",
+      "hook": "file",
+      "payload": {
+        "tool_name": "Write",
+        "tool_input": {
+          "file_path": "{HOME}/.local/bin/git",
+          "content": "x"
+        }
+      },
+      "env": {
+        "CLAUDE_PROJECT_DIR": "{HOME}/.local/bin"
+      },
+      "expect": "deny"
+    },
+    {
+      "id": "project-dir-root",
+      "threat": "T-03",
+      "hook": "file",
+      "payload": {
+        "tool_name": "Write",
+        "tool_input": {
+          "file_path": "{OUTSIDE}/x",
+          "content": "x"
+        }
+      },
+      "env": {
+        "CLAUDE_PROJECT_DIR": "/"
+      },
+      "expect": "deny"
+    },
+    {
+      "id": "project-dir-relative",
+      "threat": "T-03",
+      "hook": "file",
+      "payload": {
+        "tool_name": "Write",
+        "tool_input": {
+          "file_path": "{PROJECT}/src/x",
+          "content": "x"
+        }
+      },
+      "env": {
+        "CLAUDE_PROJECT_DIR": "project"
+      },
+      "expect": "deny"
+    },
+    {
+      "id": "project-dir-unset",
+      "threat": "T-03",
+      "hook": "file",
+      "payload": {
+        "tool_name": "Write",
+        "tool_input": {
+          "file_path": "{PROJECT}/src/x",
+          "content": "x"
+        }
+      },
+      "env": {
+        "CLAUDE_PROJECT_DIR": ""
+      },
+      "expect": "deny"
+    },
+    {
+      "id": "project-dir-system",
+      "threat": "T-03",
+      "hook": "file",
+      "payload": {
+        "tool_name": "Write",
+        "tool_input": {
+          "file_path": "/etc/profile.d/x.sh",
+          "content": "x"
+        }
+      },
+      "env": {
+        "CLAUDE_PROJECT_DIR": "/etc"
+      },
+      "expect": "deny"
+    },
+    {
+      "id": "project-dir-unset-scratch-allowed",
+      "threat": "T-03",
+      "hook": "file",
+      "payload": {
+        "tool_name": "Write",
+        "tool_input": {
+          "file_path": "/tmp/claude/x.txt",
+          "content": "x"
+        }
+      },
+      "env": {
+        "CLAUDE_PROJECT_DIR": ""
+      },
+      "expect": "allow"
     }
   ]
 }

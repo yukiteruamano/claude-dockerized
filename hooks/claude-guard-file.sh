@@ -16,7 +16,7 @@
 # a project's settings `env` could otherwise point at a script that exits 0
 # before this file runs. The managed policy also pins those variables empty.
 #
-# CLAUDE_DOCKERIZED_GUARD_VERSION=4
+# CLAUDE_DOCKERIZED_GUARD_VERSION=5
 
 set -u
 
@@ -64,7 +64,7 @@ JQ_PROG='
 def s: if type == "string" then . else empty end;
 def clean: if test("[\u0000-\u001f]") then error("control character") else . end;
 if type != "object" then error("not an object") else . end
-| (.tool_name // "" | s) as $tool
+| (.tool_name | if type == "string" then . else "" end) as $tool
 | (.tool_input // {}) as $ti
 | if ($ti | type) != "object" then error("tool_input") else . end
 | "tool\t\($tool | clean)",
@@ -129,6 +129,13 @@ PARSED="$(parse_payload)"
 case $? in
 0) ;;
 4) deny_reason "no JSON parser (jq, python3 or node) on the trusted path" ;;
+*) deny_reason "unparseable hook payload" ;;
+esac
+
+# Every parser prints a "tool" line first; anything else means the payload was
+# not understood (e.g. a jq filter that produced nothing), so refuse it.
+case "$PARSED" in
+tool$'\t'*) ;;
 *) deny_reason "unparseable hook payload" ;;
 esac
 
@@ -209,26 +216,104 @@ check_deny_read() {
     return 1
 }
 
-BASE="${CLAUDE_PROJECT_DIR:-$PWD}"
+
+# --- Path forms ---
+# Claude Code expands a leading `~` itself, so `~/.bashrc` is the home's
+# .bashrc, never "<project>/~/.bashrc". The home is the hook's $HOME and the
+# container's /home/coder (settings `env` could move $HOME); both are checked.
+HOMES=(/home/coder)
+case "${HOME:-}" in
+/home/coder | "") ;;
+/*) HOMES=("$HOME" /home/coder) ;;
+esac
+
+# Print every absolute spelling of a path, one per line: "~", "~/x", "~user/x"
+# and a leading $HOME/${HOME} are expanded, other relative paths are joined to
+# the project directory (relative means "inside the project", whatever the
+# hook's cwd is).
+absolute_forms() {
+    local p="$1" rest home
+    case "$p" in
+    "~" | "~/"* | '$HOME' | '$HOME/'* | '${HOME}' | '${HOME}/'*)
+        rest="${p#\~}"
+        rest="${rest#\$HOME}"
+        rest="${rest#\$\{HOME\}}"
+        for home in "${HOMES[@]}"; do printf '%s%s\n' "$home" "$rest"; done
+        ;;
+    "~"*)
+        rest="${p#\~}"
+        printf '/home/%s\n' "$rest"
+        ;;
+    /*) printf '%s\n' "$p" ;;
+    *) printf '%s/%s\n' "$BASE" "$p" ;;
+    esac
+}
+
+# The project directory must be a real, absolute project path: unset, relative,
+# "/", the home (or an ancestor of it), a credential or tool dir in the home and
+# system directories are refused, so a forged CLAUDE_PROJECT_DIR cannot widen
+# the write roots. Prints the problem, nothing when the path is usable.
+project_dir_problem() {
+    local p="$1" home d
+    case "$p" in
+    /*) ;;
+    *) printf 'CLAUDE_PROJECT_DIR is not set or not absolute'; return 0 ;;
+    esac
+    p="$(lexical_path "$p")"
+    if [ "$p" = "/" ]; then printf 'the project directory is /'; return 0; fi
+    for home in "${HOMES[@]}"; do
+        if [ "$p" = "$home" ] || [[ "$home" == "$p/"* ]]; then
+            printf 'the project directory %s is the home or contains it' "$p"
+            return 0
+        fi
+        for d in .claude .config .local .cache .ssh .gnupg .mcp-auth .aws .kube .docker; do
+            if [ "$p" = "$home/$d" ] || [[ "$p" == "$home/$d/"* ]]; then
+                printf 'the project directory %s is inside %s' "$p" "$home/$d"
+                return 0
+            fi
+        done
+    done
+    case "$p" in
+    /proc | /proc/* | /sys | /sys/* | /dev | /dev/* | /etc | /etc/* | /usr | /usr/* | /bin | /bin/* | /sbin | /sbin/* | /lib | /lib/* | /lib64 | /lib64/* | /boot | /boot/* | /root | /root/* | /run | /run/*)
+        printf 'the project directory %s is a system directory' "$p"
+        ;;
+    esac
+    return 0
+}
+
+PROJECT_PROBLEM="$(project_dir_problem "${CLAUDE_PROJECT_DIR:-}")"
+if [ -z "$PROJECT_PROBLEM" ] && command -v realpath >/dev/null 2>&1; then
+    PROJECT_REAL="$(realpath -m "$CLAUDE_PROJECT_DIR" 2>/dev/null || true)"
+    PROJECT_PROBLEM="$(project_dir_problem "$PROJECT_REAL")"
+fi
+# Relative read paths still need a base when the project dir is unusable; the
+# read checks only ever deny, so the cwd is a safe fallback there.
+if [ -z "$PROJECT_PROBLEM" ]; then BASE="$CLAUDE_PROJECT_DIR"; else BASE="$PWD"; fi
+
 for target in "${READS[@]}"; do
     check_deny_read "$target" && deny_read "$target"
-    if command -v realpath >/dev/null 2>&1; then
-        # relative paths mean "inside the project", whatever the hook's cwd is
-        case "$target" in /*) abs_target="$target" ;; *) abs_target="$BASE/$target" ;; esac
-        REAL="$(realpath -m "$abs_target" 2>/dev/null || true)"
-        if [ -n "$REAL" ] && [ "$REAL" != "$target" ] && check_deny_read "$REAL"; then deny_read "$target"; fi
-    fi
+    while IFS= read -r abs_target; do
+        check_deny_read "$abs_target" && deny_read "$target"
+        check_deny_read "$(lexical_path "$abs_target")" && deny_read "$target"
+        if command -v realpath >/dev/null 2>&1; then
+            REAL="$(realpath -m "$abs_target" 2>/dev/null || true)"
+            if [ -n "$REAL" ] && check_deny_read "$REAL"; then deny_read "$target"; fi
+        fi
+    done < <(absolute_forms "$target")
 done
 
 # --- Recursive search roots (Grep/Glob) ---
 # Read-deny only sees the path a tool names, but a recursive search over a
 # directory reads every file below it. Refuse roots that are, or contain, the
-# credential stores; searching a project directory stays allowed.
+# credential stores, and the kernel trees (/proc/<pid>/environ holds the
+# session's credentials); searching a project directory stays allowed.
 search_root_too_broad() {
     local p="$1" home d
     [ "$p" = "/" ] && return 0
-    for home in "${HOME:-}" /home/coder; do
-        [ -n "$home" ] || continue
+    case "$p" in
+    /proc | /proc/* | /sys | /sys/* | /dev | /dev/*) return 0 ;;
+    esac
+    for home in "${HOMES[@]}"; do
         # the home itself and every ancestor of it
         if [ "$p" = "$home" ] || [[ "$home" == "${p%/}/"* ]]; then return 0; fi
         for d in .claude .config .aws .kube .docker .gnupg .mcp-auth .ssh; do
@@ -239,44 +324,40 @@ search_root_too_broad() {
 }
 
 for target in "${SEARCHES[@]}"; do
-    case "$target" in /*) abs_target="$target" ;; *) abs_target="$BASE/$target" ;; esac
-    ROOT="$(lexical_path "$abs_target")"
-    search_root_too_broad "$ROOT" && deny_read "$target (recursive search over secret stores)"
-    if command -v realpath >/dev/null 2>&1; then
-        REAL="$(realpath -m "$abs_target" 2>/dev/null || true)"
-        [ -n "$REAL" ] && search_root_too_broad "$REAL" && deny_read "$target (recursive search over secret stores)"
-    fi
+    while IFS= read -r abs_target; do
+        ROOT="$(lexical_path "$abs_target")"
+        search_root_too_broad "$ROOT" && deny_read "$target (recursive search over secret stores)"
+        if command -v realpath >/dev/null 2>&1; then
+            REAL="$(realpath -m "$abs_target" 2>/dev/null || true)"
+            [ -n "$REAL" ] && search_root_too_broad "$REAL" && deny_read "$target (recursive search over secret stores)"
+        fi
+    done < <(absolute_forms "$target")
 done
 
 # --- Write confinement (every tool that writes) ---
 [ "$WRITES" = true ] || exit 0
 [ "${#TARGETS[@]}" -gt 0 ] || deny_reason "write without a target path"
 
-# Roots: the project dir + approved scratch. Never "/". The hook's cwd is only
-# a fallback when Claude Code does not export CLAUDE_PROJECT_DIR.
-ROOTS=""
-add_root() {
-    case "$1" in
-    ""|/) return 0 ;;
-    /*) ROOTS="$ROOTS|$1" ;;
-    esac
-}
-add_root "${CLAUDE_PROJECT_DIR:-}"
-[ -z "${CLAUDE_PROJECT_DIR:-}" ] && add_root "$PWD"
-add_root "/tmp/claude"
+# Roots: the project dir + approved scratch. Never "/", never the home, never
+# the hook's cwd: without a usable CLAUDE_PROJECT_DIR only the scratch dir is
+# writable (fail closed).
+ROOTS=(/tmp/claude)
+if [ -z "$PROJECT_PROBLEM" ]; then
+    ROOTS+=("$(lexical_path "$CLAUDE_PROJECT_DIR")")
+    [ -n "${PROJECT_REAL:-}" ] && ROOTS+=("$PROJECT_REAL")
+fi
 
 is_inside() {
     local c="$1" r
-    local OLDIFS="$IFS"; IFS='|'
-    for r in $ROOTS; do
-        [ -z "$r" ] && continue
-        if [ "$c" = "$r" ] || [[ "$c" == "$r/"* ]]; then
-            IFS="$OLDIFS"
-            return 0
-        fi
+    for r in "${ROOTS[@]}"; do
+        if [ "$c" = "$r" ] || [[ "$c" == "$r/"* ]]; then return 0; fi
     done
-    IFS="$OLDIFS"
     return 1
+}
+
+deny_outside() {
+    [ -n "$PROJECT_PROBLEM" ] && deny_reason "write outside /tmp/claude refused: $PROJECT_PROBLEM: $1"
+    deny_write "$1"
 }
 
 # Strict mode also protects files the host executes or that relax the policy
@@ -291,26 +372,24 @@ is_protected() {
 }
 
 for target in "${TARGETS[@]}"; do
-    if [[ "$target" == /* ]]; then
-        ABS="$(lexical_path "$target")"
-    else
-        ABS="$(lexical_path "$BASE/$target")"
-    fi
+    while IFS= read -r abs_target; do
+        ABS="$(lexical_path "$abs_target")"
 
-    # realpath -m resolves every symlink on the way (also below directories
-    # that do not exist yet, and dangling links); an unresolvable path is refused.
-    CANDIDATES=("$ABS")
-    if command -v realpath >/dev/null 2>&1; then
-        R="$(realpath -m "$ABS" 2>/dev/null)" && [ -n "$R" ] || deny_write "$target"
-        CANDIDATES+=("$R")
-    fi
-
-    for c in "${CANDIDATES[@]}"; do
-        is_inside "$c" || deny_write "$target"
-        if [ "$POLICY_MODE" = strict ] && is_protected "$c"; then
-            deny_reason "strict policy protects $target (git hooks/config, MCP servers, project Claude settings)"
+        # realpath -m resolves every symlink on the way (also below directories
+        # that do not exist yet, and dangling links); an unresolvable path is refused.
+        CANDIDATES=("$ABS")
+        if command -v realpath >/dev/null 2>&1; then
+            R="$(realpath -m "$ABS" 2>/dev/null)" && [ -n "$R" ] || deny_write "$target"
+            CANDIDATES+=("$R")
         fi
-    done
+
+        for c in "${CANDIDATES[@]}"; do
+            is_inside "$c" || deny_outside "$target"
+            if [ "$POLICY_MODE" = strict ] && is_protected "$c"; then
+                deny_reason "strict policy protects $target (git hooks/config, MCP servers, project Claude settings)"
+            fi
+        done
+    done < <(absolute_forms "$target")
 done
 
 exit 0
