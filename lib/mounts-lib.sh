@@ -722,8 +722,8 @@ build_mount_args() {
 
 # Build docker environment variable arguments for automatic (non-secret)
 # forwarding: agent sockets, terminal detection and doctor state flags.
-# User secrets travel exclusively via setting.env_file (--env-file); the old
-# env.* host passthrough was removed.
+# User secrets travel exclusively via the profile's env file (--env-file, see
+# build_env_file_args); the old env.* host passthrough was removed.
 # Populates DOCKER_ENV_ARGS array with -e arguments
 build_env_args() {
     DOCKER_ENV_ARGS=()
@@ -761,7 +761,8 @@ build_env_args() {
     DOCKER_ENV_ARGS+=(-e "CLAUDE_DOCKERIZED_ENV_FILE=$([ -n "$ENV_FILE" ] && echo yes || echo no)")
 }
 
-# Build the docker --env-file argument from setting.env_file.
+# Build the docker --env-file argument from the active profile's env file
+# (profiles/<name>/env, resolved into ENV_FILE by profile_resolve_env_file).
 # The file holds secrets (dotenv KEY=VALUE lines) and is consumed host-side by
 # `docker run --env-file`, so values never appear on the wrapper command line.
 # The file itself is never mounted: it must live under CONFIG_DIR, which no
