@@ -283,9 +283,34 @@ _profile_copy_prefs() {
     # The overlay comes along without its loosening approvals: a copy must
     # earn its own --allow-loosen.
     if [ -f "$(profile_dir_of "$1")/config" ]; then
-        grep -v '^allow_loosen\.' "$(profile_dir_of "$1")/config" >"$(profile_dir_of "$2")/config" || true
+        _profile_file_rewritable "$(profile_dir_of "$1")/config" || return 1
+        grep -v '^[[:space:]]*allow_loosen\.' "$(profile_dir_of "$1")/config" >"$(profile_dir_of "$2")/config" || true
     fi
+    # Its restrictions come along too (a clone must not be silently looser),
+    # and its guard allow rules without their approval (the copy has none:
+    # `profile approve` again, see _profile_create_report_copy).
+    for item in permissions CLAUDE.md allow-patterns.json; do
+        if [ -f "$(profile_dir_of "$1")/$item" ]; then
+            cp -p -- "$(profile_dir_of "$1")/$item" "$(profile_dir_of "$2")/$item" || return 1
+        fi
+    done
     return 0
+}
+
+# After create --from: say what still needs the user's approval in the copy.
+# Usage: _profile_create_report_copy <src> <name>
+_profile_create_report_copy() {
+    local src_cfg dropped
+    if [ -f "$(profile_dir_of "$2")/allow-patterns.json" ]; then
+        config_warning "Copied the guard allow rules of '$1' without their approval; they stay inactive until you review and approve them: claude-dockerized profile approve $2 allow-patterns"
+    fi
+    src_cfg="$(profile_dir_of "$1")/config"
+    [ -f "$src_cfg" ] || return 0
+    dropped=$(config_read_file "$src_cfg"
+        for k in "${_CFG_KEYS[@]}"; do
+            case "$k" in allow_loosen.?* ) [ "${k#allow_loosen.}" = allow_patterns ] || printf '%s\n' "${k#allow_loosen.}" ;; esac
+        done | paste -sd, -)
+    [ -z "$dropped" ] || config_warning "The approvals of '$1' were not copied ($dropped); approve them for '$2' with: claude-dockerized profile set $2 KEY VALUE --allow-loosen"
 }
 
 # Fill the new profile's directory: copied preferences, overlay settings and
@@ -414,6 +439,7 @@ profile_cmd_create() {
         return 1
     fi
     config_success "Created profile '$name' ($PROFILE_DIR)"
+    [ -z "$from" ] || _profile_create_report_copy "$from" "$name"
     if [ "$login" = true ]; then
         profile_cmd_login "$name"
         return $?
