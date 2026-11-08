@@ -400,6 +400,22 @@ check "…and stays in the other profiles" argv_has_text ":/shared:ro"
 printf 'mount.local=-\n' >>"$CONFIG_DIR/config"
 wrapper config show
 check "a '-' mount in the global config is ignored with a warning" has_text "only works in a profile overlay" "$OUT"
+# profile rules are appended after the global session rules
+printf 'Answer in Spanish.\n' >"$TMP/append-rules"
+EDITOR="$TMP/editor-append" EDITOR_APPEND="$TMP/append-rules" wrapper profile edit guard rules
+assert_eq "$RC" 0 "profile edit NAME rules works"
+check "the rules file lives in the profile dir, outside the home" grep -q 'Answer in Spanish' "$P/guard/CLAUDE.md"
+wrapper run "$PROJECT" --profile guard
+rules="$(cat "$P/guard/home/.claude/CLAUDE.md")"
+check "the global rules come first" [ "$(head -n1 "$P/guard/home/.claude/CLAUDE.md")" = "$(head -n1 "$CONFIG_DIR/CLAUDE.md")" ]
+check "the profile rules follow under their header" has_text "## Profile rules (guard)" "$rules"
+check "…with the profile's text" has_text "Answer in Spanish." "$rules"
+wrapper run "$PROJECT"
+check_not "other profiles do not get them" grep -q 'Answer in Spanish' "$P/default/home/.claude/CLAUDE.md"
+check "the session still mounts the rules read-only" argv_has_text "/home/coder/.claude/CLAUDE.md:ro"
+rm -f "$P/guard/CLAUDE.md"
+wrapper run "$PROJECT" --profile guard
+check_not "removing the rules file drops them on the next run" grep -q 'Profile rules' "$P/guard/home/.claude/CLAUDE.md"
 # profile show says where each value comes from
 wrapper profile set guard model opus
 printf 'setting.docker_socket=true\n' >>"$P/guard/config"

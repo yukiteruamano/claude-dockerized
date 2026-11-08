@@ -267,7 +267,7 @@ the upgrade migrates the old layout into `profiles/default/` automatically:
 | `profile login NAME` / `logout NAME` | log in / drop the OAuth login |
 | `profile show [NAME]`, `path`, `current` | inspect |
 | `profile use NAME`, `bind NAME [DIR]`, `unbind [DIR]` | choose the default / pin a project |
-| `profile edit NAME [config\|env]`, `set`, `unset` | change the overlay or the secrets |
+| `profile edit NAME [config\|env\|rules]`, `set`, `unset` | change the overlay, the secrets or the profile's session rules |
 | `profile rename`, `delete NAME [--yes]` | manage (refused while a session runs) |
 | `profile doctor [NAME]`, `migrate` | checks, layout migration |
 
@@ -305,6 +305,10 @@ credential directories are refused anyway), so a profile can mount an extra
 read-only directory such as its own `.gitconfig`. A profile drops a global
 mount with `ccd profile set NAME mount.<name> -` (removing access needs no
 approval), e.g. to keep the work `.gitconfig` out of a personal profile.
+`ccd profile edit NAME rules` writes `profiles/<name>/CLAUDE.md`: its text is
+added after the global session rules (under `## Profile rules (<name>)`) in
+the read-only `CLAUDE.md` that profile's sessions read; it cannot replace the
+global rules, and like them it lives outside every mount.
 `share_skills=true` and
 `lsp_from=default` mount the default profile's skills and `.local/bin`
 read-only instead of duplicating them; `lsp_from` only helps once the default

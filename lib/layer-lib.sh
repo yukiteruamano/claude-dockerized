@@ -305,6 +305,32 @@ install_session_rules() {
     fi
 }
 
+# Header that separates the global rules from a profile's own rules in the
+# mirrored CLAUDE.md (also how tests and doctor find the profile part).
+SESSION_RULES_PROFILE_HEADER="## Profile rules"
+
+# Write the session rules a profile's sessions read: the global rules
+# ($CONFIG_DIR/CLAUDE.md) first, then the profile's own
+# profiles/<name>/CLAUDE.md when it has one. The profile part is appended,
+# never a replacement, and it lives outside every mount, like the global one.
+# Usage: session_rules_render <dest>
+session_rules_render() {
+    local dest="$1" extra="${PROFILE_DIR:-}/CLAUDE.md" tmp
+    tmp=$(mktemp "$dest.tmp.XXXXXX" 2>/dev/null) || return 1
+    {
+        cat "$CONFIG_DIR/CLAUDE.md"
+        if [ -n "${PROFILE_DIR:-}" ] && [ -s "$extra" ]; then
+            printf '\n%s (%s)\n\n' "$SESSION_RULES_PROFILE_HEADER" "${PROFILE_NAME:-default}"
+            echo "These rules add to the global rules above; where they conflict, the global rules win."
+            echo
+            cat "$extra"
+        fi
+    } >"$tmp" && mv -f "$tmp" "$dest" || {
+        rm -f "$tmp"
+        return 1
+    }
+}
+
 # Mirror the security layer into the generated home.
 # Usage: mirror_security_layer
 mirror_security_layer() {
@@ -333,7 +359,7 @@ mirror_security_layer() {
             cp "$CONFIG_DIR/hooks/policies/VERSION" "$claude_dir/hooks-guard/policies/VERSION" 2>/dev/null || true
         fi
         if [ -f "$CONFIG_DIR/CLAUDE.md" ]; then
-            cp "$CONFIG_DIR/CLAUDE.md" "$claude_dir/CLAUDE.md" 2>/dev/null || true
+            session_rules_render "$claude_dir/CLAUDE.md" || true
         fi
         # Pin the policy mode next to the hooks (read-only mount): the hooks
         # prefer it over the env var, which project settings could inject.

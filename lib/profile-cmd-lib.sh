@@ -517,8 +517,16 @@ profile_cmd_edit() {
         "$editor" "$target"
         chmod 600 "$target" 2>/dev/null || true
         ;;
+    rules)
+        # Session rules of this profile, appended after the global CLAUDE.md
+        # on the next run (session_rules_render).
+        target="$(profile_dir_of "$name")/CLAUDE.md"
+        [ -f "$target" ] || printf '<!-- Rules for profile %s: appended after the global session rules; the global rules win on conflict. -->\n' "$name" >"$target"
+        "$editor" "$target"
+        config_info "Profile '$name': rules take effect on the next run."
+        ;;
     *)
-        config_error "Usage: claude-dockerized profile edit NAME [config|env]"
+        config_error "Usage: claude-dockerized profile edit NAME [config|env|rules]"
         return 1
         ;;
     esac
