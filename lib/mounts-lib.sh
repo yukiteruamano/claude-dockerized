@@ -572,6 +572,31 @@ build_env_args() {
     DOCKER_ENV_ARGS+=(-e "CLAUDE_DOCKERIZED_ENV_FILE=$([ -n "$ENV_FILE" ] && echo yes || echo no)")
 }
 
+# Why a secrets file is not private to the current user, or return 1 when it
+# is: it must be owned by this user, and group/others must have no permission
+# bit at all (read leaks the secrets, write lets them be swapped). A mode that
+# cannot be read counts as not private.
+# Usage: reason=$(env_file_permission_problem <file>) && refuse
+env_file_permission_problem() {
+    local file="$1" mode=""
+    if [ ! -O "$file" ]; then
+        echo "it is not owned by you"
+        return 0
+    fi
+    mode=$(stat -c '%a' "$file" 2>/dev/null || stat -f '%Lp' "$file" 2>/dev/null || true)
+    case "$mode" in
+    "" | *[!0-7]*)
+        echo "its permissions could not be read"
+        return 0
+        ;;
+    esac
+    if [ $((8#$mode & 8#077)) -ne 0 ]; then
+        echo "group/others have access (mode $mode)"
+        return 0
+    fi
+    return 1
+}
+
 # Build the docker --env-file argument from the active profile's env file
 # (profiles/<name>/env, resolved into ENV_FILE by profile_resolve_env_file).
 # The file holds secrets (dotenv KEY=VALUE lines) and is consumed host-side by
@@ -611,11 +636,11 @@ build_env_file_args() {
         exit 1
     fi
 
-    # A secrets file readable by group/others defeats its purpose: fail closed.
-    local mode=""
-    mode=$(stat -c '%a' "$env_file" 2>/dev/null || stat -f '%Lp' "$env_file" 2>/dev/null || true)
-    if [ -n "$mode" ] && [ $((8#$mode & 8#044)) -ne 0 ]; then
-        config_error "Refusing env file readable by group/others ($env_file); run: chmod 600 \"$env_file\""
+    # A secrets file anyone else can read or rewrite defeats its purpose: fail
+    # closed, including when its permissions cannot be read at all.
+    local problem
+    if problem=$(env_file_permission_problem "$env_file"); then
+        config_error "Refusing env file $env_file: $problem; run: chmod 600 \"$env_file\" (as its owner)"
         exit 1
     fi
 

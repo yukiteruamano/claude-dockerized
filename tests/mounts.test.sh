@@ -94,6 +94,14 @@ for target in /home/coder/.claude/hooks-guard/policies /home/coder/.claude/setti
     check "T-07 target $target refused" mount_refused "~/data:$target"
 done
 
+# --- generated-home mount points are never a custom target (T-07) --------------------
+for target in /home/coder/.local/bin /home/coder/.local/bin/x /home/coder/.local/share/claude \
+    /home/coder/.ssh /home/coder/.ssh/config /home/coder/.ssh-agent /home/coder/.gnupg \
+    /home/coder/.gnupg-agent /home/coder/.claude.json /home/coder/.mcp-auth /home/coder/.nvm \
+    /home/coder/.nvm/versions /home/coder/.cache/claude /home/coder/.agents; do
+    check "T-07 generated-home target $target refused" mount_refused "~/data:$target"
+done
+
 # --- project directory (T-07) --------------------------------------------------------
 project_ok() { validate_project_dir "$1" >/dev/null 2>&1; }
 project_refused() { ! project_ok "$1"; }
@@ -112,6 +120,16 @@ for dir in usr bin etc lib usr/bin etc/claude-code; do
     check "T-07 project at ~/$dir would shadow /$dir" project_refused "$HOME/$dir"
 done
 check "a project named like a system dir deeper down is accepted" project_ok "$HOME/work/usr"
+
+# ~/home/coder/<x> lands on the image's /home/coder/<x>: the generated-home mount
+# points (and the node the guard runs with) must not be shadowed.
+for dir in .nvm .local/bin .ssh .gnupg-agent .claude-x .mcp-auth; do
+    check "T-07 project at ~/home/coder/$dir would shadow a generated-home mount" project_refused "$HOME/home/coder/$dir"
+done
+check "a project at ~/home/coder/work is accepted" project_ok "$HOME/home/coder/work"
+# The project travels as `-v host:container`: ':' and ',' cannot be carried.
+check "a project path with ':' is refused" project_refused "$HOME/work/a:b"
+check "a project path with ',' is refused" project_refused "$HOME/work/x,y"
 check "a project below ~/opt is accepted" project_ok "$HOME/opt/app"
 
 # --- targets are normalised before the shadowing check (T-07) ---------------------------
@@ -158,6 +176,18 @@ chmod 644 "$CONFIG_DIR/env-open"
 check "T-18 env file readable by others refused" env_file_refused "$CONFIG_DIR/env-open"
 chmod 600 "$CONFIG_DIR/env-open"
 check "the same env file accepted once it is 0600" env_file_ok "$CONFIG_DIR/env-open"
+for mode in 620 602 610 601 640; do
+    chmod "$mode" "$CONFIG_DIR/env-open"
+    check "T-18 env file with mode $mode (group/others bits) refused" env_file_refused "$CONFIG_DIR/env-open"
+done
+chmod 600 "$CONFIG_DIR/env-open"
+# Permissions that cannot be read fail closed (stat stubbed to fail).
+env_file_stat_fails() { (
+    stat() { return 1; }
+    ENV_FILE="$CONFIG_DIR/env-open"
+    build_env_file_args >/dev/null 2>&1
+); }
+check_not "T-18 env file whose permissions cannot be read refused" env_file_stat_fails
 
 # setting.env_file may be written with a leading ~: the layer check and the config
 # summary must resolve it exactly like the run path does (they used to look for a
@@ -192,7 +222,16 @@ check_not "/ refused as relay dir" relay_ok /
 mkdir -p "$HOME/.config/git"
 : >"$HOME/.config/git/gitignore_global"
 check "a ~/.config subpath is accepted" mount_ok "~/.config/git/gitignore_global:/home/coder/.config/git/gitignore_global"
+: >"$HOME/.gitconfig"
 check "the git identity file is accepted" mount_ok "~/.gitconfig:/home/coder/.gitconfig"
+
+# A missing source would be created by docker as an empty root-owned directory.
+check "a host path that does not exist is refused" mount_refused "~/no-such-dir:/data"
+missing_reason() { (
+    CUSTOM_MOUNTS=("~/no-such-dir:/data")
+    { build_mount_args >/dev/null; } 2>&1
+); }
+check "the refusal says the host path does not exist" has_text "does not exist on the host" "$(missing_reason)"
 ln -s "$HOME/data" "$HOME/data-link"
 canonical_spec() {
     (

@@ -836,10 +836,9 @@ _layer_check_env_file() {
             config_warning "env file not found: $ENV_FILE"
             stale=true
         else
-            local mode=""
-            mode=$(stat -c '%a' "$env_file_path" 2>/dev/null || stat -f '%Lp' "$env_file_path" 2>/dev/null || true)
-            if [ -n "$mode" ] && [ $((8#$mode & 8#044)) -ne 0 ]; then
-                config_warning "env file is readable by group/others ($ENV_FILE); run: chmod 600"
+            local problem
+            if problem=$(env_file_permission_problem "$env_file_path"); then
+                config_warning "env file is not private ($ENV_FILE: $problem); run: chmod 600"
             else
                 config_success "env file permissions ok"
             fi

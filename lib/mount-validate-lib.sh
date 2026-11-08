@@ -38,8 +38,11 @@ normalize_container_path() {
 }
 
 # Container paths a host directory must never be mounted on: the image's system
-# directories and the managed security layer. A project mounted there would
-# replace the binaries the guard hooks run with (T-04, T-07).
+# directories, the managed security layer and the generated-home mount points
+# (~/.claude*, ~/.local, ~/.cache/claude, ~/.mcp-auth, the forwarded agent
+# paths ~/.ssh* / ~/.gnupg*, and ~/.nvm, whose node runs the guard). A project
+# mounted there would replace the binaries the guard hooks run with, or shadow
+# the session state and agent sockets (T-04, T-07).
 # Usage: reason=$(container_path_reason <abs container path>) && refuse
 container_path_reason() {
     local t
@@ -47,6 +50,11 @@ container_path_reason() {
     case "$t" in
     / | /usr | /usr/local | /usr/local/lib | /bin | /sbin | /lib | /lib64 | /etc | /home | /home/coder)
         echo "it is a system directory of the image"
+        ;;
+    /home/coder/.claude[!/]* | /home/coder/.local | /home/coder/.local/* | /home/coder/.cache/claude | \
+        /home/coder/.cache/claude/* | /home/coder/.mcp-auth | /home/coder/.mcp-auth/* | /home/coder/.ssh* | \
+        /home/coder/.gnupg* | /home/coder/.nvm | /home/coder/.nvm/* | /home/coder/.agents | /home/coder/.agents/*)
+        echo "it would shadow a mount point of the generated home (session state, agent sockets or the guard's runtime)"
         ;;
     /bin/* | /sbin/* | /lib/* | /lib64/* | /usr/bin | /usr/bin/* | /usr/sbin | /usr/sbin/* | \
         /usr/lib | /usr/lib/* | /usr/lib64 | /usr/lib64/* | /usr/local/bin | /usr/local/bin/* | \
@@ -70,6 +78,16 @@ validate_project_dir() {
         config_error "A project directory is required."
         return 1
     fi
+
+    # The project travels as a `-v host:container` spec: a ':' would split it
+    # into other fields (and a ',' breaks the --mount form).
+    case "$project_dir" in
+    *:* | *,*)
+        config_error "Refusing to run with '$project_dir' as the project: its path contains ':' or ',', which Docker mount specs cannot carry."
+        config_info "Rename the directory (or a parent) without ':' and ','."
+        return 1
+        ;;
+    esac
 
     if [ "$project_dir" = "/" ]; then
         config_error "Refusing to run with '/' as the project."
@@ -190,6 +208,12 @@ validate_mount_spec() {
     c=$(canonical_host_path "$host")
     if reason=$(sensitive_host_path_reason "$c"); then
         config_error "Refusing to mount $host: $reason." >&2
+        return 1
+    fi
+    # docker -v creates a missing source as an empty root-owned directory on
+    # the host: refuse instead (a typo must not litter the host).
+    if [ ! -e "$c" ]; then
+        config_error "Refusing to mount $host: it does not exist on the host (docker would create it as root); create it first or fix the path." >&2
         return 1
     fi
     # Container runtime sockets are root-equivalent: only setting.docker_socket
