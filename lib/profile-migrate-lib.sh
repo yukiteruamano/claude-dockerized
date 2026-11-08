@@ -14,17 +14,34 @@ profile_migration_needed() {
     [ ! -e "$PROFILES_DIR/default/home" ]
 }
 
-# Legacy setting.env_file resolved to an absolute path, only when it is an
-# existing file under $CONFIG_DIR. Usage: _profile_legacy_env_path
+# Legacy setting.env_file resolved to an absolute path, when it names an
+# existing file (anywhere: the secrets must reach the default profile).
+# Usage: _profile_legacy_env_path
 _profile_legacy_env_path() {
-    [ -f "$CONFIG_FILE" ] || return 0
     local v p
-    v=$(sed -n 's/^[[:space:]]*setting\.env_file[[:space:]]*=[[:space:]]*//p' "$CONFIG_FILE" 2>/dev/null | tail -n 1)
-    v="${v%"${v##*[![:space:]]}"}"
+    v=$(config_file_value "$CONFIG_FILE" setting.env_file) || return 0
     [ -n "$v" ] || return 0
     p=$(canonical_host_path "$v")
-    path_within "$p" "$(canonical_host_path "$CONFIG_DIR")" && [ -f "$p" ] && printf '%s' "$p"
+    [ -f "$p" ] && printf '%s' "$p"
     return 0
+}
+
+# Does the legacy env file live under $CONFIG_DIR (the wrapper's own file,
+# moved by the migration) rather than elsewhere (the user's file, copied and
+# left in place)? Usage: _profile_legacy_env_owned <path>
+_profile_legacy_env_owned() {
+    path_within "$1" "$(canonical_host_path "$CONFIG_DIR")"
+}
+
+# Copy a legacy env file that lives outside $CONFIG_DIR into <dst> (0600 from
+# the start); the original is the user's and stays where it is.
+# Usage: _profile_copy_legacy_env <src> <dst>
+_profile_copy_legacy_env() {
+    if (umask 077 && cat -- "$1" >"$2") && chmod 600 "$2"; then
+        return 0
+    fi
+    rm -f -- "$2"
+    return 1
 }
 
 # Sorted names of the top-level entries of <dir>, hidden ones included, minus
@@ -67,6 +84,8 @@ _profile_write_manifest() {
         echo "layout=1"
         echo "home=$CONFIG_DIR/home"
         [ -z "$2" ] || echo "env=$2"
+        # A file outside $CONFIG_DIR is copied, not moved (see _profile_migrate_env).
+        [ -z "$2" ] || _profile_legacy_env_owned "$2" || echo "env_mode=copy"
     } >"$1/MANIFEST"
 }
 
@@ -256,7 +275,7 @@ _profile_wait_migration_lock() {
 # old layout as it was (the caller releases the lock whatever happens, so this
 # must not rely on `set -e`). Usage: _profile_migrate_locked <backup:true|false>
 _profile_migrate_locked() {
-    local backup="$1" bdir env_src env_dst legacy_home env_moved=false
+    local backup="$1" bdir env_src env_dst legacy_home env_moved=false env_copied=false
     profile_migration_needed || return 0 # another process finished it meanwhile
     if [ "$backup" = true ]; then
         if ! bdir=$(_profile_migration_backup); then
@@ -278,7 +297,8 @@ _profile_migrate_locked() {
     env_dst="$PROFILES_DIR/default/env"
     legacy_home=$(canonical_host_path "$CONFIG_DIR/home")
     # The env file moves first and out of any path the home covers: the home is
-    # mounted into sessions, the env file never must be.
+    # mounted into sessions, the env file never must be. One outside
+    # $CONFIG_DIR is the user's own file: it is copied and stays in place.
     if [ -n "$env_src" ]; then
         if [ -e "$env_dst" ]; then
             if path_within "$env_src" "$legacy_home"; then
@@ -288,6 +308,13 @@ _profile_migrate_locked() {
             fi
             config_warning "$env_dst already exists: the legacy env file ($env_src) is left where it is and setting.env_file stays in the config until you merge them by hand."
             env_src=""
+        elif ! _profile_legacy_env_owned "$env_src"; then
+            if ! _profile_copy_legacy_env "$env_src" "$env_dst"; then
+                rmdir "$PROFILES_DIR/default" 2>/dev/null
+                config_error "Could not copy the env file ($env_src); nothing was changed (backup: $bdir)."
+                return 1
+            fi
+            env_copied=true
         elif mv -- "$env_src" "$env_dst" && chmod 600 "$env_dst"; then
             env_moved=true
         else
@@ -299,12 +326,16 @@ _profile_migrate_locked() {
     fi
     if ! mv -- "$CONFIG_DIR/home" "$PROFILES_DIR/default/home"; then
         [ "$env_moved" != true ] || mv -- "$env_dst" "$env_src"
+        [ "$env_copied" != true ] || rm -f -- "$env_dst"
         rmdir "$PROFILES_DIR/default" 2>/dev/null
         config_error "Could not move the home; nothing was changed (backup: $bdir)."
         return 1
     fi
-    if [ "$env_moved" = true ] && ! _profile_strip_legacy_env; then
+    if { [ "$env_moved" = true ] || [ "$env_copied" = true ]; } && ! _profile_strip_legacy_env; then
         config_warning "Could not drop setting.env_file from $CONFIG_FILE; remove that line by hand."
+    fi
+    if [ "$env_copied" = true ]; then
+        config_info "Copied the secrets of $env_src into $env_dst (mode 600); the original file remains where it was: delete it yourself once you no longer need it."
     fi
     if [ "$backup" = true ]; then
         config_info "Migrated the existing account to profile 'default' (backup: $bdir)"
@@ -345,7 +376,11 @@ profile_migrate_legacy() {
         env_src=$(_profile_legacy_env_path)
         config_info "Would back up $CONFIG_DIR/home (minus .cache), the config and the env file to $CONFIG_DIR/backups/pre-profiles-<time>/"
         config_info "Would move $CONFIG_DIR/home -> $PROFILES_DIR/default/home"
-        [ -z "$env_src" ] || config_info "Would move $env_src -> $PROFILES_DIR/default/env and drop setting.env_file from the config"
+        if [ -n "$env_src" ] && _profile_legacy_env_owned "$env_src"; then
+            config_info "Would move $env_src -> $PROFILES_DIR/default/env and drop setting.env_file from the config"
+        elif [ -n "$env_src" ]; then
+            config_info "Would copy $env_src -> $PROFILES_DIR/default/env (the original stays) and drop setting.env_file from the config"
+        fi
         return 0
     fi
 
@@ -453,6 +488,14 @@ profile_migrate_rollback() {
     if ! mv -- "$PROFILES_DIR/default/home" "$CONFIG_DIR/home"; then
         config_error "Could not move the home back; nothing was changed."
         return 1
+    fi
+    # A copied env file (the original stayed in place): point the config back
+    # at the original, and drop the copy only while it is still identical.
+    if grep -qx 'env_mode=copy' "$bdir/MANIFEST" && [ -n "$env_dst" ] && [ -f "$env_dst" ]; then
+        profile_file_set "$CONFIG_FILE" setting.env_file "$env_dst"
+        if cmp -s -- "$env_dst" "$PROFILES_DIR/default/env"; then
+            rm -f -- "$PROFILES_DIR/default/env"
+        fi
     fi
     if [ -f "$PROFILES_DIR/default/env" ]; then
         if [ -n "$env_dst" ] && [ ! -e "$env_dst" ] && mv -- "$PROFILES_DIR/default/env" "$env_dst"; then
