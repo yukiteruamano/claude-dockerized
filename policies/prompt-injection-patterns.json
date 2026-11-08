@@ -106,12 +106,14 @@
   },
   {
     "id": "base64-payload-1",
-    "pattern": "(выполни|запусти|run|exec).*[A-Za-z0-9+/]{40,}={0,2}",
+    "pattern": "^(?=(?<g1>.*?(?:(выполни|запусти|run|exec))))\\k<g1>.*[A-Za-z0-9+/]{40}",
+    "flags": "im",
     "reason": "Exec with long base64 payload"
   },
   {
     "id": "base64-payload-2",
-    "pattern": "[A-Za-z0-9+/]{40,}={0,2}.*(выполни|запусти|run|exec)",
+    "pattern": "^(?=(?<g1>.*?(?:[A-Za-z0-9+/]{40})))\\k<g1>.*(выполни|запусти|run|exec)",
+    "flags": "im",
     "reason": "Long base64 payload + exec request"
   },
   {

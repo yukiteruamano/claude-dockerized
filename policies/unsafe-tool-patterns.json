@@ -77,8 +77,8 @@
   },
   {
     "id": "echo-base64-pipe-decode",
-    "pattern": "echo.*\\|.*base64\\s+(-d|--decode)",
-    "flags": "i",
+    "pattern": "^(?=(?<g1>.*?(?:echo)))\\k<g1>(?=(?<g2>.*?(?:\\|)))\\k<g2>.*base64\\s+(-d|--decode)",
+    "flags": "im",
     "reason": "BLOCKED: echo base64 | decode pattern",
     "admin_bypass": true
   },
@@ -261,7 +261,8 @@
   },
   {
     "id": "python-while-true",
-    "pattern": "python.*-c.*while\\s*(True|1)",
+    "pattern": "^(?=(?<g1>.*?(?:python)))\\k<g1>(?=(?<g2>.*?(?:-c)))\\k<g2>.*while\\s*(True|1)",
+    "flags": "im",
     "reason": "BLOCKED: Infinite Python loop"
   },
   {
@@ -326,14 +327,14 @@
   },
   {
     "id": "fork-bomb-3",
-    "pattern": "for.*do.*&.*done",
-    "flags": "i",
+    "pattern": "^(?=(?<g1>.*?(?:for)))\\k<g1>(?=(?<g2>.*?(?:do)))\\k<g2>(?=(?<g3>.*?(?:&)))\\k<g3>.*done",
+    "flags": "im",
     "reason": "BLOCKED: Loop spawning background processes"
   },
   {
     "id": "fork-bomb-4",
-    "pattern": "while.*do.*&.*done",
-    "flags": "i",
+    "pattern": "^(?=(?<g1>.*?(?:while)))\\k<g1>(?=(?<g2>.*?(?:do)))\\k<g2>(?=(?<g3>.*?(?:&)))\\k<g3>.*done",
+    "flags": "im",
     "reason": "BLOCKED: Loop spawning background processes"
   },
   {
@@ -432,8 +433,8 @@
   },
   {
     "id": "npx-test-json",
-    "pattern": "npx\\s+.*test.*json",
-    "flags": "i",
+    "pattern": "^(?=(?<g1>.*?(?:npx\\s+)))\\k<g1>(?=(?<g2>.*?(?:test)))\\k<g2>.*json",
+    "flags": "im",
     "reason": "BLOCKED: Suspicious npx package (env dump)"
   },
   {
@@ -486,8 +487,8 @@
   },
   {
     "id": "node-e-json",
-    "pattern": "node\\s+-e\\s+.*JSON\\.stringify.*process",
-    "flags": "i",
+    "pattern": "^(?=(?<g1>.*?(?:node\\s+-e\\s+)))\\k<g1>(?=(?<g2>.*?(?:JSON\\.stringify)))\\k<g2>.*process",
+    "flags": "im",
     "reason": "BLOCKED: Node one-liner env dump"
   },
   {
@@ -524,19 +525,22 @@
   },
   {
     "id": "curl-post-1",
-    "pattern": "\\bcurl\\s+.*(-d|--data|--data-raw|--data-binary)\\s",
+    "pattern": "\\bcurl\\s(?:.*\\s)?(?:-[sSLfkviIlnNqgGjJOR0-9]*d|--data[\\w-]*(?:\\s|=|$)|--json(?:\\s|=|$))",
+    "flags": "",
     "reason": "BLOCKED: curl with POST data (potential exfiltration)",
     "admin_bypass": true
   },
   {
     "id": "curl-form",
-    "pattern": "\\bcurl\\s+.*-F\\s",
+    "pattern": "\\bcurl\\s(?:.*\\s)?(?:-[sSLfkviIlnNqgGjJOR0-9]*F|--form[\\w-]*)",
+    "flags": "",
     "reason": "BLOCKED: curl with form upload",
     "admin_bypass": true
   },
   {
     "id": "curl-upload-1",
-    "pattern": "\\bcurl\\s+.*-T\\s",
+    "pattern": "\\bcurl\\s(?:.*\\s)?(?:-[sSLfkviIlnNqgGjJOR0-9]*T|--upload-file)",
+    "flags": "",
     "reason": "BLOCKED: curl with file upload"
   },
   {
@@ -588,27 +592,32 @@
   },
   {
     "id": "dns-exfil-4",
-    "pattern": "\\$\\(.*\\)\\..*\\.(com|net|org|io)",
+    "pattern": "^(?=(?<g1>.*?(?:\\$\\()))\\k<g1>(?=(?<g2>.*?(?:\\)\\.)))\\k<g2>.*\\.(com|net|org|io)",
+    "flags": "im",
     "reason": "BLOCKED: Command substitution in domain (DNS exfiltration)"
   },
   {
     "id": "symlink-etc",
-    "pattern": "\\bln\\s+.*-s.*\\/etc",
+    "pattern": "^(?=(?<g1>.*?(?:\\bln\\s+)))\\k<g1>(?=(?<g2>.*?(?:-s)))\\k<g2>.*\\/etc",
+    "flags": "im",
     "reason": "BLOCKED: Symlink to /etc"
   },
   {
     "id": "symlink-root",
-    "pattern": "\\bln\\s+.*-s.*\\/root",
+    "pattern": "^(?=(?<g1>.*?(?:\\bln\\s+)))\\k<g1>(?=(?<g2>.*?(?:-s)))\\k<g2>.*\\/root",
+    "flags": "im",
     "reason": "BLOCKED: Symlink to /root"
   },
   {
     "id": "symlink-home",
-    "pattern": "\\bln\\s+.*-s.*\\/home",
+    "pattern": "^(?=(?<g1>.*?(?:\\bln\\s+)))\\k<g1>(?=(?<g2>.*?(?:-s)))\\k<g2>.*\\/home",
+    "flags": "im",
     "reason": "BLOCKED: Symlink to /home"
   },
   {
     "id": "symlink-proc",
-    "pattern": "\\bln\\s+.*-s.*\\/proc",
+    "pattern": "^(?=(?<g1>.*?(?:\\bln\\s+)))\\k<g1>(?=(?<g2>.*?(?:-s)))\\k<g2>.*\\/proc",
+    "flags": "im",
     "reason": "BLOCKED: Symlink to /proc"
   },
   {
@@ -948,7 +957,8 @@
   },
   {
     "id": "time-exfil-sleep",
-    "pattern": "if.*then.*sleep",
+    "pattern": "^(?=(?<g1>.*?(?:if)))\\k<g1>(?=(?<g2>.*?(?:then)))\\k<g2>.*sleep",
+    "flags": "im",
     "reason": "BLOCKED: Time-based data exfiltration"
   },
   {
@@ -974,8 +984,8 @@
   },
   {
     "id": "reverse-shell-perl",
-    "pattern": "perl.*socket.*connect",
-    "flags": "i",
+    "pattern": "^(?=(?<g1>.*?(?:perl)))\\k<g1>(?=(?<g2>.*?(?:socket)))\\k<g2>.*connect",
+    "flags": "im",
     "reason": "BLOCKED: Perl reverse shell"
   },
   {
@@ -992,7 +1002,8 @@
   },
   {
     "id": "reverse-shell-telnet",
-    "pattern": "\\btelnet\\b.*\\|.*\\b(ba)?sh\\b",
+    "pattern": "^(?=(?<g1>.*?(?:\\btelnet\\b)))\\k<g1>(?=(?<g2>.*?(?:\\|)))\\k<g2>.*\\b(ba)?sh\\b",
+    "flags": "im",
     "reason": "BLOCKED: Telnet reverse shell"
   },
   {
@@ -1022,13 +1033,15 @@
   },
   {
     "id": "awk-system",
-    "pattern": "\\bawk\\b.*system\\s*\\(",
+    "pattern": "^(?=(?<g1>.*?(?:\\bawk\\b)))\\k<g1>.*system\\s*\\(",
+    "flags": "im",
     "reason": "BLOCKED: awk with system() call",
     "admin_bypass": true
   },
   {
     "id": "sed-exec",
-    "pattern": "\\bsed\\b.*-e.*e\\b",
+    "pattern": "^(?=(?<g1>.*?(?:\\bsed\\b)))\\k<g1>(?=(?<g2>.*?(?:-e)))\\k<g2>.*e\\b",
+    "flags": "im",
     "reason": "BLOCKED: sed with execute"
   },
   {
@@ -1308,8 +1321,8 @@
   },
   {
     "id": "python-base64-decode-eval",
-    "pattern": "python.*base64.*decode",
-    "flags": "i",
+    "pattern": "^(?=(?<g1>.*?(?:python)))\\k<g1>(?=(?<g2>.*?(?:base64)))\\k<g2>.*decode",
+    "flags": "im",
     "reason": "BLOCKED: Python base64 decode in command",
     "admin_bypass": true
   },
