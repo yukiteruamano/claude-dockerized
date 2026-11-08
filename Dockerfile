@@ -55,6 +55,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # DOCKER_CLI=0 (setting.image_docker_cli=false) leaves it out entirely: it is
 # only useful with the opt-in socket mount (setting.docker_socket).
 ARG DOCKER_CLI=1
+# Exact apt versions from download.docker.com (debian trixie stable), so a new
+# upstream publish never changes the image silently (T-24). Bump them together:
+#   apt-cache madison docker-ce-cli docker-buildx-plugin docker-compose-plugin
+ARG DOCKER_CLI_VERSION=5:29.9.3-1~debian.13~trixie
+ARG DOCKER_BUILDX_VERSION=0.38.1-1~debian.13~trixie
+ARG DOCKER_COMPOSE_VERSION=5.7.0-1~debian.13~trixie
 RUN if [ "$DOCKER_CLI" != 1 ]; then echo "Docker CLI skipped (DOCKER_CLI=$DOCKER_CLI)"; exit 0; fi && \
     install -m 0755 -d /etc/apt/keyrings && \
     curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc && \
@@ -64,7 +70,10 @@ RUN if [ "$DOCKER_CLI" != 1 ]; then echo "Docker CLI skipped (DOCKER_CLI=$DOCKER
     $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
     tee /etc/apt/sources.list.d/docker.list > /dev/null && \
     apt-get update && \
-    apt-get install -y docker-ce-cli docker-buildx-plugin docker-compose-plugin && \
+    apt-get install -y \
+        "docker-ce-cli=${DOCKER_CLI_VERSION}" \
+        "docker-buildx-plugin=${DOCKER_BUILDX_VERSION}" \
+        "docker-compose-plugin=${DOCKER_COMPOSE_VERSION}" && \
     rm -rf /var/lib/apt/lists/*
 
 # Create non-root user

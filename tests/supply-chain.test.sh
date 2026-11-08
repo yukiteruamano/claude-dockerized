@@ -35,6 +35,12 @@ check "pnpm installed at the pinned version" matches 'npm install -g pnpm@\$\{PN
 check "installed pnpm version is asserted" matches 'pnpm --version \| grep -qx' "$DF"
 check "Docker apt key checked by fingerprint" matches 'grep -qx "\$DOCKER_APT_KEY_FPR"' "$DF"
 check "Docker apt key fingerprint pinned" matches '^ARG DOCKER_APT_KEY_FPR=[0-9A-F]{40}$' "$DF"
+docker_apt_version='([0-9]+:)?[0-9]+\.[0-9]+\.[0-9]+-[0-9]+~debian\.[0-9]+~[a-z]+'
+for pkg in "docker-ce-cli:DOCKER_CLI_VERSION" "docker-buildx-plugin:DOCKER_BUILDX_VERSION" "docker-compose-plugin:DOCKER_COMPOSE_VERSION"; do
+    check "${pkg%%:*} pinned to an exact apt version" matches "^ARG ${pkg#*:}=${docker_apt_version}\$" "$DF"
+    check "${pkg%%:*} installed at the pinned version" matches "\"${pkg%%:*}=\\\$\\{${pkg#*:}\\}\"" "$DF"
+done
+check_not "no unpinned Docker apt package" matches '^[^#]*apt-get install[^&]*docker-(ce-cli|buildx-plugin|compose-plugin)( |$)' "$DF"
 check "Claude pinned to an exact release" matches '^ARG CLAUDE_CODE_VERSION=[0-9]+\.[0-9]+\.[0-9]+$' "$DF"
 check "installed Claude version is asserted" matches 'claude --version \| grep -q "\^\$\{CLAUDE_CODE_VERSION\} "' "$DF"
 check "Claude binary sha256 verified when recorded" matches 'echo "\$\{CLAUDE_CODE_SHA256\}  \$\{claude_bin\}" \| sha256sum -c -' "$DF"
