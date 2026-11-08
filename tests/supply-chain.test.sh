@@ -95,7 +95,8 @@ check_not "install.sh never calls the local keyring a trusted release check" mat
 if command -v git >/dev/null 2>&1; then
     export TMPDIR="${TMPDIR:-/tmp/claude}"
     REF_REPO="$(t_tmpdir)/ref-repo"
-    git_q() { git -C "$REF_REPO" -c user.name=t -c user.email=t@example.invalid "$@" >/dev/null 2>&1; }
+    # Hermetic: the user's global config may sign commits and tags.
+    git_q() { GIT_CONFIG_GLOBAL=/dev/null git -C "$REF_REPO" -c user.name=t -c user.email=t@example.invalid -c commit.gpgSign=false -c tag.gpgSign=false "$@" >/dev/null 2>&1; }
     git init -q "$REF_REPO"
     git_q commit --allow-empty -m tagged
     git_q tag -a v1.0.0 -m v1.0.0
