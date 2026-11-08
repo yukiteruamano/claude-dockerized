@@ -2,6 +2,15 @@
 
 Releases are signed annotated tags (`docs/security/YELLOW.md#releases`).
 
+## 0.5.1
+
+Documentation-only release on top of 0.5.0:
+
+- `AGENTS.md`, `docs/security/YELLOW.md` and the threat matrix (T-12, T-24) state that releases must be annotated signed tags resolved as `refs/tags/vX.Y.Z` (lightweight tags are refused) and that the Docker CLI, buildx and compose apt packages are pinned.
+- `update` messages name the full ref (`refs/tags/vX.Y.Z`) since 0.5.0.
+
+No wrapper, hook, policy or test behavior changes.
+
 ## 0.5.0
 
 ### Changed (breaking)

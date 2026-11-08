@@ -113,8 +113,10 @@
 
 ## Releases
 
-Releases are **signed annotated tags** `vX.Y.Z`; `update` refuses anything
-else by default.
+Releases are **signed annotated tags** `vX.Y.Z` (`git tag -s`); `update`
+refuses anything else by default. A lightweight tag is never a release, even
+on a signed commit, and the target is resolved as `refs/tags/vX.Y.Z`, so a
+branch with a release-like name cannot stand in for it.
 
 Bump `WRAPPER_VERSION` in `bin/claude-dockerized` first (`tests/supply-chain.test.sh`
 fails when it is behind the latest tag), then tag the release commit:
