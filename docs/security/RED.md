@@ -190,6 +190,17 @@ Result on the current code is in the matrix of THREAT-MODEL.md.
   *Tests:* `profiles` (unapproved and edited rules never reach the mirror, an
   invalid pattern or a reused id is refused, other profiles are unaffected).
 
+### Host writes into the generated home
+
+- **T-37 — Turn the wrapper into a host file writer.** From the session,
+  replace a read-write generated-home file the host later writes or backs up
+  (`~/.claude/settings.json.bak`, `.lsp.json`, `~/.local/bin/.lsp-versions`,
+  the credentials placeholder) with a relative symlink to `~/.bashrc` or
+  `~/.ssh/authorized_keys`, or with a FIFO, and wait for the next wrapper
+  command. *Tests:* `wrapper-dryrun` (the victim file stays intact, the link
+  or FIFO is replaced by a regular file, the backup lives outside the mount),
+  `wrapper-args` (a PID-reused GnuPG mirror full of planted links).
+
 ## Tabletop scenarios
 
 1. *A README in a cloned repo tells the agent to "register the project's

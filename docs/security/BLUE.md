@@ -65,7 +65,11 @@ reduces noise and blocks the obvious.
 | Trusted tool path (`./hook-path` or the image default), never the inherited PATH | T-04 | `guard-failure-modes` |
 | Fail closed: exit 2 on empty/unparseable payloads, missing parser, missing/corrupt/empty/uncompilable policy, crashed evaluator, unknown mode (→ strict) | T-11 | `guard-failure-modes`, CI job without jq/python3 |
 | Mode pinned in `./policy-mode` (read-only), env only a fallback | T-03 | `guard-failure-modes` |
-| Allow rules only relax vendored rules; public-key exemption per token | T-08 | corpus |
+| Allow rules exempt only the text they match from the vendored rules (no exemption for `$(…)`, backticks, `<(…)`, chaining); public-key exemption per token | T-08 | corpus, `guard-eval` |
+| Commands over 64 KiB denied; policy engine under a 15 s deadline (deny on expiry, deny without `timeout`); multi-wildcard vendored rules rewritten to be linear | T-11 | `guard-failure-modes`, `guard-eval` |
+| File hook expands `~`/`$HOME` like Claude Code; Grep/Glob roots under `/proc`, `/sys`, `/dev` refused; backslash-escaped and globbed secret names | T-19, T-26 | corpus |
+| `CLAUDE_PROJECT_DIR` validated (unset, relative, home, ancestor, system dir → only `/tmp/claude` writable); `BASH_ENV`, `ENV`, `NODE_OPTIONS`, `NODE_PATH` pinned empty in the managed env | T-03 | `guard-failure-modes`, `guard-tool-coverage` |
+| `git push` in any spelling asks (PreToolUse `ask`); `git config` of executable keys, `git -c` / `--upload-pack` / `ext::`, downloads and interpreter writes into protected paths denied | T-01, T-04 | corpus |
 | Secret paths incl. credential stores, case-insensitive for files; symlink targets resolved | T-10, T-26 | corpus, `claude-guard` |
 | Env dumps, `/proc/*/environ`, metadata IP forms, docker escapes, destructive root targets | T-19, T-25 | `claude-guard` |
 | Strict mode protects `.git` hooks/config and project Claude settings | T-01, T-03 | corpus |
@@ -76,7 +80,12 @@ reduces noise and blocks the obvious.
 |---------|--------|-------------|
 | `config sync --check` compares hooks, evaluator and deny sets byte for byte (repo → install → mirror) and the managed policy with its template; `sync` restores (with `.bak`) | T-15 | `wrapper-args` |
 | Private 0700 `TMPDIR`; atomic settings writes | T-17 | `config-parse` |
-| Session integrity report + JSONL audit log (default on) | T-01, T-05 | `integrity`, `wrapper-dryrun` |
+| Host writes into the generated home never follow a symlink (staged in `$CCODE_HOME/.wrapper-tmp`, renamed into place); only regular files are read; settings backups in `$CONFIG_DIR/backups/user-settings` | T-37 | `wrapper-dryrun`, `wrapper-args` |
+| A session refuses to start while the hooks-guard mirror is incomplete, or while the global config or the active overlay was refused for control bytes | T-11, T-34 | `wrapper-dryrun`, `profiles` |
+| Session integrity report + JSONL audit log (default on) after every container entry point; fingerprints submodule and worktree git config/hooks | T-01, T-05 | `integrity`, `wrapper-dryrun` |
+| Strict hardening overlays every existing `.git`, submodule and worktree config/hooks read-only | T-01 | `hardening` |
+| A worktree's common dir is mounted only when its `git worktree add` back-links verify, through the mount validator | T-07 | `mounts` |
+| The env file must be owned by the user with no group/other bits (fails closed when it cannot be checked); custom mount sources must exist | T-33, T-07 | `mounts` |
 | Verified updates (pinned keys, origin pin, preview, confirmation, fast-forward, re-exec), rollback | T-12, T-13 | `self-update` |
 | LSP/formatters pinned, installed in a throwaway container with `--ignore-scripts` | T-14 | `lsp-install` |
 | CI actions pinned by SHA, Dependabot, release tags verified | T-29, T-12 | `supply-chain`, `release-verify.yml` |

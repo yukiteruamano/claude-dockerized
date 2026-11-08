@@ -184,7 +184,7 @@ reset_victim
 printf '{"hooks": {"PreToolUse": [{"command": "/x/%s"}]}, "theme": "dark"}\n' "$legacy_marker" >"$CL/settings.json"
 ln -sfn "$VICTIM" "$CL/settings.json.bak"
 DRY_RUN=true wrapper run "$PROJECT"
-check "a planted settings.json.bak symlink is never written through" victim_intact
+check "T-37: a planted settings.json.bak symlink is never written through" victim_intact
 check "the legacy settings are still migrated" lacks_text "$legacy_marker" "$(cat "$CL/settings.json")"
 check "the settings backup lives outside the mounted ~/.claude" \
     test -n "$(find "$CONFIG_DIR/backups/user-settings" -name '*.bak' 2>/dev/null)"

@@ -26,6 +26,34 @@ Releases are signed annotated tags (`docs/security/YELLOW.md#releases`).
 
 ### Security
 
+- **Host writes never follow a planted symlink (T-37, critical).** A session could make `~/.claude/settings.json.bak` (or `.lsp.json`, `~/.local/bin/.lsp-versions`, the credentials placeholder) a symlink to a host file such as `~/.bashrc`; the next wrapper command wrote through it. Host writes into the generated home are now staged in the unmounted `$CCODE_HOME/.wrapper-tmp` and renamed into place, only regular files are read (a FIFO no longer hangs the wrapper), and legacy settings backups move to `$CONFIG_DIR/backups/user-settings/`. A reused per-PID GnuPG mirror is rebuilt instead of written into.
+- **Guard v8** (bash hook 8, file hook 5, `policies/VERSION` 3):
+  - An allow rule (`.env.example`, a profile's approved rules) exempts only the text it matches; the vendored deny rules still judge the rest, and `$(…)`, backticks and `<(…)` get no exemption. Before, one allow token skipped every vendored rule, also in `strict`. Profile allow rules that match the empty string or a sample of attacks are refused.
+  - The file hook expands `~`/`$HOME` like Claude Code does (`Write ~/.bashrc`, `Grep ~/.claude` were treated as project paths) and refuses Grep/Glob roots under `/proc`, `/sys` and `/dev`.
+  - Commands over 64 KiB are denied, the policy engine runs under a 15 s deadline that denies on expiry, and 19 multi-wildcard vendored rules were rewritten to be linear (one 30 KB command took 70 s, past the 30 s hook timeout).
+  - Backslash-escaped and globbed secret names (`.e\nv`, `/proc/self/env*`), more environment dumps (`env -0`, `/usr/bin/env`, `$(env)`, `ps e`, `os.environ`, awk `ENVIRON`), downloads and interpreter writes into protected paths, `git config` of executable keys, `git -c`/`--upload-pack`/`ext::`, docker `-v=`/`--volume=`/`--cap-add`/host namespaces/unconfined, `rm -rf ~/*`, `find ~ -delete`, and decimal/IPv6 metadata addresses are denied. The remote-flow override anchors registry hosts, needs an `/mcp` path segment and refuses clustered upload options.
+  - `git push` in any spelling (`git -C . push`, `command git push`) asks for confirmation.
+  - A non-string `tool_name` and an unset, relative, home or system `CLAUDE_PROJECT_DIR` fail closed.
+- The managed policy also pins `BASH_ENV`, `ENV`, `NODE_OPTIONS` and `NODE_PATH` empty, so a project's settings cannot run code before every tool command.
+- A forged worktree `.git`/`commondir` in the project could make the next session mount another host repository: the common dir is now mounted only when the `git worktree add` back-links verify, and through the mount validator.
+- `hardening=strict` overlays submodule (`.git/modules/**`) and worktree config/hooks read-only too, and the integrity check fingerprints them; it now runs after every container entry point (`exec`, `mcp`, `plugin`, `debug`, `auth`, `doctor`), not only `run`.
+- A session refuses to start while the hooks-guard mirror is incomplete (a missing hook script makes Claude Code skip it), or while the global config or the active profile overlay was ignored for control bytes.
+- Profiles (T-34): a NUL byte in an overlay key (`setting.netw\0ork=host`) no longer bypasses the loosening guard; files with control bytes are refused as a whole; the post-checks use the loaded values; a per-profile `claude_version` other than the global one needs `--allow-loosen`; approvals that no longer match their value are pruned; `profile approve` and the guard render pin the content that was shown (T-36).
+- The env file must be owned by the user with no group/other permission bits (an unreadable mode fails closed); custom mount sources must exist (Docker created them as root); project paths with `:` or `,` and container targets inside the generated home are refused.
+- The host `~/.mcp-auth` is no longer created; the MCP store is `$CCODE_HOME/.mcp-auth`.
+
+### Fixed
+
+- `clean` no longer deletes the relay sockets of running sessions; a starting session's relay is no longer taken for stale.
+- `doctor` probes the image the profile's sessions run (`claude_version`).
+- `profile unbind` from a subdirectory no longer reports success while the ancestor bind stays; map paths with backslashes work (`awk` reads them through `ENVIRON`).
+- `profile create --from` copies `permissions`, `CLAUDE.md` and `allow-patterns.json` (never approvals), so a clone is no looser than its source.
+- `k=v=` keeps its trailing `=`; an empty `--profile=` is an error; `config show` no longer marks rejected overlay values `[profile]`.
+- The install wizard's `save_config` keeps `claude_version`, `share_skills`, `lsp_from`, unknown keys and comments.
+- A legacy `setting.env_file` outside the config dir is copied into `profiles/default/env` (0600) instead of being lost.
+- Completions cover `profile migrate --no-backup --prune-backups --yes`, `logout --yes` and profile names after `profile set`.
+- Documentation: `hardening=strict` does not force the bridge network (it honours an explicit `network=host`).
+
 - **Guard v7** (`CLAUDE_DOCKERIZED_GUARD_VERSION=7`, all modes):
   - Secret names spelled with shell globs (`.en?`, `.en[v]`, `id_e*`, `.cred*`, `server.p?m`) are denied when a read/copy verb is present; a globbed word needs two literal characters, so `*`, `*.*`, `src/*.ts` stay allowed.
   - The backstops also see the command with its quotes removed, so split quotes (`.e""nv`, `id_ed"25519"`) no longer hide a secret name.
