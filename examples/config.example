@@ -77,9 +77,11 @@
 #
 # setting.docker_socket=true
 
-# Container network: host (default, simple) or bridge (more isolated).
+# Container network: bridge (default since 0.5.0; the host's localhost is out
+# of reach, services published on the Docker bridge answer at
+# host.docker.internal) or host (shares the host network namespace).
 #
-# setting.network=host
+# setting.network=bridge
 
 # Security policy mode enforced by the native hooks.
 #   strict   = every vendored policy pattern
@@ -94,8 +96,7 @@
 #   strict   = standard + read-only root filesystem (tmpfs for /tmp and caches),
 #              read-only plugins/agents/commands/~/.local/bin (skills are
 #              read-only in every profile)
-#              and project .git hooks/config, bridge network unless
-#              setting.network is set. Install plugins/LSP from the host.
+#              and project .git hooks/config. Install plugins/LSP from the host.
 #
 # setting.hardening=off
 

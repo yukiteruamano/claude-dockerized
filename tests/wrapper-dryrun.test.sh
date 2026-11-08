@@ -125,7 +125,7 @@ rm -f "$CONFIG_DIR/config"
 wrapper run "$PROJECT"
 
 # Default runtime profile is unchanged (hardening is opt-in, see Phase 3).
-check "default network is host" argv_pair --network host
+check "default network is bridge" argv_pair --network bridge
 check_not "no read-only rootfs by default" argv_has --read-only
 check_not "no pids limit by default" argv_has_text "--pids-limit"
 

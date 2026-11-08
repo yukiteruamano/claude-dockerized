@@ -296,7 +296,7 @@ What counts as loosening:
 - `docker_socket`, `ssh_agent_support`, `gpg_agent_support` (or the main-socket fallback) enabled;
 - `integrity_check=false`;
 - `share_skills=true` or `lsp_from=default` — the only two ways a profile reads another profile's files (`create --share-skills` / `--lsp-from` write their approval for you);
-- a network that is really `host` where the global config says `bridge` (including the bridge `hardening=strict` implies);
+- a `host` network where the global one is `bridge` (the default);
 - a `memory`/`cpus` limit removed or raised;
 - any `:rw` mount: `profile set NAME mount.<name> HOST:CONTAINER:rw --allow-loosen`.
 
@@ -636,7 +636,7 @@ Defaults keep the runtime unchanged. Opt in with `setting.hardening`:
 | --- | --- |
 | `off` (default) | — |
 | `standard` | `--init`, `--pids-limit 4096`, private IPC |
-| `strict` | standard + read-only root filesystem (tmpfs for `/tmp` and caches), read-only plugins / agents / commands / `~/.local/bin` and project `.git` hooks/config (skills are read-only in every profile), bridge network unless `setting.network` is set |
+| `strict` | standard + read-only root filesystem (tmpfs for `/tmp` and caches), read-only plugins / agents / commands / `~/.local/bin` and project `.git` hooks/config (skills are read-only in every profile) |
 
 Image options: `setting.image_strip_setuid=true` (no setuid bits),
 `setting.image_docker_cli=false` (no Docker CLI; only useful with the socket).
@@ -823,7 +823,7 @@ That is the whole point of the sandbox: full functionality, bounded damage.
 ## ⚠️ Important Notes
 
 1. **Docker socket (opt-in).** Never mounted by default. `setting.docker_socket=true` gives the session the host daemon, which is root-equivalent on the host: enable it only when you need it.
-2. **Network.** `--network host` is the default for convenience (host loopback services are reachable). Use `setting.network=bridge` or `setting.hardening=strict` for more isolation.
+2. **Network.** `--network bridge` is the default since 0.5.0: services on the host's `localhost` are out of reach, and services the host publishes on its Docker bridge answer at `host.docker.internal`. `setting.network=host` restores the shared namespace (a profile needs `--allow-loosen` for it).
 3. **Configuration.** The managed policy and hooks are mounted **read-only**: change wrapper settings on the host (`config edit`, then `config sync`). Auth and MCP OAuth live in read-write mounts, so `auth` and `mcp login` keep working.
 4. **Persistence.** Project files and the whole `profiles/<name>/home/` state tree survive restarts and rebuilds.
 5. **No privilege escalation.** The image ships no `sudo`, the container runs as your host user with all capabilities dropped and `no-new-privileges`, so it cannot become root inside.

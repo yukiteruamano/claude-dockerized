@@ -278,7 +278,7 @@ grep -Eq '^FROM debian:trixie-slim' "$dockerfile" ||
 # tests/supply-chain.test.sh.
 grep -q 'nvm install ${NODE_VERSION}' "$dockerfile" ||
     fail "Dockerfile must keep Node via NVM (pinned NODE_VERSION)"
-grep -q 'astral.sh/uv/${UV_VERSION}/install.sh' "$dockerfile" ||
+grep -q 'astral-sh/uv/releases/download/${UV_VERSION}/' "$dockerfile" ||
     fail "Dockerfile must keep uv (pinned UV_VERSION)"
 grep -Eq '^CMD \["claude"\]' "$dockerfile" ||
     fail 'Dockerfile CMD must be ["claude"]'
@@ -930,12 +930,12 @@ grep -qx -- '4g' <<<"$common_lim" || fail "memory value not passed"
 grep -qx -- '--cpus' <<<"$common_lim" || fail "--cpus not added when setting.cpus is set"
 grep -qx -- '2' <<<"$common_lim" || fail "cpus value not passed"
 
-# Container network defaults to host, honors bridge, and rejects garbage.
+# Container network honors host and bridge, and rejects garbage (bridge).
 NETWORK="host"
 build_common_docker_args
 common_net="$(printf '%s\n' "${DOCKER_COMMON_ARGS[@]}")"
 grep -qx -- '--network' <<<"$common_net" || fail "--network flag missing"
-grep -qx -- 'host' <<<"$common_net" || fail "default network must be host"
+grep -qx -- 'host' <<<"$common_net" || fail "host network must be honored"
 NETWORK="bridge"
 build_common_docker_args
 common_net="$(printf '%s\n' "${DOCKER_COMMON_ARGS[@]}")"
@@ -943,7 +943,7 @@ grep -qx -- 'bridge' <<<"$common_net" || fail "bridge network must be honored"
 NETWORK="bogus"
 build_common_docker_args
 common_net="$(printf '%s\n' "${DOCKER_COMMON_ARGS[@]}")"
-grep -qx -- 'host' <<<"$common_net" || fail "invalid network must fall back to host"
+grep -qx -- 'bridge' <<<"$common_net" || fail "invalid network must fall back to bridge"
 if grep -qx -- 'bogus' <<<"$common_net"; then
     fail "invalid network value must never reach docker"
 fi

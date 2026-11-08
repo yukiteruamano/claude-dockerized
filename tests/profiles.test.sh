@@ -286,12 +286,12 @@ wrapper profile unset work hardening
 # --- the guard sees what a session really gets (T-34) -------------------------------------------
 cp "$CONFIG_DIR/config" "$TMP/global.bak"
 wrapper profile create guard
-# network: global strict hardening implies a bridge network; an overlay must not escape it
+# network: bridge is the global default; an overlay must not escape it
 printf 'setting.hardening=strict\nsetting.memory=4g\nsetting.cpus=2\nsetting.security_policy=strict\n' >>"$CONFIG_DIR/config"
 wrapper run "$PROJECT" --profile guard
-check "baseline: strict global hardening runs on the bridge network" argv_pair --network bridge
+check "baseline: the session runs on the default bridge network" argv_pair --network bridge
 wrapper profile set guard network host
-check_not "T-34: network=host under global strict hardening is refused" [ "$RC" -eq 0 ]
+check_not "T-34: network=host over the bridge default is refused" [ "$RC" -eq 0 ]
 printf 'setting.network=host\n' >>"$P/guard/config"
 wrapper run "$PROJECT" --profile guard
 check "T-34: a hand-edited network=host does not escape the bridge" argv_pair --network bridge
@@ -731,13 +731,14 @@ wrapper profile set lim cpus 1
 assert_eq "$(grep -c 'cpus' "$P/lim/config")" 1 "set replaces the indented line instead of adding another"
 : >"$P/lim/config"
 
-# --- an approved hardening change that implies a host network is visible --------------------------------
+# --- an approved hardening change no longer moves the network ------------------------------------------
 printf 'setting.hardening=strict\n' >>"$CONFIG_DIR/config"
 wrapper profile set lim hardening standard --allow-loosen
 wrapper profiles
-check "the implied host network is listed next to hardening" has_text "loosens: hardening,network" "$OUT"
+check "only hardening is listed as loosened" has_text "loosens: hardening" "$OUT"
+check_not "…the network is not" has_text "loosens: hardening,network" "$OUT"
 wrapper run "$PROJECT" --profile lim
-check "…and the session really is on the host network" argv_pair --network host
+check "…and the session stays on the bridge network" argv_pair --network bridge
 wrapper profile delete lim --yes
 
 # --- the wrapper-rollback precheck agrees with --rollback --------------------------------------------------
@@ -887,7 +888,7 @@ rm -rf "${P:?}/extra-dir"
 cp "$CONFIG_DIR/config" "$TMP/global2.bak"
 printf 'setting.hardening=strict\n' >>"$CONFIG_DIR/config"
 wrapper config show
-check "config show reports bridge under strict hardening" has_text "Container network: bridge" "$OUT"
+check "config show reports the bridge network" has_text "Container network: bridge" "$OUT"
 cp "$TMP/global2.bak" "$CONFIG_DIR/config"
 
 # --- env placement during the migration ----------------------------------------------------------------------

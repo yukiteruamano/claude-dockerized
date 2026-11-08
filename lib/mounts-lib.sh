@@ -185,9 +185,9 @@ build_git_worktree_args() {
 #   standard: an init process (reaps zombies), a pids limit against fork
 #             bombs (T-23) and a private IPC namespace.
 #   strict:   standard + read-only root filesystem with per-user tmpfs for
-#             the paths tools write to (T-22), and bridge networking unless
-#             setting.network was set explicitly (T-06). The read-only
-#             persistent mounts of strict live in build_standard_volume_args.
+#             the paths tools write to (T-22). The read-only persistent
+#             mounts of strict live in build_standard_volume_args. (Bridge
+#             networking, T-06, is the default for every profile.)
 # Usage: append_hardening_args
 append_hardening_args() {
     case "$HARDENING" in
@@ -204,16 +204,17 @@ append_hardening_args() {
         /home/coder/.local/share /home/coder/.local/state; do
         DOCKER_COMMON_ARGS+=(--tmpfs "$d:rw,nosuid,nodev,$owner")
     done
-    if [ "$NETWORK_EXPLICIT" != true ] && [ "$NETWORK" = host ]; then
-        NETWORK=bridge
-        local i
-        for i in "${!DOCKER_COMMON_ARGS[@]}"; do
-            if [ "${DOCKER_COMMON_ARGS[$i]}" = --network ]; then
-                DOCKER_COMMON_ARGS[i + 1]=bridge
-            fi
-        done
-        DOCKER_COMMON_ARGS+=(--add-host "host.docker.internal:host-gateway")
-    fi
+}
+
+# Say once per install that the network default moved from host to bridge
+# (0.5.0) while the config does not choose a network.
+# Usage: network_default_notice
+network_default_notice() {
+    [ "$NETWORK_EXPLICIT" = true ] && return 0
+    local marker="$CONFIG_DIR/state/network-default-bridge"
+    [ -e "$marker" ] && return 0
+    config_info "The container network now defaults to bridge: services on the host's localhost are out of reach. Use host.docker.internal for services the host publishes on its Docker bridge, or set setting.network=host (claude-dockerized config edit) to restore the old behavior."
+    { mkdir -p "$CONFIG_DIR/state" && : >"$marker"; } 2>/dev/null || true
 }
 
 # Populates DOCKER_COMMON_ARGS array
@@ -235,11 +236,11 @@ build_common_docker_args() {
     # Block runs whose managed config carries inline secrets.
     validate_claude_config || exit 1
     # Allowlist the network mode (config values are user-edited).
-    case "${NETWORK:-host}" in
+    case "${NETWORK:-bridge}" in
     host | bridge) ;;
     *)
-        config_warning "Invalid network '$NETWORK' (use host|bridge); falling back to host"
-        NETWORK="host"
+        config_warning "Invalid network '$NETWORK' (use host|bridge); falling back to bridge"
+        NETWORK="bridge"
         ;;
     esac
     DOCKER_COMMON_ARGS=(
@@ -251,6 +252,9 @@ build_common_docker_args() {
         --cap-drop=ALL
         -e "TERM=${TERM:-xterm-256color}"
     )
+    # On the bridge network the host's loopback is out of reach (T-06); services
+    # the host publishes on its bridge interface stay reachable by name.
+    [ "$NETWORK" = bridge ] && DOCKER_COMMON_ARGS+=(--add-host "host.docker.internal:host-gateway")
 
     # Optional resource limits (setting.memory / setting.cpus).
     [ -n "$MEMORY" ] && DOCKER_COMMON_ARGS+=(--memory "$MEMORY")

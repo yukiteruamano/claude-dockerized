@@ -152,4 +152,17 @@ wrapper run "$PROJECT"
 assert_eq "$RC" 0 "run accepts the same env file once it is 0600"
 check "the env file reaches docker as --env-file" argv_has --env-file
 
+# --- the bridge default is announced once, and never when a network is chosen (T-06) ---------
+rm -f "$CONFIG_DIR/state/network-default-bridge"
+sed -i '/^setting.network=/d' "$CONFIG_DIR/config" 2>/dev/null || true
+wrapper run "$PROJECT"
+check "the first run announces the bridge default" has_text "now defaults to bridge" "$OUT"
+wrapper run "$PROJECT"
+check_not "the notice is shown only once" has_text "now defaults to bridge" "$OUT"
+rm -f "$CONFIG_DIR/state/network-default-bridge"
+printf 'setting.network=host\n' >>"$CONFIG_DIR/config"
+wrapper run "$PROJECT"
+check_not "an explicit network gets no notice" has_text "now defaults to bridge" "$OUT"
+check "an explicit host network reaches docker" argv_has host
+
 t_summary

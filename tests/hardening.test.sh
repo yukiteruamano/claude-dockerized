@@ -64,10 +64,12 @@ rw_sources_contained() {
 # --- off (default): nothing added -------------------------------------------------------
 ARGV="$(argv_for '')"
 DEFAULT_ARGV="$ARGV"
-for flag in --init --read-only --pids-limit --ipc --tmpfs --add-host; do
+for flag in --init --read-only --pids-limit --ipc --tmpfs; do
     check_not "off adds no $flag" line "$flag"
 done
-check "off keeps host networking" line host
+check "off: bridge network by default (T-06)" line bridge
+check_not "off: no host network by default (T-06)" line host
+check "off: host gateway alias on the default bridge" line "host.docker.internal:host-gateway"
 check "off keeps plugins read-write" text "/home/coder/.claude/plugins:rw"
 check "off keeps ~/.local/bin read-write" text "/home/coder/.local/bin:rw"
 check "off: skills read-only (T-05)" text "$CCODE_HOME/.claude/skills:/home/coder/.claude/skills:ro"
@@ -86,7 +88,7 @@ check "standard: --init" line --init
 check "standard: pids limit" line --pids-limit
 check "standard: private IPC" line private
 check_not "standard keeps a writable rootfs" line --read-only
-check "standard keeps host networking" line host
+check "standard keeps the default bridge network" line bridge
 check "standard keeps plugins read-write" text "/home/coder/.claude/plugins:rw"
 check "standard reports its profile" line CLAUDE_DOCKERIZED_HARDENING=standard
 
@@ -114,5 +116,6 @@ check "strict keeps the rootless flags" line --cap-drop=ALL
 ARGV="$(argv_for 'setting.hardening=strict\nsetting.network=host\n')"
 check "strict honors an explicit network=host" line host
 check_not "strict with explicit host adds no bridge" line bridge
+check_not "an explicit host network adds no gateway alias" line "host.docker.internal:host-gateway"
 
 t_summary

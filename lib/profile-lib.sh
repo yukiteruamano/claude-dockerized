@@ -372,17 +372,6 @@ _profile_overlay_raw() {
     printf '%s' "${v%"${v##*[![:space:]]}"}"
 }
 
-# The network a session really gets: hardening=strict turns an implicit host
-# network into bridge (see append_hardening_args).
-# Usage: _profile_effective_network <hardening> <network> <explicit>
-_profile_effective_network() {
-    if [ "$1" = strict ] && [ "$3" != true ] && [ "$2" = host ]; then
-        echo bridge
-    else
-        echo "$2"
-    fi
-}
-
 # Bytes of a docker memory size (4g, 512m, 100k, 2048b) as a decimal string
 # (awk doubles: a huge size cannot wrap around); fails when unparsable.
 # Usage: _profile_mem_bytes <size>
@@ -415,42 +404,29 @@ _profile_limit_loosens() {
     awk -v o="$o" -v n="$n" 'BEGIN { exit !(n + 0 == 0 || n + 0 > o + 0) }'
 }
 
-# Checks that need the whole overlay: the effective network (an overlay
-# network=host escapes the bridge that global hardening=strict implies) and the
-# resource limits (dropping or raising a global memory/cpus limit). A loosening
-# without approval is reverted to the global value.
-# Usage: _profile_overlay_post_checks <file> <g_hardening> <g_network> <g_explicit> <g_memory> <g_cpus>
+# Checks that need the whole overlay: the network (an overlay network=host
+# leaves the global bridge network) and the resource limits (dropping or
+# raising a global memory/cpus limit). A loosening without approval is
+# reverted to the global value.
+# Usage: _profile_overlay_post_checks <file> <g_network> <g_explicit> <g_memory> <g_cpus>
 _profile_overlay_post_checks() {
-    local file="$1" raw old_eff new_eff kind var old new
-    old_eff=$(_profile_effective_network "$2" "$3" "$4")
-    if raw=$(_profile_overlay_raw "$file" network); then
-        new_eff=$(_profile_effective_network "$HARDENING" "$NETWORK" "$NETWORK_EXPLICIT")
-        if [ "$old_eff" = bridge ] && [ "$new_eff" = host ]; then
-            if profile_loosen_approved "$file" network "$raw"; then
-                PROFILE_LOOSENED+=("network=host")
-            else
-                NETWORK="$3"
-                NETWORK_EXPLICIT="$4"
-                PROFILE_UNAPPROVED+=("network")
-                # Say what the session really gets (an approved hardening change
-                # can still make it host).
-                new_eff=$(_profile_effective_network "$HARDENING" "$NETWORK" "$NETWORK_EXPLICIT")
-                _profile_warn_once "$PROFILE_NAME:network" "Profile '$PROFILE_NAME' loosens network ($old_eff -> host) without approval; the session gets $new_eff (approve with: claude-dockerized profile set $PROFILE_NAME network \"$raw\" --allow-loosen)"
-            fi
+    local file="$1" raw kind var old new
+    if raw=$(_profile_overlay_raw "$file" network) && [ "$2" = bridge ] && [ "$NETWORK" = host ]; then
+        if profile_loosen_approved "$file" network "$raw"; then
+            PROFILE_LOOSENED+=("network=host")
+        else
+            NETWORK="$2"
+            NETWORK_EXPLICIT="$3"
+            PROFILE_UNAPPROVED+=("network")
+            _profile_warn_once "$PROFILE_NAME:network" "Profile '$PROFILE_NAME' loosens network (bridge -> host) without approval; keeping bridge (approve with: claude-dockerized profile set $PROFILE_NAME network \"$raw\" --allow-loosen)"
         fi
-    fi
-    # An approved hardening change can turn the implied bridge into host on its
-    # own: make that visible next to it.
-    new_eff=$(_profile_effective_network "$HARDENING" "$NETWORK" "$NETWORK_EXPLICIT")
-    if [ "$old_eff" = bridge ] && [ "$new_eff" = host ] && [[ " ${PROFILE_LOOSENED[*]} " != *" network=host "* ]]; then
-        PROFILE_LOOSENED+=("network=host")
     fi
     for kind in memory cpus; do
         raw=$(_profile_overlay_raw "$file" "$kind") || continue
         if [ "$kind" = memory ]; then
-            var=MEMORY old="$5"
+            var=MEMORY old="$4"
         else
-            var=CPUS old="$6"
+            var=CPUS old="$5"
         fi
         new="${!var}"
         _profile_limit_loosens "$kind" "$old" "$new" || continue
@@ -468,12 +444,12 @@ _profile_overlay_post_checks() {
 # PROFILE_LOOSENED (approved loosenings) and PROFILE_UNAPPROVED (dropped ones).
 # Usage: profile_apply_overlay_file <file>
 profile_apply_overlay_file() {
-    local file="$1" g_h="$HARDENING" g_n="$NETWORK" g_e="$NETWORK_EXPLICIT" g_m="$MEMORY" g_c="$CPUS"
+    local file="$1" g_n="$NETWORK" g_e="$NETWORK_EXPLICIT" g_m="$MEMORY" g_c="$CPUS"
     PROFILE_LOOSENED=()
     PROFILE_UNAPPROVED=()
     [ -f "$file" ] || return 0
     _load_config_file "$file" overlay
-    _profile_overlay_post_checks "$file" "$g_h" "$g_n" "$g_e" "$g_m" "$g_c"
+    _profile_overlay_post_checks "$file" "$g_n" "$g_e" "$g_m" "$g_c"
 }
 
 # Layer the active profile's overlay on top of the global settings.

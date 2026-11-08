@@ -54,8 +54,8 @@ treated as untrusted code execution inside the container.
   including code the host runs later (tests, scripts, git hooks).
 - Provider credentials from the env file are visible to the session; the
   Claude login (`.credentials.json`, 0600) is read-write so it persists.
-- `--network host` is the default (host loopback services are reachable);
-  use `setting.network=bridge` or `setting.hardening=strict`.
+- `--network bridge` is the default since 0.5.0 (the host's loopback is out
+  of reach); `setting.network=host` opts back into the shared namespace.
 - Forwarded SSH/GnuPG agents (opt-in) are signing oracles while a session
   runs; private keys are never mounted. Sessions of the **same profile** still
   share its home (`.claude.json`, `settings.json`, the login), so concurrent

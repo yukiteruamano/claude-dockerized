@@ -42,10 +42,11 @@ reduces noise and blocks the obvious.
 | Env file only under `$CONFIG_DIR`, never in the mounted home | T-18 | `mounts` |
 | Read-write binds only from the generated home and the project: no host CLI or token directory (the MCP OAuth store is `$CCODE_HOME/.mcp-auth`, `0700`) | T-02 | `hardening`, `wrapper-args` |
 | Docker socket off by default | T-20 | `wrapper-dryrun` |
+| Bridge network by default (host loopback out of reach); `setting.network=host` is opt-in and a profile needs `--allow-loosen` for it | T-06 | `wrapper-dryrun`, `hardening`, `profiles` |
 | `~/.local/bin` last on PATH | T-04 | `entrypoint`, integration |
 | User skills (`~/.claude/skills/`) read-only in every profile, plus `Edit(~/.claude/skills/**)` deny | T-05 | `hardening`, corpus `write-user-skill` |
 | `setting.hardening=standard`: `--init`, `--pids-limit`, private IPC | T-23 | `hardening` |
-| `setting.hardening=strict`: read-only rootfs + tmpfs; read-only plugins/agents/commands/`~/.local/bin`; read-only `.git` hooks/config overlays; bridge network | T-01, T-05, T-06, T-22 | `hardening`, integration |
+| `setting.hardening=strict`: read-only rootfs + tmpfs; read-only plugins/agents/commands/`~/.local/bin`; read-only `.git` hooks/config overlays | T-01, T-05, T-22 | `hardening`, integration |
 
 ### Policy (`config/managed-settings.json`, rendered by `write_managed_settings`)
 
@@ -156,5 +157,6 @@ claude-dockerized doctor --json | jq '.host[] | select(.status != "pass")'
 
 See the residual-risk section of THREAT-MODEL.md: the guard is a heuristic,
 the project is read-write, provider credentials are visible to the session,
-forwarded agents are signing oracles, `--network host` is the default and the
-release key / Claude binary hash are trusted on first use.
+forwarded agents are signing oracles, `setting.network=host` (opt-in) exposes
+host loopback services and the release key / the hash of a non-default Claude
+version are trusted on first use.

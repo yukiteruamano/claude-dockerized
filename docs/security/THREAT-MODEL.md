@@ -93,7 +93,8 @@ deliberately mounts or puts in the env file.
 | Profiles | a project file picks the account (T-32), a global key overrides a profile login (T-33) | — | — | another account's home and secrets (T-31) | — | a profile weakens the global posture (T-34) |
 
 Network exposure through `--network host` (T-06) spans B1 (information
-disclosure of loopback services) and is accepted by default.
+disclosure of loopback services); since 0.5.0 it is opt-in (`bridge` is the
+default).
 
 ## 6. Threat matrix
 
@@ -108,7 +109,7 @@ Status legend: **mitigated** (control in place, test green) · **detected**
 | T-03 | Managed policy override from the project: `.claude/settings.local.json`, or `env` relaxing `CLAUDE_DOCKERIZED_POLICY` | mitigated | managed policy at `/etc/claude-code/managed-settings.json` (tool-coverage, wrapper-args, dryrun); failure-modes `policy-mode file wins over env`; corpus `write-project-settings-local` (strict), `bash-redirect-into-user-settings`, `bash-redirect-into-project-settings`, `write-root-widened-by-env`; integrity `executable-keys` of the user settings |
 | T-04 | Helper hijack: writable `~/.local/bin` first on PATH shadows `jq` / `node` / `claude` used by the guard | mitigated | failure-modes `fake jq/node on PATH`; entrypoint PATH order; integration planted `~/.local/bin/claude`, root-owned guard node; corpus `bash-env-startup-file`, `node-options-require` (the hooks run under `bash -p` and drop startup/preload variables), `bash-copy-into-local-bin` |
 | T-05 | Cross-session persistence via read-write `.claude.json` (MCP stdio), plugins, skills, agents, commands, `.lsp.json` | detected (default) · prevented (skills: read-only in every profile; plugins/agents/commands: strict hardening; `.claude.json` stays writable) | integrity `MCP server`, `skill`, `~/.local/bin`; hardening read-only skills, plugins/agents/commands; corpus `write-user-skill` |
-| T-06 | Host network exposure (`--network host`: loopback services, abstract sockets) | accepted (default) · opt-in bridge (strict hardening) | dryrun `default network is host`; hardening `strict: bridge network` |
+| T-06 | Host network exposure (`--network host`: loopback services, abstract sockets) | mitigated (bridge by default since 0.5.0; `host` is opt-in and a profile needs `--allow-loosen` for it) | dryrun `default network is bridge`; profiles `T-34: network=host over the bridge default is refused` |
 | T-07 | Custom mount / project-dir validation bypass (non-canonical paths, symlinks, `$HOME`, `/`, config dirs, docker socket, arbitrary modes, shadowed managed targets) | mitigated | `tests/mounts.test.sh` (canonical paths, sensitive dirs, modes, managed targets, project dir) |
 | T-08 | Guard allowlist token (`.env.example`, `*.pub`) short-circuits every backstop | mitigated | corpus `allow-token-*`, `pub-suffix-*`, `authorized-keys-*`, `exemption-dir-*` (the file hook exempts the final path component only), `bare-ifs-*` |
 | T-09 | Guard coverage gaps: `NotebookEdit` / `MultiEdit` not routed, `notebook_path` / `glob` fields ignored | mitigated | corpus `notebook-*`, `multiedit-*`, `grep-glob-*`; tool-coverage matcher |
@@ -166,8 +167,9 @@ Status legend: **mitigated** (control in place, test green) · **detected**
   credential stores are refused.
 - **Auto-allowed commands** (`config/user-settings.default.json`) are seeded
   only into a new user settings file; an existing one keeps its own list.
-- **`--network host` by default** (T-06): loopback services on the host are
-  reachable. Use `setting.network=bridge` or `setting.hardening=strict`.
+- **`setting.network=host` (opt-in, T-06)**: loopback services on the host
+  are reachable. On the default bridge, services the host publishes on its
+  Docker bridge interface stay reachable (`host.docker.internal`).
 - **First-use trust.** The release key and the Claude binary hash are
   trusted on first use; verify the key fingerprint out of band. The first
   build of a Claude version (pinned or the Dockerfile default) warns and

@@ -149,14 +149,14 @@ config_reset_settings() {
     GPG_AUTOSTART_AGENT=true    # Launch the host gpg-agent when its socket is missing
     GPG_RELAY=true              # Relay the agent socket through a normal-fs socket
     DOCKER_SOCKET=false         # Boolean flag: mount the host Docker socket (opt-in, root-equivalent)
-    NETWORK="host"              # Container network: host (default, simple) | bridge (more isolated)
+    NETWORK="bridge"            # Container network: bridge (default, isolated from host loopback) | host (opt-in)
     SECURITY_POLICY="balanced"  # Security policy mode: strict | balanced | none ("off" accepted as alias for none)
     HARDENING="off"             # Runtime hardening profile: off (default, unchanged) | standard | strict (opt-in)
     INTEGRITY_CHECK=true        # Fingerprint persistent paths before/after each session and report changes
     IMAGE_STRIP_SETUID=false    # Build the image without setuid/setgid bits (opt-in)
     IMAGE_DOCKER_CLI=true       # Build the image with the Docker CLI (needed only with docker_socket)
     REQUIRE_CLAUDE_SHA=false    # Refuse to build a Claude Code version with no recorded sha256 (opt-in)
-    NETWORK_EXPLICIT=false      # setting.network was set in the config (strict keeps an explicit choice)
+    NETWORK_EXPLICIT=false      # setting.network was set in the config (no default-change notice then)
     MEMORY=""                   # Optional container memory limit (docker --memory), e.g. 4g
     CPUS=""                     # Optional container CPU limit (docker --cpus), e.g. 2
     DEFAULT_PROFILE=""          # setting.profile: profile used when nothing selects one (empty = default)
@@ -352,9 +352,10 @@ init_config_file() {
 # you need Docker-in-Docker / Testcontainers.
 # setting.docker_socket=false
 
-# Container network: host (default, simple; shares the host network namespace)
-# or bridge (more isolated; host services are reached via host.docker.internal).
-# setting.network=host
+# Container network: bridge (default; the host's localhost is out of reach,
+# services it publishes on the Docker bridge via host.docker.internal) or host
+# (shares the host network namespace).
+# setting.network=bridge
 
 # Security policy mode enforced by the mounted native hooks.
 # strict = every vendored policy pattern; balanced = drop the noisy
@@ -365,7 +366,7 @@ init_config_file() {
 # Runtime hardening profile (opt-in; default off keeps today's behavior).
 # standard = init + pids limit + private IPC; strict = standard + read-only
 # root filesystem, read-only persistent mounts (plugins, skills, ~/.local/bin,
-# project .git hooks/config) and bridge networking unless network is set.
+# project .git hooks/config).
 # setting.hardening=off
 
 # Report changes to persistent paths (git hooks/config, ~/.local/bin, plugins,
@@ -454,12 +455,12 @@ _config_apply_setting() {
     network)
         case "$value" in
         "" | host | bridge)
-            NETWORK="${value:-host}"
+            NETWORK="${value:-bridge}"
             if [ -n "$value" ]; then
                 NETWORK_EXPLICIT=true
             fi
             ;;
-        *) config_warning "Invalid network '$value' (use host|bridge); keeping host" ;;
+        *) config_warning "Invalid network '$value' (use host|bridge); keeping $NETWORK" ;;
         esac
         ;;
     env_file) # secrets are per profile now (migrated by lib/profile-lib.sh)
@@ -689,7 +690,7 @@ save_config() {
         echo "setting.gpg_relay=$GPG_RELAY"
         echo "# Docker socket (opt-in; grants host Docker control — root-equivalent)"
         echo "setting.docker_socket=$DOCKER_SOCKET"
-        echo "# Container network: host (default) | bridge (more isolated)"
+        echo "# Container network: bridge (default, isolated from host localhost) | host"
         echo "setting.network=$NETWORK"
         echo "# Security policy mode: strict | balanced | none (off = alias for none)"
         echo "setting.security_policy=$SECURITY_POLICY"
@@ -771,7 +772,7 @@ print_config() {
     if [ "$DOCKER_SOCKET" = true ]; then
         echo "  Docker socket WARNING: root-equivalent on the host (Docker-in-Docker only)"
     fi
-    echo "  Container network: $(_profile_effective_network "$HARDENING" "$NETWORK" "$NETWORK_EXPLICIT")"
+    echo "  Container network: $NETWORK"
     echo "  Security policy: $SECURITY_POLICY"
     echo "  Hardening profile: $HARDENING"
     echo "  Session integrity check: $INTEGRITY_CHECK"

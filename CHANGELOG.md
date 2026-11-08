@@ -4,6 +4,10 @@ Releases are signed annotated tags (`docs/security/YELLOW.md#releases`).
 
 ## Unreleased
 
+### Changed (breaking)
+
+- **The container network defaults to `bridge`** (T-06): services on the host's `localhost` are no longer reachable from the session. Services the host publishes on its Docker bridge answer at `host.docker.internal` (added on every bridge run). A config that sets `setting.network=host` keeps it (configs written by `install` always carry an explicit value); one without a network line moves to bridge and gets a one-time notice. A profile overlay that switches to `host` needs `--allow-loosen`. `hardening=strict` no longer changes the network (it is bridge already).
+
 ### Security
 
 - **Guard v7** (`CLAUDE_DOCKERIZED_GUARD_VERSION=7`, all modes):

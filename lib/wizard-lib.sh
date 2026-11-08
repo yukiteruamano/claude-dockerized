@@ -404,12 +404,14 @@ prompt_docker_socket() {
 }
 
 # Interactive container network prompt
-# host = simple (shares host network namespace); bridge = more isolated.
+# bridge = isolated from the host's loopback (default); host = shared namespace.
 prompt_network() {
+    local network
     echo ""
     config_info "Container Network"
-    echo "  host   = shares the host network namespace (default, simple)"
-    echo "  bridge = more isolated (reach host services via host.docker.internal)"
+    echo "  bridge = isolated from the host's localhost (default; reach host services"
+    echo "           published on the Docker bridge via host.docker.internal)"
+    echo "  host   = shares the host network namespace (localhost services reachable)"
     read -r -p "Container network (host|bridge) [$NETWORK]: " network || network=""
     case "$network" in
     host | bridge)
@@ -432,8 +434,8 @@ prompt_hardening() {
     echo "  standard = + init process, pids limit, private IPC"
     echo "  strict   = + read-only root filesystem, read-only plugins/~/.local/bin"
     echo "             (skills are read-only in every profile)"
-    echo "             and project .git hooks/config, bridge network (install plugins"
-    echo "             and LSP binaries from the host)"
+    echo "             and project .git hooks/config (install plugins and LSP"
+    echo "             binaries from the host)"
     echo ""
     local answer
     read -r -p "Hardening profile (off|standard|strict) [$HARDENING]: " answer || answer=""
@@ -721,7 +723,7 @@ interactive_config_setup() {
             prompt_formatters
             prompt_custom_mounts
             prompt_env_vars
-            if [ ${#CUSTOM_MOUNTS[@]} -gt 0 ] || [ "$SSH_AGENT_SUPPORT" = true ] || [ "$GPG_AGENT_SUPPORT" = true ] || [ "$DOCKER_SOCKET" = true ] || [ "$NETWORK" != "host" ] || [ -n "$MEMORY" ] || [ -n "$CPUS" ] || [ "$SECURITY_POLICY" != "balanced" ] || [ "$HARDENING" != "off" ] || [ -n "$ENV_FILE" ] || [ -n "$CLAUDE_MODEL" ] || [ -n "$CLEANUP_DAYS" ] || [ "$LSP_ENABLED" = true ] || [ "$FORMATTERS_ENABLED" = true ]; then
+            if [ ${#CUSTOM_MOUNTS[@]} -gt 0 ] || [ "$SSH_AGENT_SUPPORT" = true ] || [ "$GPG_AGENT_SUPPORT" = true ] || [ "$DOCKER_SOCKET" = true ] || [ "$NETWORK" != "bridge" ] || [ -n "$MEMORY" ] || [ -n "$CPUS" ] || [ "$SECURITY_POLICY" != "balanced" ] || [ "$HARDENING" != "off" ] || [ -n "$ENV_FILE" ] || [ -n "$CLAUDE_MODEL" ] || [ -n "$CLEANUP_DAYS" ] || [ "$LSP_ENABLED" = true ] || [ "$FORMATTERS_ENABLED" = true ]; then
                 save_config
                 print_config
             else

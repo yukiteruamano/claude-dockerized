@@ -200,7 +200,10 @@ run_cli_command() {
     parse_config
     ensure_claude_dirs
     profile_report_loosened
-    [ "${DRY_RUN:-false}" = true ] || profile_touch_used
+    if [ "${DRY_RUN:-false}" != true ]; then
+        profile_touch_used
+        network_default_notice
+    fi
 
     build_session_args "$project_dir" "$docker_socket"
 
@@ -311,7 +314,10 @@ run_claude() {
     # Parse custom config and build docker arguments
     parse_config
     profile_report_loosened
-    [ "$dry_run" = true ] || profile_touch_used
+    if [ "$dry_run" != true ]; then
+        profile_touch_used
+        network_default_notice
+    fi
     # Docker socket is opt-in: mounting it is root-equivalent on the host.
     build_session_args "$project_dir" "$DOCKER_SOCKET"
 

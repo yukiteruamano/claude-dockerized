@@ -109,10 +109,14 @@ assert_eq "$(policy_arg_for off)" CLAUDE_DOCKERIZED_POLICY=none "off is an alias
 assert_eq "$(policy_arg_for yolo)" CLAUDE_DOCKERIZED_POLICY=balanced "invalid policy keeps balanced"
 
 # --- network allowlist -------------------------------------------------------------------
-load_from 'setting.network=bridge\n'
-assert_eq "$NETWORK" bridge "bridge accepted"
+load_from 'setting.network=host\n'
+assert_eq "$NETWORK" host "host accepted"
+assert_eq "$NETWORK_EXPLICIT" true "an explicit network is remembered"
 load_from 'setting.network=container:other\n'
-assert_eq "$NETWORK" host "container:<id> network refused"
+assert_eq "$NETWORK" bridge "container:<id> network refused (bridge default kept)"
+load_from ''
+assert_eq "$NETWORK" bridge "bridge is the default network (T-06)"
+assert_eq "$NETWORK_EXPLICIT" false "the default network is not explicit"
 
 # --- container names --------------------------------------------------------------------
 assert_eq "$(sanitize_container_name "my app")" myapp "spaces stripped"

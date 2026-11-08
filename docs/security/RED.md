@@ -129,8 +129,9 @@ Result on the current code is in the matrix of THREAT-MODEL.md.
   whole home, the wrapper's config dir, the docker socket, a propagation mode,
   or a target that shadows the managed read-only mounts. *Tests:* `mounts`.
 - **T-06 — Reach host loopback services** through the shared network
-  namespace. *Tests:* `wrapper-dryrun` (default documented), `hardening`
-  (bridge in strict).
+  namespace (only with the opt-in `setting.network=host`). *Tests:*
+  `wrapper-dryrun` (bridge by default), `profiles` (a profile cannot switch
+  to host without approval).
 - **T-20 — Use the Docker socket** (opt-in) to start a privileged container.
   *Tests:* `wrapper-dryrun` (never mounted by default), `mounts` (cannot be
   smuggled in as a custom mount).
