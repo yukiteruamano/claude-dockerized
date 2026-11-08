@@ -281,6 +281,33 @@ up update --yes --no-build
 assert_eq "$RC" 1 "a renamed signed tag is refused"
 assert_eq "$(head_of "$INSTALL")" "$before_rename" "renamed tag not applied"
 
+# --- a lightweight tag on a maintainer-signed commit is not a release ----------------------------------------
+printf 'wip\n' >>"$SEED/CHANGELOG.test"
+git -C "$SEED" add CHANGELOG.test
+GNUPGHOME="$SIGNER" git -C "$SEED" -c gpg.program=gpg -c user.signingkey="$SIGNER_FPR" commit -q -S -m "signed wip"
+git -C "$SEED" push -q origin master
+git -C "$SEED" tag v0.2.9
+git -C "$SEED" push -q origin v0.2.9
+signed_commit() { GNUPGHOME="$SIGNER" git -C "$SEED" -c gpg.program=gpg verify-commit "$1" >/dev/null 2>&1; }
+check "the lightweight tag points at a signed commit" signed_commit v0.2.9
+up update --check
+assert_eq "$RC" 100 "the lightweight tag is a candidate"
+check "a lightweight tag is not verified" has_text "NOT verified" "$OUT"
+check "the refusal names the lightweight tag" has_text "lightweight tag" "$OUT"
+up update --yes --no-build
+assert_eq "$RC" 1 "a lightweight tag on a signed commit is refused (tags channel)"
+assert_eq "$(head_of "$INSTALL")" "$before_rename" "lightweight tag not applied"
+up update --check --channel branch
+assert_eq "$RC" 100 "the branch channel sees the signed upstream tip"
+check "the branch channel still verifies a signed commit" has_text "signed by OpenPGP key $SIGNER_FPR" "$OUT"
+
+# --- a branch named like a release cannot stand in for the tag ------------------------------------------------
+git -C "$INSTALL" branch v0.2.9 "$(git -C "$SEED" rev-parse 'v0.2.0^{commit}')" 2>/dev/null
+up update --check
+check "the release target is the fully qualified tag" has_text "Update available: refs/tags/v0.2.9" "$OUT"
+check "a same-named branch does not turn the lightweight tag into a release" has_text "lightweight tag" "$OUT"
+git -C "$INSTALL" branch -D v0.2.9 >/dev/null
+
 # --- impostor, unsigned and rewritten releases are refused --------------------------------------------
 released="$(head_of "$INSTALL")"
 upstream_commit "third"

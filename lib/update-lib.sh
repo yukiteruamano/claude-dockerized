@@ -113,19 +113,32 @@ _update_confirm_trust() {
     }
 }
 
-# Verify <ref> (a tag object or a commit) against the pinned keys only.
+# Verify <ref> against the pinned keys only. A release (tags channel) is a
+# fully qualified refs/tags/vX.Y.Z that must be an annotated, signed tag
+# object: a lightweight tag carries no signature of its own, so anyone who
+# can push tags could label any maintainer-signed commit (WIP, feature) as a
+# release. Any other ref (the branch channel's @{u}) must be a signed commit.
 # Prints the signer on success. Usage: update_verify_ref <ref>
 update_verify_ref() {
     local ref="$1" kind out rc=0
     kind=$(_update_git cat-file -t "$ref" 2>/dev/null)
-    if [ "$kind" = tag ]; then
+    case "$ref" in
+    refs/tags/*)
+        if [ "$kind" != tag ]; then
+            config_error "${ref#refs/tags/} is a lightweight tag: a release must be an annotated, signed tag."
+            return 1
+        fi
         # The signature covers the tag's own "tag <name>" header, not the ref
         # it is published under: a validly signed tag object renamed upstream
         # must not pass as another release.
         local signed_name
         signed_name=$(_update_git cat-file tag "$ref" 2>/dev/null | awk '/^tag /{print $2; exit}')
-        [ "$signed_name" = "$ref" ] || return 1
-    fi
+        [ "refs/tags/$signed_name" = "$ref" ] || return 1
+        ;;
+    *)
+        [ "$kind" = commit ] || return 1
+        ;;
+    esac
     local -a cfg=(
         -c "gpg.program=gpg"
         -c "gpg.ssh.allowedSignersFile=$UPDATE_TRUST_DIR/allowed_signers"
@@ -180,8 +193,9 @@ update_check_origin() {
     fi
 }
 
-# Newest release tag (vX.Y.Z) that fast-forwards HEAD, or the upstream tip
-# for the branch channel. Prints nothing when already up to date.
+# Newest release tag (printed as refs/tags/vX.Y.Z, so a branch or another ref
+# named like a release can never stand in for it) that fast-forwards HEAD, or
+# the upstream tip for the branch channel. Prints nothing when already up to date.
 # Returns 0 (target printed, or nothing to do), 1 (no upstream) or 2 (the
 # checkout diverged from upstream / from a newer release: no forced update).
 # Usage: update_select_target <tags|branch>
@@ -201,7 +215,8 @@ update_select_target() {
     fi
     while IFS= read -r tag; do
         [ -n "$tag" ] || continue
-        commit=$(_update_git rev-parse "$tag^{commit}" 2>/dev/null) || continue
+        tag="refs/tags/$tag"
+        commit=$(_update_git rev-parse --verify -q "$tag^{commit}" 2>/dev/null) || continue
         [ "$commit" = "$head" ] && break
         if _update_git merge-base --is-ancestor HEAD "$commit" 2>/dev/null; then
             [ -n "$skipped" ] && config_warning "Skipping release(s) that do not descend from this checkout:$skipped"
@@ -210,7 +225,7 @@ update_select_target() {
         fi
         # HEAD already contains this release: the older ones cannot apply either.
         _update_git merge-base --is-ancestor "$commit" HEAD 2>/dev/null && break
-        skipped="$skipped $tag"
+        skipped="$skipped ${tag#refs/tags/}"
     done < <(_update_git tag -l 'v[0-9]*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$')
     if [ -n "$skipped" ]; then
         config_warning "Newer release(s) do not descend from this checkout:$skipped"
