@@ -65,4 +65,22 @@ while IFS= read -r cmd; do
 done <<<"$dispatched"
 check_not "help never prints the install path" has_text "$REPO_DIR/bin" "$help_text"
 
+# Every flag `help profile` documents for migrate and logout is completed by both shells.
+profile_help="$(NO_COLOR=1 bash "$BIN" help profile 2>/dev/null)"
+bash_line() { grep -E "^[[:space:]]+$1\)" "$REPO_DIR/completions/bash.sh" | head -n 1; }
+for sub in migrate logout; do
+    flags="$(grep -E "^[[:space:]]+(login NAME \| )?$sub " <<<"$profile_help" | grep -oE -- '--[a-z-]+' | sort -u)"
+    check "help documents flags for profile $sub" [ -n "$flags" ]
+    while IFS= read -r flag; do
+        [ -n "$flag" ] || continue
+        if [ "$sub" = migrate ]; then
+            check "bash completes profile $sub $flag" has_text "$flag" "$(bash_line migrate)"
+            check "zsh completes profile $sub $flag" grep -qE "migrate\) _values 'flag'.* $flag( |$)" "$REPO_DIR/completions/zsh.sh"
+        else
+            check "bash completes profile $sub $flag" has_text "compgen -W \"$flag\"" "$(sed -n '/^[[:space:]]*logout)$/,/;;/p' "$REPO_DIR/completions/bash.sh")"
+            check "zsh completes profile $sub $flag" grep -qE "_values 'flag' $flag$" "$REPO_DIR/completions/zsh.sh"
+        fi
+    done <<<"$flags"
+done
+
 t_summary

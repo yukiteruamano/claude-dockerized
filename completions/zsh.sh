@@ -55,8 +55,29 @@ _claude_dockerized() {
                     else
                         case $words[2] in
                             list) _values 'flag' --json ;;
-                            show|path|login|logout|use|bind|unset|rename|delete|doctor)
+                            show|path|login|use|bind|unset|rename|doctor)
                                 (( CURRENT == 3 )) && _describe -t profiles 'profile' profile_names
+                                ;;
+                            logout)
+                                if (( CURRENT == 3 )); then
+                                    _describe -t profiles 'profile' profile_names
+                                else
+                                    _values 'flag' --yes
+                                fi
+                                ;;
+                            delete)
+                                if (( CURRENT == 3 )); then
+                                    _describe -t profiles 'profile' profile_names
+                                else
+                                    _values 'flag' --yes --force
+                                fi
+                                ;;
+                            set)
+                                if (( CURRENT == 3 )); then
+                                    _describe -t profiles 'profile' profile_names
+                                else
+                                    _values 'flag' --allow-loosen
+                                fi
                                 ;;
                             edit)
                                 if (( CURRENT == 3 )); then
@@ -73,8 +94,7 @@ _claude_dockerized() {
                                 fi
                                 ;;
                             create) _values 'flag' --from --login --model --env-file --share-skills --lsp-from ;;
-                            set) _values 'flag' --allow-loosen ;;
-                            migrate) _values 'flag' --dry-run --rollback ;;
+                            migrate) _values 'flag' --dry-run --no-backup --rollback --prune-backups --yes ;;
                         esac
                     fi
                     ;;

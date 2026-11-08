@@ -71,10 +71,23 @@ _claude_dockerized() {
                 case "${COMP_WORDS[2]}" in
                     list) mapfile -t COMPREPLY < <(compgen -W "--json" -- "${cur}") ;;
                     delete) mapfile -t COMPREPLY < <(compgen -W "${pnames} --yes --force" -- "${cur}") ;;
-                    migrate) mapfile -t COMPREPLY < <(compgen -W "--dry-run --rollback" -- "${cur}") ;;
+                    migrate) mapfile -t COMPREPLY < <(compgen -W "--dry-run --no-backup --rollback --prune-backups --yes" -- "${cur}") ;;
                     create) [ "$COMP_CWORD" -gt 3 ] && mapfile -t COMPREPLY < <(compgen -W "--from --login --model --env-file --share-skills --lsp-from" -- "${cur}") ;;
-                    set) [ "$COMP_CWORD" -gt 3 ] && mapfile -t COMPREPLY < <(compgen -W "--allow-loosen" -- "${cur}") ;;
-                    show | path | login | logout | use | bind | unset | rename | doctor)
+                    set)
+                        if [ "$COMP_CWORD" -eq 3 ]; then
+                            mapfile -t COMPREPLY < <(compgen -W "${pnames}" -- "${cur}")
+                        else
+                            mapfile -t COMPREPLY < <(compgen -W "--allow-loosen" -- "${cur}")
+                        fi
+                        ;;
+                    logout)
+                        if [ "$COMP_CWORD" -eq 3 ]; then
+                            mapfile -t COMPREPLY < <(compgen -W "${pnames}" -- "${cur}")
+                        else
+                            mapfile -t COMPREPLY < <(compgen -W "--yes" -- "${cur}")
+                        fi
+                        ;;
+                    show | path | login | use | bind | unset | rename | doctor)
                         [ "$COMP_CWORD" -eq 3 ] && mapfile -t COMPREPLY < <(compgen -W "${pnames}" -- "${cur}")
                         ;;
                     edit)

@@ -147,7 +147,8 @@ setting.profile, default.
                 [--share-skills] [--lsp-from default]
     login NAME | logout NAME [--yes]
     use NAME                    default profile (setting.profile)
-    bind NAME [DIR] | unbind [DIR]   pin a project to a profile (kept outside the project)
+    bind NAME [DIR] | unbind [DIR]   pin a project to a profile (kept outside the project);
+                                unbind removes the pin of exactly DIR, not an ancestor's
     edit NAME [config|env|rules|permissions|allow-patterns]
                                 overlay config / secrets / session rules / extra
                                 deny|ask permission rules / guard allow rules in
@@ -159,16 +160,22 @@ setting.profile, default.
     set NAME KEY VALUE [--allow-loosen] | unset NAME KEY    (KEY: a setting or mount.<name>;
                                 mount.<name> - drops that global mount for the profile)
     rename OLD NEW | delete NAME [--yes] [--force]
-    doctor [NAME|--all]         permissions, login, loosened settings, security layer
+    doctor [NAME|--all]         permissions, login, loosened settings, stale approvals,
+                                files with control bytes, security layer
     migrate [--dry-run|--no-backup|--rollback|--prune-backups [--yes]]
                                 move the single-account layout (automatic, with backup);
                                 the backups keep old credentials until pruned
 
 A profile can tighten any setting freely. Loosening the global posture
 (security_policy, hardening, docker_socket, ssh/gpg agents, integrity_check,
-share_skills, lsp_from, a host network where the global one is bridge, a
-memory/cpus limit removed, zeroed or raised, any :rw mount) needs --allow-loosen, which approves that exact value;
+share_skills, lsp_from, a claude_version other than the global/pinned one, a
+host network where the global one is bridge, a memory/cpus limit removed,
+zeroed or raised, any :rw mount) needs --allow-loosen, which approves that exact value;
 it is flagged in list and on every run, and an unapproved one is ignored.
+set/unset/edit drop approvals whose value no longer matches. create --from
+copies the overlay, permissions, rules and allow-patterns.json, never the
+approvals. An overlay or permissions file with NUL/control bytes is ignored
+as a whole.
 Secrets live only in <config>/profiles/<name>/env; there is no global env file.
 EOF
         ;;
