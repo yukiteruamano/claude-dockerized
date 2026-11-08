@@ -479,15 +479,31 @@ profile_cmd_bind() {
     config_success "Project $dir now runs with profile '$name' (pinned in $PROFILE_MAP_FILE, outside the project)"
 }
 
+# Removes the bind of exactly DIR. A directory that only inherits the bind
+# of an ancestor is refused (removing the ancestor's bind would also change
+# every other project below it).
 # Usage: profile_cmd_unbind [DIR]
 profile_cmd_unbind() {
     local dir="${1:-$(pwd)}"
-    [ -d "$dir" ] && dir="$(cd "$dir" && pwd -P)"
-    if [ -z "$(profile_bound_name "$dir")" ]; then
+    if [ -d "$dir" ]; then
+        dir="$(cd "$dir" && pwd -P)"
+    else
+        dir=$(canonical_host_path "$dir")
+    fi
+    profile_bound_entry "$dir"
+    if [ -z "$PROFILE_BOUND_NAME" ]; then
         config_info "No profile is bound to $dir"
         return 0
     fi
+    if [ "$PROFILE_BOUND_PATH" != "$dir" ]; then
+        config_error "$dir is not bound itself: it inherits profile '$PROFILE_BOUND_NAME' from its ancestor $PROFILE_BOUND_PATH. To remove that bind run: claude-dockerized profile unbind $PROFILE_BOUND_PATH"
+        return 1
+    fi
     profile_map_unset "$dir" || return 1
+    if [ -n "$(profile_map_dirs "$PROFILE_BOUND_NAME" | grep -xF -- "$dir")" ]; then
+        config_error "Could not remove the bind of $dir from $PROFILE_MAP_FILE"
+        return 1
+    fi
     config_success "Removed the profile bound to $dir"
 }
 

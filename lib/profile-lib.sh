@@ -331,14 +331,19 @@ profile_touch_used() {
 # profiles.map (project -> profile pins)
 # ============================================
 
-# Usage: profile_map_rewrite <awk-program> [awk -v args...]
+# Rewrite profiles.map through an awk program that reads its operands from
+# ENVIRON["PM_A"] / ENVIRON["PM_B"]: never `awk -v`, which would expand the
+# backslash escapes of a path (a\tb would become a<TAB>b) and miss the entry.
+# Refuses a map with control bytes. Usage: _profile_map_rewrite <awk-program> [a] [b]
 _profile_map_rewrite() {
     local prog="$1" tmp
-    shift
     mkdir -p "$CONFIG_DIR" 2>/dev/null || return 1
+    if [ -f "$PROFILE_MAP_FILE" ] && ! profile_map_ok; then
+        return 1
+    fi
     tmp=$(mktemp "$PROFILE_MAP_FILE.tmp.XXXXXX" 2>/dev/null) || return 1
     if [ -f "$PROFILE_MAP_FILE" ]; then
-        awk -F'\t' -v OFS='\t' "$@" "$prog" "$PROFILE_MAP_FILE" >"$tmp" || {
+        PM_A="${2:-}" PM_B="${3:-}" awk -F'\t' -v OFS='\t' "$prog" "$PROFILE_MAP_FILE" >"$tmp" || {
             rm -f "$tmp"
             return 1
         }
@@ -351,39 +356,41 @@ _profile_map_rewrite() {
     fi
 }
 
-# Pin <dir> to <name>. Usage: profile_map_set <dir> <name>
+# Pin <dir> to <name> (replacing an existing pin of exactly <dir>).
+# Usage: profile_map_set <dir> <name>
 profile_map_set() {
     local dir="$1" name="$2"
     case "$dir" in
-    *$'\t'* | *$'\n'*)
-        config_error "Refusing a project path with tabs or newlines"
+    *[[:cntrl:]]*)
+        config_error "Refusing a project path with tabs, newlines or other control characters"
         return 1
         ;;
     esac
-    _profile_map_rewrite '$1 != d' -v d="$dir" || return 1
+    _profile_map_rewrite '$1 != ENVIRON["PM_A"]' "$dir" || return 1
     printf '%s\t%s\n' "$dir" "$name" >>"$PROFILE_MAP_FILE" || return 1
     chmod 600 "$PROFILE_MAP_FILE" 2>/dev/null || true
 }
 
-# Usage: profile_map_unset <dir>
+# Drop the pin of exactly <dir>. Usage: profile_map_unset <dir>
 profile_map_unset() {
-    _profile_map_rewrite '$1 != d' -v d="$1"
+    _profile_map_rewrite '$1 != ENVIRON["PM_A"]' "$1"
 }
 
 # Drop every pin of a profile. Usage: profile_map_drop <name>
 profile_map_drop() {
-    _profile_map_rewrite '$2 != n' -v n="$1"
+    _profile_map_rewrite '$2 != ENVIRON["PM_A"]' "$1"
 }
 
 # Repoint every pin of <old> to <new>. Usage: profile_map_rename <old> <new>
 profile_map_rename() {
-    _profile_map_rewrite '{ if ($2 == o) $2 = n; print }' -v o="$1" -v n="$2"
+    _profile_map_rewrite '{ if ($2 == ENVIRON["PM_A"]) $2 = ENVIRON["PM_B"]; print }' "$1" "$2"
 }
 
 # Directories pinned to a profile. Usage: profile_map_dirs <name>
 profile_map_dirs() {
     [ -f "$PROFILE_MAP_FILE" ] || return 0
-    awk -F'\t' -v n="$1" '$2 == n { print $1 }' "$PROFILE_MAP_FILE"
+    profile_map_ok 2>/dev/null || return 0
+    PM_A="$1" awk -F'\t' '$2 == ENVIRON["PM_A"] { print $1 }' "$PROFILE_MAP_FILE"
 }
 
 # ============================================
