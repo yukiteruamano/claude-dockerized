@@ -9,8 +9,8 @@
 ### Guard hooks (`hooks/`)
 
 - **Only exit 2 blocks.** Any other non-zero exit is a non-blocking error
-  for Claude Code and the tool runs. Every failure path exits 2 with a
-  `Blocked by …` message [T-11].
+  for Claude Code and the tool runs, and so does a hook that times out.
+  Every failure path exits 2 with a `Blocked by …` message [T-11].
 - **Fail closed.** Unparseable input, a missing parser, missing or broken
   policy data and unknown modes block. Never add a "best effort, allow on
   error" branch [T-11].
@@ -20,7 +20,33 @@
   [T-03, T-04].
 - **No early `exit 0`.** An allow match may relax one specific rule; it must
   never skip the remaining checks. Exemptions are per token, never for the
-  whole command [T-08].
+  whole command: `guard-eval.js` cuts the matched text out and the deny rules
+  judge the rest; chained or substituted input (`$(…)`, backticks) gets no
+  exemption. Profile allow rules that match the empty string or a known
+  attack are refused (`lib/merge-allow-patterns.js`) [T-08, T-36].
+- **Bounded time.** Claude Code runs the tool when a hook times out (30 s),
+  so a slow regex is a fail-open. Commands above 64 KiB are refused, the
+  policy engine runs under `timeout` (15 s, deny on expiry, `timeout`
+  missing is a deny), and vendored rules with several `.*` use the
+  backtracking-free form documented in `policies/README.md` [T-11].
+- **Normalize like the shell.** Quotes and unquoted backslashes do not end a
+  word (`.e\nv` is `.env`), globs can spell a name (`/proc/self/env*`), and
+  Claude Code expands a leading `~` in file paths: check every spelling, never
+  the raw string only [T-26].
+- **Never widen the write roots.** `CLAUDE_PROJECT_DIR` must be an absolute
+  project path (not `/`, the home or an ancestor, a tool or credential dir in
+  the home, a system dir); otherwise only `/tmp/claude` is writable. Roots are
+  arrays, never a delimited string [T-03].
+- **`ask` is not `allow`.** The bash hook answers `git push` in any spelling
+  (`git -C . push`, `command git push`, `/usr/bin/git push`) with the JSON
+  `permissionDecision: "ask"` and exit 0, after every deny check passed,
+  because the managed `Bash(git push *)` ask rule is prefix-based. An alias
+  configured earlier (`git config alias.p push`) still evades it.
+- **Dump denials are best effort.** Environment dumps (`env`, `printenv`,
+  `ps e`, `os.environ`, `ENVIRON`, `/proc/*/environ`) are matched by their
+  common spellings; a program can always print its environment in a way no
+  pattern foresees. Keep secrets out of the session environment where
+  possible instead of relying on these rules [T-19].
 - **Every file-touching tool and field.** A new tool or input field goes
   into the matcher (`config/managed-settings.json`) and the parsers, with
   corpus cases [T-09].

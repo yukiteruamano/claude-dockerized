@@ -5,6 +5,7 @@
 //
 // Verdicts follow the Claude Code hook protocol, not "any non-zero exit":
 //   exit 0                               -> "allow"
+//   exit 0 + stdout JSON permissionDecision "ask" -> "ask" (user confirms)
 //   exit 2 + stderr starting "Blocked by" -> "deny"
 //   anything else                        -> "crash:<code>"
 // Claude Code treats a non-2 failure as a non-blocking error and runs the
@@ -57,7 +58,7 @@ export const cleanup = (...dirs) => {
 // `omit`. Used to exercise the jq/python3/node fallback paths.
 const HOOK_TOOLS = [
   "bash", "cat", "dirname", "tr", "sed", "grep", "realpath", "jq", "python3",
-  "node", "head", "readlink", "env", "printf",
+  "node", "head", "readlink", "env", "printf", "timeout",
 ];
 export function restrictedPath(omit = []) {
   const dir = mkdtempSync(join(tmpdir(), "guard-path-"));
@@ -91,11 +92,23 @@ export function runHook(stage, script, { mode = "balanced", payload, raw, env = 
   });
   const code = res.status ?? -1;
   const stderr = res.stderr ?? "";
-  return { code, stderr, verdict: classify(code, stderr) };
+  const stdout = res.stdout ?? "";
+  return { code, stderr, stdout, verdict: classify(code, stderr, stdout) };
 }
 
-export function classify(code, stderr) {
-  if (code === 0) return "allow";
+// A hook that exits 0 may still answer through the JSON protocol: an "ask"
+// decision makes Claude Code prompt the user. Unparseable stdout is "allow"
+// (Claude Code shows it as plain output).
+const decision = (stdout) => {
+  try {
+    return JSON.parse(stdout)?.hookSpecificOutput?.permissionDecision;
+  } catch {
+    return undefined;
+  }
+};
+
+export function classify(code, stderr, stdout = "") {
+  if (code === 0) return decision(stdout) === "ask" ? "ask" : "allow";
   if (code === 2 && /^Blocked by /m.test(stderr)) return "deny";
   return `crash:${code}`;
 }

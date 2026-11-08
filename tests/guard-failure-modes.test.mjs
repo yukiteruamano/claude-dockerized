@@ -139,5 +139,73 @@ report.check("unknown mode fails closed to strict", bash(base, { mode: "bogus", 
   );
 }
 
+// --- Inputs that would outlast the hook timeout (Claude Code runs the tool then) ---
+{
+  const huge = bashPayload(`echo ${"a ".repeat(40000)}`);
+  report.check("command above 64 KiB is refused", bash(base, { payload: huge, env: env() }), "deny");
+  for (const [label, command] of [
+    ["python -c (cubic vendored rule)", "python -c ".repeat(3000)],
+    ["curl x (quadratic vendored rules)", "curl x ".repeat(9000)],
+  ]) {
+    const started = Date.now();
+    const verdict = bash(base, { mode: "strict", payload: bashPayload(command), env: env() });
+    const seconds = (Date.now() - started) / 1000;
+    report.check(`${label}: decided without crashing`, verdict === "allow" || verdict === "deny", true);
+    report.check(`${label}: well below the 30 s hook timeout (${seconds.toFixed(1)} s)`, seconds < 20, true);
+  }
+}
+{
+  // A policy engine that hangs is killed at the deadline and the call refused.
+  const s = freshStage();
+  writeFileSync(join(s, "guard-eval.js"), "setInterval(() => {}, 1000);\n");
+  writeFileSync(join(s, "engine-seconds"), "1\n");
+  const res = runHook(s, "claude-guard-bash.sh", { payload: bashPayload("ls"), env: env() });
+  report.check("hung policy engine: denied at the deadline", res.verdict, "deny");
+  report.check("hung policy engine: the reason says it timed out", /timed out/.test(res.stderr), true);
+}
+{
+  const p = restrictedPath(["timeout"]);
+  report.check(
+    "bash without timeout: the policy engine never runs unbounded",
+    bash(freshStage({ hookPath: p }), { payload: bashPayload("ls"), env: env({ PATH: p }) }),
+    "deny",
+  );
+}
+
+// --- Project paths with shell-special characters stay one root ---
+{
+  const pipeProject = join(root, "a|b");
+  const sibling = join(root, "a");
+  const globProject = join(root, "pro*");
+  for (const d of [pipeProject, sibling, globProject]) mkdirSync(d, { recursive: true });
+  report.check(
+    "project dir with | : writes inside it are allowed",
+    file(base, { payload: writePayload(join(pipeProject, "x")), env: env({ CLAUDE_PROJECT_DIR: pipeProject }) }),
+    "allow",
+  );
+  report.check(
+    "project dir with | : its prefix is not a root",
+    file(base, { payload: writePayload(join(sibling, "x")), env: env({ CLAUDE_PROJECT_DIR: pipeProject }) }),
+    "deny",
+  );
+  report.check(
+    "project dir with * : never expanded to other directories",
+    file(base, { payload: writePayload(join(PROJECT, "x")), env: env({ CLAUDE_PROJECT_DIR: globProject }) }),
+    "deny",
+  );
+}
+
+// --- A payload the parsers do not understand fails closed (non-string tool_name) ---
+for (const omit of [[], ["jq"], ["jq", "python3"]]) {
+  const p = restrictedPath(omit);
+  const s = freshStage({ hookPath: p });
+  const payload = { tool_name: 5, tool_input: { file_path: join(OUTSIDE, "x"), content: "x" } };
+  report.check(
+    `file${omit.length ? ` without ${omit.join("+")}` : ""}: numeric tool_name, write outside project`,
+    file(s, { payload, env: env({ PATH: p }) }),
+    "deny",
+  );
+}
+
 cleanup(root, fullTools, ...stages);
 report.finish();
