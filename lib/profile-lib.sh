@@ -305,7 +305,7 @@ profile_value_loosens() {
 profile_overlay_key_ok() {
     case "$1" in
     ssh_agent_support | gpg_agent_support | gpg_allow_main_socket | gpg_autostart_agent | gpg_relay | \
-        docker_socket | network | security_policy | hardening | integrity_check | model | cleanup_days | \
+        docker_socket | network | security_policy | hardening | integrity_check | model | claude_version | cleanup_days | \
         lsp | lsp_servers | formatters | memory | cpus | share_skills | lsp_from) return 0 ;;
     esac
     return 1

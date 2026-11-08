@@ -164,6 +164,7 @@ config_reset_settings() {
     SHARE_SKILLS=false          # Mount the default profile's skills read-only instead of this profile's own
     LSP_FROM=""                 # "default": mount the default profile's .local/bin read-only (no per-profile LSP installs)
     CLAUDE_MODEL=""             # Optional default model (passed as --model); empty = Claude default / last /model choice
+    CLAUDE_VERSION=""           # Claude Code release of this profile's own image (<repo>:claude-<version>); empty = shared image
     CLEANUP_DAYS="7"            # Local session-data retention (managed cleanupPeriodDays); empty = Claude default
     LSP_ENABLED=false           # Enable native LSP support (binaries + .lsp.json live in CCODE_HOME)
     LSP_SERVERS="ts,python"     # CSV of language servers to configure when setting.lsp=true
@@ -284,8 +285,19 @@ check_global_install() {
 check_image() {
     local image_name="$1"
     if ! docker image inspect "$image_name" >/dev/null 2>&1; then
-        config_error "Docker image '$image_name' not found. Run 'claude-dockerized build' first."
+        config_error "Docker image '$image_name' not found. Run 'claude-dockerized build${PROFILE_FLAG:+ --profile $PROFILE_FLAG}' first."
         return 1
+    fi
+}
+
+# Image the active profile's sessions run: the shared image, or with
+# setting.claude_version its own tag <repo>:claude-<version>, built by
+# `build --profile NAME`. Usage: session_image_name
+session_image_name() {
+    if [ -n "${CLAUDE_VERSION:-}" ]; then
+        printf '%s:claude-%s' "${IMAGE_NAME%%:*}" "$CLAUDE_VERSION"
+    else
+        printf '%s' "$IMAGE_NAME"
     fi
 }
 
@@ -481,6 +493,13 @@ _config_apply_setting() {
         *[!A-Za-z0-9._-]*) config_warning "Invalid model '$value' (use letters, numbers, . - or _); ignoring" ;;
         *) CLAUDE_MODEL="$value" ;;
         esac
+        ;;
+    claude_version)
+        if [ -z "$value" ] || [[ "$value" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            CLAUDE_VERSION="$value"
+        else
+            config_warning "Invalid claude_version '$value' (use X.Y.Z); ignoring"
+        fi
         ;;
     cleanup_days)
         if [ -z "$value" ]; then
@@ -819,6 +838,7 @@ print_config() {
         echo "  Env file: (none)"
     fi
     echo "  Model: ${CLAUDE_MODEL:-(default)}$(_config_source model)"
+    echo "  Claude Code image: $(session_image_name)$(_config_source claude_version)"
     echo "  Session retention: ${CLEANUP_DAYS:-(default)} days$(_config_source cleanup_days)"
     if [ "$LSP_ENABLED" = true ]; then echo "  LSP: true ($LSP_SERVERS)$(_config_source lsp lsp_servers)"; else echo "  LSP: false$(_config_source lsp)"; fi
     echo "  Formatters: $FORMATTERS_ENABLED$(_config_source formatters)"

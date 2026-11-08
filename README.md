@@ -315,6 +315,13 @@ global rules, and like them it lives outside every mount.
 policy. There is no `allow`: a profile can only add restrictions, and an
 invalid line is skipped with a warning.
 
+A profile can run its own Claude Code release:
+`ccd profile set NAME claude_version 2.1.300`, then
+`ccd build --profile NAME` builds `claude-dockerized:claude-2.1.300` (its
+binary sha256 is recorded and enforced like any version), and that
+profile's sessions use it. `update` and `rollback` only touch the shared
+image; `clean` also removes the per-profile images.
+
 A profile can also carry its own guard allow rules (T-36), in the format of
 `policies/allow-patterns.json`: `ccd profile edit NAME allow-patterns`, then
 `ccd profile approve NAME allow-patterns` to review and pin them. The

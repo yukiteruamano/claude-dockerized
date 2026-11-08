@@ -727,7 +727,7 @@ profile_cmd_set() {
         fi
     else
         if ! profile_overlay_key_ok "$key"; then
-            config_error "'$key' cannot be overridden per profile (allowed: ssh_agent_support gpg_agent_support gpg_allow_main_socket gpg_autostart_agent gpg_relay docker_socket network security_policy hardening integrity_check model cleanup_days lsp lsp_servers formatters memory cpus share_skills lsp_from, or mount.<name>)"
+            config_error "'$key' cannot be overridden per profile (allowed: ssh_agent_support gpg_agent_support gpg_allow_main_socket gpg_autostart_agent gpg_relay docker_socket network security_policy hardening integrity_check model claude_version cleanup_days lsp lsp_servers formatters memory cpus share_skills lsp_from, or mount.<name>)"
             return 1
         fi
         if ! reason=$(_profile_value_error "$key" "$value"); then

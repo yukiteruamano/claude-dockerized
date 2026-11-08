@@ -111,6 +111,8 @@ setting.image_docker_cli and a Claude Code version pinned with
 The Claude Code binary's sha256 is recorded on the first build of a version
 and enforced on later ones; with setting.require_claude_sha=true a version
 with no record is refused unless --trust-first-use accepts it once.
+With --profile NAME and that profile's setting.claude_version, the profile's
+own image (claude-<version> tag) is built instead; 'update' leaves it alone.
 EOF
         ;;
     update | upgrade) update_usage "$1" ;;
@@ -170,7 +172,7 @@ it is flagged in list and on every run, and an unapproved one is ignored.
 Secrets live only in <config>/profiles/<name>/env; there is no global env file.
 EOF
         ;;
-    clean) echo "Usage: $CCD_NAME clean   (remove the image; config and sessions are kept)" ;;
+    clean) echo "Usage: $CCD_NAME clean   (remove the image and the per-profile claude-<version> images; config and sessions are kept)" ;;
     uninstall) echo "Usage: $CCD_NAME uninstall   (prints the uninstall steps; nothing is deleted)" ;;
     doctor)
         cat <<EOF

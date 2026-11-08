@@ -469,6 +469,24 @@ wrapper profile approve guard allow-patterns --yes
 check_not "T-36: a global id cannot be shadowed" [ "$RC" -eq 0 ]
 rm -f "$P/guard/allow-patterns.json"
 sed -i '/^allow_loosen\.allow_patterns=/d' "$P/guard/config"
+# a profile can run its own Claude Code release in its own image
+wrapper profile set guard claude_version 2.1.300
+assert_eq "$RC" 0 "claude_version can be set per profile"
+wrapper profile set guard claude_version latest
+check_not "claude_version must be X.Y.Z" [ "$RC" -eq 0 ]
+wrapper run "$PROJECT" --profile guard
+check "the profile's sessions run its own image" argv_has "claude-dockerized:claude-2.1.300"
+check_not "…not the shared one" argv_has "claude-dockerized:latest"
+wrapper run "$PROJECT"
+check "other profiles keep the shared image" argv_has "claude-dockerized:latest"
+built_with() { grep -rqxF -- "$1" "$CALLS" 2>/dev/null; }
+wrapper build --profile guard
+assert_eq "$RC" 0 "build --profile builds the profile's image"
+check "…tagged per version" built_with "claude-dockerized:claude-2.1.300"
+check "…with that Claude release" built_with "CLAUDE_CODE_VERSION=2.1.300"
+wrapper profile show guard
+check "profile show names the session image" has_text "Claude Code image: claude-dockerized:claude-2.1.300 [profile]" "$OUT"
+wrapper profile unset guard claude_version
 # profile show says where each value comes from
 wrapper profile set guard model opus
 printf 'setting.docker_socket=true\n' >>"$P/guard/config"

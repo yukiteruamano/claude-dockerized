@@ -42,21 +42,26 @@ check_not_root() {
 }
 
 # Image build options from the wrapper config (opt-in; defaults build the
-# historic image). Sets IMAGE_BUILD_ARGS. Usage: image_build_args
+# historic image). With <version> (a profile's setting.claude_version) that
+# release is built instead of the pinned/default one. Sets IMAGE_BUILD_ARGS.
+# Usage: image_build_args [version]
 image_build_args() {
+    local version="${1:-}"
     parse_config || true
     IMAGE_BUILD_ARGS=()
     [ "$IMAGE_STRIP_SETUID" = true ] && IMAGE_BUILD_ARGS+=(--build-arg STRIP_SETUID=1)
     [ "$IMAGE_DOCKER_CLI" = false ] && IMAGE_BUILD_ARGS+=(--build-arg DOCKER_CLI=0)
     # A Claude Code version pinned with `update --claude-version` sticks. The
-    # sha256 recorded on the first build of a version (pinned or the
-    # Dockerfile default) is enforced on every later build of it.
+    # sha256 recorded on the first build of a version (pinned, per profile or
+    # the Dockerfile default) is enforced on every later build of it.
     local pinned sha
     pinned=$(update_saved_claude_version)
-    if [ -n "$pinned" ] && [ -z "${_UP_CLAUDE_VERSION:-}" ]; then
+    if [ -n "$version" ]; then
+        IMAGE_BUILD_ARGS+=(--build-arg "CLAUDE_CODE_VERSION=$version")
+    elif [ -n "$pinned" ] && [ -z "${_UP_CLAUDE_VERSION:-}" ]; then
         IMAGE_BUILD_ARGS+=(--build-arg "CLAUDE_CODE_VERSION=$pinned")
     fi
-    sha=$(update_claude_recorded_sha "$(update_claude_effective_version)")
+    sha=$(update_claude_recorded_sha "${version:-$(update_claude_effective_version)}")
     [ -z "$sha" ] || IMAGE_BUILD_ARGS+=(--build-arg "CLAUDE_CODE_SHA256=$sha")
     return 0
 }
@@ -75,31 +80,36 @@ build_image() {
             ;;
         esac
     done
-    print_info "Building Claude Code Docker image..."
-    image_build_args
-    local version
-    version=$(update_claude_effective_version)
+    # The active profile may run its own Claude Code release in its own image
+    # (setting.claude_version); otherwise the shared image is built.
+    parse_config || true
+    local version="$CLAUDE_VERSION" image
+    image=$(session_image_name)
+    print_info "Building Claude Code Docker image $image..."
+    image_build_args "$version"
+    [ -n "$version" ] || version=$(update_claude_effective_version)
     update_claude_sha_gate "$version" || return 1
     # Regular build uses Docker layer cache normally.
     # Only the 'update' command passes CLAUDE_BUILD_TIME to bust the cache.
-    docker build "${extra[@]}" "${IMAGE_BUILD_ARGS[@]}" -t "$IMAGE_NAME" "$REPO_ROOT"
-    update_record_claude_sha "$version" "$IMAGE_NAME" || print_warning "Could not record the Claude Code sha256."
+    docker build "${extra[@]}" "${IMAGE_BUILD_ARGS[@]}" -t "$image" "$REPO_ROOT"
+    update_record_claude_sha "$version" "$image" || print_warning "Could not record the Claude Code sha256."
     print_success "Docker image built successfully"
 }
 
-# Offer to build a missing image on first run (interactive only).
-# Usage: ensure_image_or_offer_build
+# Offer to build a missing session image on first run (interactive only).
+# Usage: ensure_image_or_offer_build <image>
 ensure_image_or_offer_build() {
-    docker image inspect "$IMAGE_NAME" >/dev/null 2>&1 && return 0
+    local image="$1"
+    docker image inspect "$image" >/dev/null 2>&1 && return 0
     if [ -t 0 ] && [ -t 1 ] && [ "${DRY_RUN:-false}" != true ]; then
         local ans
-        print_warning "Image $IMAGE_NAME is not built yet."
+        print_warning "Image $image is not built yet."
         read -r -p "Build it now? (Y/n): " ans || ans=""
         if [[ "${ans:-y}" =~ ^[Yy]$ ]]; then
             build_image && return 0
         fi
     fi
-    check_image "$IMAGE_NAME"
+    check_image "$image"
 }
 
 # Function to check required configuration files (self-contained CCODE_HOME tree)
@@ -196,8 +206,10 @@ run_cli_command() {
         validate_project_dir "$project_dir" || exit 1
     fi
 
-    check_image "$IMAGE_NAME" || exit 1
     parse_config
+    local image
+    image=$(session_image_name)
+    check_image "$image" || exit 1
     ensure_claude_dirs
     profile_report_loosened
     if [ "${DRY_RUN:-false}" != true ]; then
@@ -224,7 +236,7 @@ run_cli_command() {
         "${DOCKER_MOUNT_ARGS[@]}"
         "${DOCKER_ENV_ARGS[@]}"
         "${DOCKER_ENV_FILE_ARGS[@]}"
-        "$IMAGE_NAME"
+        "$image"
         "$@"
     )
 
@@ -294,7 +306,11 @@ run_claude() {
     # home (or the whole filesystem) read-write to the agent.
     validate_project_dir "$project_dir" || exit 1
 
-    ensure_image_or_offer_build || exit 1
+    # The profile overlay decides the session image (setting.claude_version).
+    parse_config
+    local image
+    image=$(session_image_name)
+    ensure_image_or_offer_build "$image" || exit 1
 
     # Generate unique container name based on project directory and random suffix
     local dir_name
@@ -336,7 +352,7 @@ run_claude() {
         "${DOCKER_MOUNT_ARGS[@]}"
         "${DOCKER_ENV_ARGS[@]}"
         "${DOCKER_ENV_FILE_ARGS[@]}"
-        "$IMAGE_NAME"
+        "$image"
         claude "${model_args[@]}" "${claude_args[@]}"
     )
 
@@ -904,6 +920,16 @@ clean_image() {
     else
         print_info "Docker image '$IMAGE_NAME' does not exist"
     fi
+    # Per-profile images (setting.claude_version) share the repository name.
+    local tag
+    while IFS= read -r tag; do
+        case "$tag" in
+        "${IMAGE_NAME%%:*}":claude-*)
+            print_info "Removing profile image '$tag'..."
+            docker rmi "$tag" >/dev/null && print_success "Removed $tag"
+            ;;
+        esac
+    done < <(docker images --format '{{.Repository}}:{{.Tag}}' "${IMAGE_NAME%%:*}" 2>/dev/null)
 }
 
 # Function to show or edit configuration
