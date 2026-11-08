@@ -529,6 +529,32 @@ remove_gpg_mirror
     fail "remove_gpg_mirror must delete the session mirror"
 ensure_gpg_mirror
 
+# A directory already named after this PID (a crashed session whose container
+# kept running, or PID reuse) may hold links a session planted in the
+# read-write mirror: it is rebuilt from scratch, never written through.
+gpg_victim="$TMP/gpg-victim"
+printf 'ORIGINAL\n' >"$gpg_victim"
+remove_gpg_mirror
+reused="$(gpg_mirror_root)/$$"
+mkdir -p "$reused/public-keys.d"
+for planted in boot-id gpg.conf common.conf pubring.kbx trustdb.gpg public-keys.d/pubring.db; do
+    ln -sfn "$gpg_victim" "$reused/$planted"
+done
+ln -sfn "$gpg_victim" "$reused/pubring.kbx.tmp.$$"
+ensure_gpg_mirror
+[ "$(cat "$gpg_victim")" = ORIGINAL ] ||
+    fail "a mirror reused by PID must never be written through planted symlinks"
+[ "$GPG_MIRROR_DIR" = "$reused" ] && [ ! -L "$reused/gpg.conf" ] && [ -f "$reused/gpg.conf" ] ||
+    fail "the reused mirror must be rebuilt with regular files"
+[ ! -e "$reused/pubring.kbx.tmp.$$" ] || fail "leftovers of the reused mirror must be removed"
+# The boot marker of a stale mirror is only read when it is a regular file.
+mkdir -p "$(gpg_mirror_root)/2"
+ln -sfn /dev/zero "$(gpg_mirror_root)/2/boot-id"
+timeout 10 bash -c 'source "$1/lib/config-lib.sh" >/dev/null 2>&1; session_dir_from_previous_boot "$2"' \
+    _ "$REPO_DIR" "$(gpg_mirror_root)/2"
+[ $? -ne 124 ] || fail "a boot-id symlink to /dev/zero must not hang the cleanup"
+rm -rf "$(gpg_mirror_root)/2"
+
 # The wrapper must tear down both relays and the mirror on every exit path.
 grep -q 'stop_socket_relay "$GPG_RELAY_SOCKET"' "$REPO_DIR/bin/claude-dockerized" ||
     fail "the session teardown must stop the GnuPG relay"
@@ -715,6 +741,20 @@ EOF
     echo 999999 >"$stale_dir/pid"
     cleanup_stale_relays
     [ ! -d "$stale_dir" ] || fail "cleanup_stale_relays must remove dead relay dirs"
+
+    # A concurrent session between its mkdir and writing the relay pid has no
+    # pid file yet: its directory survives while its owner (the PID in the
+    # name) is alive, and goes once the owner is gone.
+    sleep 30 &
+    owner_pid=$!
+    young_dir="$SOCKET_RELAY_DIR/$owner_pid-gnupg"
+    mkdir -p "$young_dir"
+    cleanup_stale_relays
+    [ -d "$young_dir" ] || fail "cleanup_stale_relays must keep a live owner's relay dir without a pid file"
+    kill "$owner_pid" 2>/dev/null
+    wait "$owner_pid" 2>/dev/null
+    cleanup_stale_relays
+    [ ! -d "$young_dir" ] || fail "cleanup_stale_relays must remove the dir once its owner is gone"
 
     # Relay directories from a previous boot are stale too (PID reuse).
     foreign_relay="$SOCKET_RELAY_DIR/1-gnupg"

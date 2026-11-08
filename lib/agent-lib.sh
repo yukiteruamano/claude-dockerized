@@ -219,8 +219,13 @@ kernel_boot_id() {
 # therefore stale, whatever the PID recorded in its name is doing now).
 # Usage: session_dir_from_previous_boot <dir>
 session_dir_from_previous_boot() {
-    local dir="$1" recorded current
-    recorded=$(cat "$dir/boot-id" 2>/dev/null || true)
+    local dir="$1" recorded="" current
+    # The mirror is mounted read-write: read the marker only when it is a
+    # regular file, and only its first bytes (a link to /dev/zero must not
+    # hang the wrapper).
+    if [ ! -L "$dir/boot-id" ] && [ -f "$dir/boot-id" ]; then
+        recorded=$(head -c 64 "$dir/boot-id" 2>/dev/null | head -n 1 || true)
+    fi
     current=$(kernel_boot_id)
     [ -n "$recorded" ] && [ -n "$current" ] && [ "$recorded" != "$current" ]
 }
@@ -260,19 +265,16 @@ cleanup_legacy_gpg_mirror() {
     rm -rf "$legacy" 2>/dev/null || true
 }
 
-# Copy one file into the mirror through a temporary file and a rename: the host
-# keyboxd may be writing pubring.kbx / public-keys.d/pubring.db while the
-# session starts, and a torn copy would leave gpg unusable inside the container.
+# Copy one file into the mirror through a staged file and a rename
+# (safe_write_file): the host keyboxd may be writing pubring.kbx /
+# public-keys.d/pubring.db while the session starts, and a torn copy would
+# leave gpg unusable inside the container; the mirror is mounted read-write,
+# so nothing a session left there is ever followed.
 # Usage: mirror_file <source> <destination>
 mirror_file() {
-    local src="$1" dest="$2" tmp="$2.tmp.$$"
+    local src="$1" dest="$2"
     [ -f "$src" ] || return 1
-    cp "$src" "$tmp" 2>/dev/null || {
-        rm -f "$tmp" 2>/dev/null || true
-        return 1
-    }
-    chmod 600 "$tmp" 2>/dev/null || true
-    mv -f "$tmp" "$dest" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
+    safe_write_file "$dest" 600 <"$src"
 }
 
 # Remove this session's mirror once its container has exited.
@@ -308,13 +310,20 @@ ensure_gpg_mirror() {
 
     # One mirror per session (this process is the session): concurrent sessions
     # need their own copy because the container starts its own keyboxd on it.
+    # A directory already named after this PID was left by an earlier session
+    # whose container could still write it (crash, PID reuse): it may hold
+    # planted symlinks, so it is removed and the mirror starts from scratch.
     dest="$root/$$"
-    mkdir -p "$root" 2>/dev/null || return 0
-    chmod 700 "$root" 2>/dev/null || true
-    mkdir -p "$dest" 2>/dev/null || return 0
-    chmod 700 "$dest" 2>/dev/null || true
+    ensure_home_dir "$root" 700 || return 0
+    if [ -e "$dest" ] || [ -L "$dest" ]; then
+        rm -rf "$dest" 2>/dev/null || true
+    fi
+    mkdir -m 700 "$dest" 2>/dev/null || {
+        config_warning "Could not create a fresh GnuPG mirror at $dest"
+        return 0
+    }
     GPG_MIRROR_DIR="$dest"
-    kernel_boot_id >"$dest/boot-id" 2>/dev/null || true
+    kernel_boot_id | safe_write_file "$dest/boot-id" 600 || true
 
     # Public keyring (GnuPG 2.x keybox) plus its lock/trust files. With keyboxd
     # the database can also live under public-keys.d/, so mirror that too.
@@ -324,7 +333,7 @@ ensure_gpg_mirror() {
         mirror_file "$host_gpg_home/$f" "$dest/$f" || true
     done
     if [ -f "$host_gpg_home/public-keys.d/pubring.db" ]; then
-        mkdir -p "$dest/public-keys.d" 2>/dev/null || true
+        ensure_home_dir "$dest/public-keys.d" 700 || true
         mirror_file "$host_gpg_home/public-keys.d/pubring.db" "$dest/public-keys.d/pubring.db" || true
     fi
 
@@ -333,19 +342,20 @@ ensure_gpg_mirror() {
     # container must run keyboxd to read it. entrypoint.sh launches it at boot;
     # `no-autostart` (below) still prevents a keyless local gpg-agent. A config
     # the host does not have is not mirrored (the mirror starts empty anyway).
-    local conf
-    for conf in gpg.conf common.conf; do
-        mirror_file "$host_gpg_home/$conf" "$dest/$conf" || true
-    done
+    mirror_file "$host_gpg_home/common.conf" "$dest/common.conf" || true
 
     # Never let the container's gpg auto-start a keyless local agent: the real
-    # agent is the host's, reached through the forwarded socket.
-    if [ -f "$dest/gpg.conf" ]; then
-        grep -qE '^[[:space:]]*no-autostart([[:space:]]|$)' "$dest/gpg.conf" 2>/dev/null ||
-            echo "no-autostart" >>"$dest/gpg.conf" 2>/dev/null || true
-    else
-        echo "no-autostart" >"$dest/gpg.conf" 2>/dev/null || true
-    fi
+    # agent is the host's, reached through the forwarded socket. Built from
+    # the host copy and written once (never appended in the mounted mirror).
+    {
+        if [ -f "$host_gpg_home/gpg.conf" ]; then
+            cat "$host_gpg_home/gpg.conf" 2>/dev/null
+            grep -qE '^[[:space:]]*no-autostart([[:space:]]|$)' "$host_gpg_home/gpg.conf" 2>/dev/null ||
+                echo "no-autostart"
+        else
+            echo "no-autostart"
+        fi
+    } | safe_write_file "$dest/gpg.conf" 600 || true
 
     # Without a public keyring gpg cannot build a signature even when the agent
     # socket is forwarded: warn instead of failing silently later.
@@ -378,15 +388,17 @@ relay_dir_ok() {
     return 1
 }
 
-# Remove relay directories whose relay process is gone (crash, kill -9, stale
-# session) or that a previous boot left behind. Runs before starting a new
-# relay. NOTE: concurrent sessions never share a directory (each one owns
-# <dir>/<pid>-<kind>), so a live session's relay is never touched here.
+# Remove relay directories whose relay process and owning wrapper are both
+# gone (crash, kill -9, stale session) or that a previous boot left behind.
+# Runs before starting a new relay and from `clean`. NOTE: concurrent sessions
+# never share a directory (each one owns <dir>/<pid>-<kind>); while its owner
+# (the <pid> in the name) is alive a directory is kept, so a session that has
+# created its directory but not yet written the relay pid never loses it.
 # Usage: cleanup_stale_relays
 cleanup_stale_relays() {
     relay_dir_ok || return 0
     [ -d "$SOCKET_RELAY_DIR" ] || return 0
-    local d pid
+    local d pid owner
     for d in "$SOCKET_RELAY_DIR"/*; do
         [ -d "$d" ] || continue
         if session_dir_from_previous_boot "$d"; then
@@ -397,6 +409,12 @@ cleanup_stale_relays() {
         if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
             continue
         fi
+        owner=${d##*/}
+        owner=${owner%%-*}
+        case "$owner" in
+        "" | *[!0-9]*) ;;
+        *) kill -0 "$owner" 2>/dev/null && continue ;;
+        esac
         rm -rf "$d" 2>/dev/null || true
     done
 }
