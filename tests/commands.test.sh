@@ -40,7 +40,10 @@ n=$(find "$DOCKER_STUB_CALLS" -type f | wc -l)
 printf '%s\n' "$@" >"$DOCKER_STUB_CALLS/$(printf '%04d' "$n")"
 case "$1" in
 info) exit 0 ;;
-image) exit 0 ;;
+image)
+    # DOCKER_STUB_ONLY_IMAGE: only that image exists (`image inspect NAME`).
+    [ -z "${DOCKER_STUB_ONLY_IMAGE:-}" ] || [ "$2" != inspect ] || [ "${3:-}" = "$DOCKER_STUB_ONLY_IMAGE" ]
+    ;;
 *) exit 0 ;;
 esac
 EOF
@@ -165,6 +168,27 @@ printf 'setting.network=host\n' >>"$CONFIG_DIR/config"
 wrapper run "$PROJECT"
 check_not "an explicit network gets no notice" has_text "now defaults to bridge" "$OUT"
 check "an explicit host network reaches docker" argv_has host
+
+# --- clean keeps the relays of live sessions ----------------------------------------
+relay_root="$CONFIG_DIR/agent-relay"
+sleep 60 &
+live_pid=$!
+mkdir -p "$relay_root/$live_pid-ssh" "$relay_root/999999-gnupg"
+printf '%s\n' "$live_pid" >"$relay_root/$live_pid-ssh/pid"
+wrapper clean
+assert_eq "$RC" 0 "clean exits 0"
+check "clean keeps a live session's relay" test -d "$relay_root/$live_pid-ssh"
+check "clean removes a dead session's relay" test ! -e "$relay_root/999999-gnupg"
+kill "$live_pid" 2>/dev/null
+wait "$live_pid" 2>/dev/null
+
+# --- doctor probes the session image (setting.claude_version) ------------------------------
+printf 'setting.claude_version=2.1.300\n' >>"$CONFIG_DIR/config"
+DOCKER_STUB_ONLY_IMAGE="claude-dockerized:claude-2.1.300" wrapper doctor
+check "doctor runs the container checks in the profile's image" argv_has "claude-dockerized:claude-2.1.300"
+check_not "doctor does not skip the container checks when only the session image exists" \
+    has_text "container checks skipped" "$OUT"
+sed -i '/^setting.claude_version=/d' "$CONFIG_DIR/config"
 
 # --- install --only build -------------------------------------------------------------
 # install points the checkout at its upstream; a git stub that refuses

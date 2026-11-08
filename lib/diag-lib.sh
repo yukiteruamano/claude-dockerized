@@ -42,10 +42,12 @@ pinned_claude_version() {
 }
 
 # Claude Code version inside the built image ("" when unavailable).
+# Usage: image_claude_version [image] (default: $IMAGE_NAME)
 image_claude_version() {
+    local image="${1:-$IMAGE_NAME}"
     command -v docker >/dev/null 2>&1 || return 0
-    docker image inspect "$IMAGE_NAME" >/dev/null 2>&1 || return 0
-    docker run --rm --entrypoint bash "$IMAGE_NAME" -c "claude --version" 2>/dev/null | cut -d' ' -f1
+    docker image inspect "$image" >/dev/null 2>&1 || return 0
+    docker run --rm --entrypoint bash "$image" -c "claude --version" 2>/dev/null | cut -d' ' -f1
 }
 
 _diag_json_string() {
@@ -106,23 +108,27 @@ doctor_host_checks() {
     else
         DIAG_RESULTS+=("fail|docker|daemon not reachable (claude-dockerized build explains the exact cause)")
     fi
-    if [ "$docker_ok" = true ] && docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
+    # The image sessions of this profile run (setting.claude_version picks a
+    # per-profile one), not just the default tag.
+    local session_image
+    session_image=$(session_image_name)
+    if [ "$docker_ok" = true ] && docker image inspect "$session_image" >/dev/null 2>&1; then
         image_ok=true
         local created age_days
-        created=$(docker image inspect -f '{{.Created}}' "$IMAGE_NAME" 2>/dev/null | cut -c1-10)
+        created=$(docker image inspect -f '{{.Created}}' "$session_image" 2>/dev/null | cut -c1-10)
         age_days=$((($(date +%s) - $(date -d "$created" +%s 2>/dev/null || date +%s)) / 86400))
         if [ "$age_days" -gt 30 ]; then
-            DIAG_RESULTS+=("warn|image|$IMAGE_NAME is $age_days days old (rebuild: claude-dockerized build --pull)")
+            DIAG_RESULTS+=("warn|image|$session_image is $age_days days old (rebuild: claude-dockerized build --pull)")
         else
-            DIAG_RESULTS+=("pass|image|$IMAGE_NAME built $created")
+            DIAG_RESULTS+=("pass|image|$session_image built $created")
         fi
     elif [ "$docker_ok" = true ]; then
-        DIAG_RESULTS+=("fail|image|$IMAGE_NAME not built (run: claude-dockerized build)")
+        DIAG_RESULTS+=("fail|image|$session_image not built (run: claude-dockerized build)")
     fi
     if [ "$image_ok" = true ]; then
         local pinned image
-        pinned=$(pinned_claude_version)
-        image=$(image_claude_version)
+        pinned="${CLAUDE_VERSION:-$(pinned_claude_version)}"
+        image=$(image_claude_version "$session_image")
         if [ -n "$image" ] && [ "$image" = "$pinned" ]; then
             DIAG_RESULTS+=("pass|claude-version|$image (pinned)")
         else

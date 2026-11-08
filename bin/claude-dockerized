@@ -875,7 +875,11 @@ run_doctor() {
     fi
     echo "== host =="
     doctor_print_host false || host_rc=1
-    if ! docker info >/dev/null 2>&1 || ! docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
+    # The container checks run in the session's image (a profile may pin its
+    # own Claude release, setting.claude_version), so that is the one probed.
+    local image
+    image=$(session_image_name)
+    if ! docker info >/dev/null 2>&1 || ! docker image inspect "$image" >/dev/null 2>&1; then
         print_warning "container checks skipped (Docker or the image is unavailable)"
         return 1
     fi
@@ -908,11 +912,9 @@ exec_prompt() {
 
 # Function to clean up Docker image
 clean_image() {
-    # Drop any relay processes/dirs left by crashed sessions.
+    # Drop the relay dirs left by crashed sessions; a live session's relay
+    # (its owner or relay process still running) is kept.
     cleanup_stale_relays
-    if relay_dir_ok; then
-        rm -rf "$SOCKET_RELAY_DIR" 2>/dev/null || true
-    fi
     if docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
         print_info "Removing Docker image '$IMAGE_NAME'..."
         docker rmi "$IMAGE_NAME"
