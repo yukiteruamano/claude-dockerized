@@ -2,7 +2,7 @@
 
 Releases are signed annotated tags (`docs/security/YELLOW.md#releases`).
 
-## Unreleased
+## 0.5.0
 
 ### Changed (breaking)
 
@@ -41,6 +41,9 @@ Releases are signed annotated tags (`docs/security/YELLOW.md#releases`).
 - Profiles (T-34): a NUL byte in an overlay key (`setting.netw\0ork=host`) no longer bypasses the loosening guard; files with control bytes are refused as a whole; the post-checks use the loaded values; a per-profile `claude_version` other than the global one needs `--allow-loosen`; approvals that no longer match their value are pruned; `profile approve` and the guard render pin the content that was shown (T-36).
 - The env file must be owned by the user with no group/other permission bits (an unreadable mode fails closed); custom mount sources must exist (Docker created them as root); project paths with `:` or `,` and container targets inside the generated home are refused.
 - The host `~/.mcp-auth` is no longer created; the MCP store is `$CCODE_HOME/.mcp-auth`.
+- `update` on the tags channel accepts only annotated signed tags whose signed name matches (T-12): a lightweight tag on a maintainer-signed commit no longer passes as a release.
+- `install.sh` refuses a `CCODE_REF` that starts with `-` and says plainly that its signature check uses your own keyring, not the pinned trust store.
+- Image supply chain (T-24): `docker-ce-cli`, `docker-buildx-plugin` and `docker-compose-plugin` are pinned to exact versions (`DOCKER_CLI_VERSION`, `DOCKER_BUILDX_VERSION`, `DOCKER_COMPOSE_VERSION`).
 
 ### Fixed
 
