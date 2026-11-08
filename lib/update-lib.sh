@@ -352,6 +352,20 @@ update_claude_effective_version() {
     printf '%s' "$v"
 }
 
+# Does the checked-out Dockerfile pin the manifest checksum of <version> for
+# this architecture (so its build verifies the binary without first use)?
+# Usage: update_dockerfile_pins_claude <version>
+update_dockerfile_pins_claude() {
+    local df="$REPO_ROOT/Dockerfile" arg
+    grep -qxF "ARG CLAUDE_CODE_MANIFEST_VERSION=$1" "$df" 2>/dev/null || return 1
+    case "$(uname -m)" in
+    x86_64) arg=CLAUDE_CODE_MANIFEST_SHA256_X64 ;;
+    aarch64 | arm64) arg=CLAUDE_CODE_MANIFEST_SHA256_ARM64 ;;
+    *) return 1 ;;
+    esac
+    grep -qE "^ARG $arg=[0-9a-f]{64}$" "$df" 2>/dev/null
+}
+
 # Recorded sha256 of <version> on this architecture, or nothing.
 # Usage: update_claude_recorded_sha <version>
 update_claude_recorded_sha() {
@@ -366,6 +380,7 @@ update_claude_recorded_sha() {
 update_claude_sha_gate() {
     [ -n "$1" ] || return 0
     [ -z "$(update_claude_recorded_sha "$1")" ] || return 0
+    update_dockerfile_pins_claude "$1" && return 0
     if [ "${REQUIRE_CLAUDE_SHA:-false}" = true ] && [ "${_TRUST_FIRST_USE:-false}" != true ]; then
         config_error "No recorded sha256 for Claude Code $1 ($(uname -m)) and setting.require_claude_sha=true."
         config_info "Trust this download once and record its hash with: claude-dockerized build --trust-first-use"

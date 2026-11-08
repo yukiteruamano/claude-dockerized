@@ -16,8 +16,11 @@ ARG NVM_VERSION=v0.40.8
 ARG NVM_COMMIT=a885b885fef16fac4bc544188fb25e9e37ae83e8
 # Node.js LTS line pinned to an exact release (was: whatever --lts resolved).
 ARG NODE_VERSION=24.22.2
-# uv pinned to an exact release (was: always latest).
+# uv pinned to an exact release, installed from its GitHub release tarball and
+# checked against these sha256 (the published uv-<target>.tar.gz.sha256).
 ARG UV_VERSION=0.13.7
+ARG UV_SHA256_X86_64=c5221ff41b7892bfc223543883600125f6a47fe845093e0f5bdff4f359196d83
+ARG UV_SHA256_AARCH64=71279f8d3c67241e807b9d8db872d1bf541579fb9f08b7d1eb1682196d1e57dc
 # pnpm pinned to an exact release (project package manager, not the agent).
 ARG PNPM_VERSION=12.16.1
 # Fingerprint of Docker's apt signing key (docs.docker.com/engine/install/debian).
@@ -95,9 +98,19 @@ RUN bash -c "source $NVM_DIR/nvm.sh && \
     npm install -g pnpm@${PNPM_VERSION} && \
     pnpm --version | grep -qx '${PNPM_VERSION}'"
 
-# Install uv (Python package manager) as coder user
-# See: https://docs.astral.sh/uv/getting-started/installation/
-RUN curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh && \
+# Install uv (Python package manager) as coder user from the release tarball:
+# no piped installer script, and the archive must match the pinned sha256.
+# See: https://docs.astral.sh/uv/getting-started/installation/#github-releases
+RUN case "$(uname -m)" in \
+        x86_64) uv_target=x86_64-unknown-linux-gnu uv_sha="${UV_SHA256_X86_64}" ;; \
+        aarch64) uv_target=aarch64-unknown-linux-gnu uv_sha="${UV_SHA256_AARCH64}" ;; \
+        *) echo "No pinned uv sha256 for $(uname -m)" >&2; exit 1 ;; \
+    esac && \
+    curl -fsSL -o /tmp/uv.tar.gz "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-${uv_target}.tar.gz" && \
+    echo "${uv_sha}  /tmp/uv.tar.gz" | sha256sum -c - && \
+    mkdir -p /home/coder/.local/bin && \
+    tar -xzf /tmp/uv.tar.gz -C /home/coder/.local/bin --strip-components=1 "uv-${uv_target}/uv" "uv-${uv_target}/uvx" && \
+    rm -f /tmp/uv.tar.gz && \
     /home/coder/.local/bin/uv --version | grep -q "^uv ${UV_VERSION}"
 
 # Add nvm, node and ~/.local/bin to PATH
@@ -122,14 +135,31 @@ ENV PATH="$NVM_DIR/default:/usr/local/bin:/home/coder/.local/bin:$PATH"
 # report exactly that version, and, when the wrapper recorded its sha256 on an
 # earlier build of the same version (CLAUDE_CODE_SHA256, trust on first use),
 # the same bytes.
+# The installer script itself is not pinned (it changes between releases);
+# what it installs is: for the default release the binary must match the
+# checksums of its manifest (downloads.claude.ai/claude-code-releases/
+# <version>/manifest.json, platforms linux-x64 / linux-arm64), so the default
+# build does not rely on first use. Bump them together with the version.
 # See: https://code.claude.com/docs/en/setup#install-a-specific-version
 ARG CLAUDE_CODE_VERSION=2.1.311
+ARG CLAUDE_CODE_MANIFEST_VERSION=2.1.311
+ARG CLAUDE_CODE_MANIFEST_SHA256_X64=86dc1fcc69498159eaf15f446613e847010f9036bfbbdffd4c49350be8489ada
+ARG CLAUDE_CODE_MANIFEST_SHA256_ARM64=2e2496c9a8065df93acb0fca2d341f59a6b8777649b2e025ab8c9bcd5eef61f3
 ARG CLAUDE_CODE_SHA256=
 ARG CLAUDE_BUILD_TIME=0
 RUN curl -fsSL https://claude.ai/install.sh | bash -s "${CLAUDE_CODE_VERSION}" && \
     claude --version | grep -q "^${CLAUDE_CODE_VERSION} " && \
+    claude_bin="$(readlink -f "$(command -v claude)")" && \
+    if [ "${CLAUDE_CODE_VERSION}" = "${CLAUDE_CODE_MANIFEST_VERSION}" ]; then \
+        case "$(uname -m)" in \
+            x86_64) manifest_sha="${CLAUDE_CODE_MANIFEST_SHA256_X64}" ;; \
+            aarch64) manifest_sha="${CLAUDE_CODE_MANIFEST_SHA256_ARM64}" ;; \
+            *) manifest_sha="" ;; \
+        esac; \
+        [ -z "${manifest_sha}" ] || echo "${manifest_sha}  ${claude_bin}" | sha256sum -c -; \
+    fi && \
     if [ -n "${CLAUDE_CODE_SHA256}" ]; then \
-        echo "${CLAUDE_CODE_SHA256}  $(readlink -f "$(command -v claude)")" | sha256sum -c -; \
+        echo "${CLAUDE_CODE_SHA256}  ${claude_bin}" | sha256sum -c -; \
     fi
 
 # Move image-provided CLIs out of the shadowed home bin dir.

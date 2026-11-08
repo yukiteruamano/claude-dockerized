@@ -242,7 +242,8 @@ Migration to the profile layout (`profile_migrate_legacy`): backup first (free-s
 - Base image: `debian:trixie-slim` (pinned, not `latest`)
 - Set `SHELL ["/bin/bash", "-o", "pipefail", "-c"]` so RUN pipelines fail fast
 - Parameterize tool versions via `ARG`: `ARG NVM_VERSION=v0.40.8`, `ARG CLAUDE_CODE_VERSION=2.1.311`, `ARG CLAUDE_BUILD_TIME=0` (cache-bust only for `update`)
-- Install Claude Code only via the native installer (`curl -fsSL https://claude.ai/install.sh | bash -s "${CLAUDE_CODE_VERSION}"`); never via npm (no official npm support)
+- Install Claude Code only via the native installer (`curl -fsSL https://claude.ai/install.sh | bash -s "${CLAUDE_CODE_VERSION}"`); never via npm (no official npm support). Bump `CLAUDE_CODE_MANIFEST_VERSION` and `CLAUDE_CODE_MANIFEST_SHA256_{X64,ARM64}` (the release manifest's `linux-*` checksums) together with `CLAUDE_CODE_VERSION`
+- uv comes from its GitHub release tarball checked against `UV_SHA256_{X86_64,AARCH64}` (bump them with `UV_VERSION`); no piped installer
 - Do NOT bake LSP servers or formatters into the image; they live in the generated home (`ensure_lsp_formatters`)
 - Clean apt cache in same RUN layer: `&& rm -rf /var/lib/apt/lists/*`
 - Install Docker CLI only (`docker-ce-cli`), never the daemon

@@ -578,9 +578,20 @@ formatters) does not belong in the image: install it with `setting.lsp` /
 ### Pinned Claude Code version
 
 ```dockerfile
-# Default (repo-pinned)
+# Default (repo-pinned), with the checksums of that release's manifest
 ARG CLAUDE_CODE_VERSION=2.1.311
+ARG CLAUDE_CODE_MANIFEST_VERSION=2.1.311
+ARG CLAUDE_CODE_MANIFEST_SHA256_X64=86dc1fcc…
+ARG CLAUDE_CODE_MANIFEST_SHA256_ARM64=2e2496c9…
 ```
+
+Maintainers bump all four together: the values are the `linux-x64` /
+`linux-arm64` checksums of
+`https://downloads.claude.ai/claude-code-releases/<version>/manifest.json`
+(`tests/supply-chain.test.sh` fails when the versions drift apart). Any other
+version is trusted on its first build and recorded; set
+`setting.require_claude_sha=true` to refuse that unless
+`build --trust-first-use` accepts it.
 
 ```bash
 # Rebuild with a different version; the pin is kept for later `build`s and

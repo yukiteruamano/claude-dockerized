@@ -28,7 +28,7 @@ reduces noise and blocks the obvious.
 | Control | Threat | Verified by |
 |---------|--------|-------------|
 | Non-root `coder`, no privilege-escalation binary, no sudoers | T-28 | integration, `wrapper-args` |
-| Base image by digest; NVM by commit; Node, uv, Claude by exact version (asserted); Docker apt key by fingerprint; optional Claude sha256 (TOFU) | T-24 | `supply-chain` |
+| Base image by digest; NVM by commit; Node, uv, Claude by exact version (asserted); uv from its release tarball by sha256 (no piped installer); the default Claude release checked against its manifest sha256; Docker apt key by fingerprint; Claude sha256 recorded for other versions (TOFU, `setting.require_claude_sha`) | T-24 | `supply-chain`, `self-update` |
 | Root-owned node copy for the guard (`/usr/local/lib/claude-dockerized/bin`) | T-04 | integration |
 | Opt-in `STRIP_SETUID=1`, `DOCKER_CLI=0` | T-21, T-20 | CI hardened image |
 

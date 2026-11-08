@@ -11,6 +11,7 @@ Releases are signed annotated tags (`docs/security/YELLOW.md#releases`).
   - The backstops also see the command with its quotes removed, so split quotes (`.e""nv`, `id_ed"25519"`) no longer hide a secret name.
   - Bare code identifiers containing `_key_` (e.g. `grep -n profile_overlay_key_ok`) no longer trip the key-material rule; `server_key`, `deploy-key` and reading a `*_key_*` file stay denied.
   - Brace expansion and variable concatenation remain known gaps in `balanced`/`none` (corpus `brace-expansion-env`, `variable-concat-env`).
+- Image supply chain (T-24): uv is installed from its GitHub release tarball checked against a pinned sha256 per architecture (no more `curl | sh` installer), and the default Claude Code release is checked against the `linux-x64`/`linux-arm64` checksums of its manifest, so the default build no longer relies on trust on first use. The Claude installer script stays the official, unpinned one; what it installs is verified.
 - The Claude Code binary's sha256 is now recorded and enforced for every built version, including the Dockerfile default (before, only a version pinned with `update --claude-version` was). A build that trusts a version for the first time says so; the new opt-in `setting.require_claude_sha=true` refuses it unless `build --trust-first-use` (or `update --trust-first-use`) accepts it.
 
 ## 0.4.6
