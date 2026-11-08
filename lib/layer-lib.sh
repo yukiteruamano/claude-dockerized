@@ -3,29 +3,124 @@
 # Sourced by lib/config-lib.sh (which keeps the constants, config parsing and
 # saving). Not executable directly; no `set -e`: callers own error handling.
 
+# --- Host writes into the generated home ------------------------------------
+# Most of $CCODE_HOME is mounted read-write, so a session can leave a symlink,
+# a FIFO or a directory exactly where the wrapper writes next time. A plain
+# `>`, cp or chmod would follow such a link and overwrite (or chmod) any host
+# file the user can write, e.g. ~/.bashrc. Every host write into the generated
+# home therefore goes through the helpers below: the content is staged in a
+# private directory of $CCODE_HOME (never mounted, same filesystem) and renamed
+# into place; rename(2) replaces a symlink instead of following it.
+
+# Private staging directory (0700, never mounted). Usage: dir=$(home_stage_dir)
+home_stage_dir() {
+    local d="$CCODE_HOME/.wrapper-tmp"
+    [ -n "${CCODE_HOME:-}" ] && [ ! -L "$d" ] || return 1
+    mkdir -p "$d" 2>/dev/null && chmod 700 "$d" 2>/dev/null || return 1
+    printf '%s' "$d"
+}
+
+# True when <path> is a regular file that is not a symlink: the only kind of
+# generated-home file the wrapper reads or keeps (a FIFO would hang a read, a
+# link would redirect it to a host file). Usage: home_file_regular <path>
+home_file_regular() {
+    [ ! -L "$1" ] && [ -f "$1" ]
+}
+
+# Write stdin to <dest> (mode 644 by default) without following a symlink at
+# <dest>; refuses when <dest> is a directory or its parent is a symlink.
+# Usage: <producer> | safe_write_file <dest> [mode]
+safe_write_file() {
+    local dest="$1" mode="${2:-644}" dir stage tmp
+    dir=$(dirname "$dest")
+    if [ -L "$dir" ] || [ ! -d "$dir" ]; then
+        config_warning "Refusing to write $dest: its directory is missing or a symlink"
+        cat >/dev/null
+        return 1
+    fi
+    if [ -d "$dest" ] && [ ! -L "$dest" ]; then
+        config_warning "Refusing to write $dest: a directory is in the way (remove it on the host)"
+        cat >/dev/null
+        return 1
+    fi
+    if [ -L "$dest" ] || { [ -e "$dest" ] && [ ! -f "$dest" ]; }; then
+        config_warning "Replacing the symlink or special file at $dest (never followed)"
+        rm -f "$dest" 2>/dev/null || true
+    fi
+    if ! stage=$(home_stage_dir) || ! tmp=$(mktemp "$stage/write.XXXXXX" 2>/dev/null); then
+        config_warning "Could not stage a write to $dest"
+        cat >/dev/null
+        return 1
+    fi
+    if cat >"$tmp" && chmod "$mode" "$tmp" && mv -f "$tmp" "$dest"; then
+        return 0
+    fi
+    rm -f "$tmp" 2>/dev/null
+    return 1
+}
+
+# Copy <src> to <dest> through safe_write_file. <src> itself must be a regular
+# file (never read through a symlink). Usage: safe_copy_file <src> <dest> [mode]
+safe_copy_file() {
+    home_file_regular "$1" || return 1
+    safe_write_file "$2" "${3:-644}" <"$1"
+}
+
+# chmod a generated-home file only when it is a regular file (chmod follows a
+# symlink to whatever host file it names). Usage: safe_chmod <mode> <path>
+safe_chmod() {
+    home_file_regular "$2" && chmod "$1" "$2" 2>/dev/null
+}
+
+# Make <dir> a real directory: a symlink in its place (planted by a session,
+# or left behind) is removed first, so neither mkdir nor a later bind mount of
+# it is redirected to a host directory. Usage: ensure_home_dir <dir> [mode]
+ensure_home_dir() {
+    local d="$1"
+    if [ -L "$d" ]; then
+        config_warning "Replacing the symlink at $d with a directory (never followed)"
+        rm -f "$d" 2>/dev/null || return 1
+    fi
+    mkdir -p "$d" 2>/dev/null || return 1
+    [ -z "${2:-}" ] || chmod "$2" "$d" 2>/dev/null || true
+}
+
+# Make <file> a regular file, seeding it from stdin when it is missing or not
+# a regular file (a symlink is replaced, never followed). An existing regular
+# file is kept as is. Usage: <seed> | ensure_home_file <file> <mode>
+ensure_home_file() {
+    local f="$1" mode="$2"
+    if home_file_regular "$f"; then
+        cat >/dev/null
+        return 0
+    fi
+    safe_write_file "$f" "$mode"
+}
+
+# Create the generated-home directories and files every session mounts.
+# Usage: ensure_home_tree
+ensure_home_tree() {
+    local d
+    for d in .claude .claude/hooks-guard .claude/hooks-guard/policies .claude/plugins .claude/skills \
+        .claude/agents .claude/commands .local .local/bin .local/share .local/share/claude \
+        .local/state .local/state/claude .cache .cache/claude; do
+        ensure_home_dir "$CCODE_HOME/$d" || true
+    done
+    # MCP OAuth store for `mcp-remote` servers (0700, tokens are credentials).
+    # Lives in the generated home: the host ~/.mcp-auth is never shared.
+    ensure_home_dir "$CCODE_HOME/.mcp-auth" 700 || true
+    # Credentials placeholder (0600): created once so the fine-grained bind
+    # mount has a source even before the first `claude auth login`.
+    ensure_home_file "$CCODE_HOME/.claude/.credentials.json" 600 </dev/null || true
+    safe_chmod 600 "$CCODE_HOME/.claude/.credentials.json" || true
+    printf '{}\n' | ensure_home_file "$CCODE_HOME/.claude.json" 644 || true
+}
+
 # Ensure all required Claude Code directories exist on host, inside the
 # self-contained CCODE_HOME tree (see CONSTANTS). Fresh start only: existing
 # files are never overwritten, and the host XDG dirs are left untouched.
 ensure_claude_dirs() {
-    mkdir -p "$CCODE_HOME/.claude/hooks-guard/policies" 2>/dev/null || true
-    mkdir -p "$CCODE_HOME/.claude/plugins" 2>/dev/null || true
-    mkdir -p "$CCODE_HOME/.claude/skills" 2>/dev/null || true
-    mkdir -p "$CCODE_HOME/.claude/agents" 2>/dev/null || true
-    mkdir -p "$CCODE_HOME/.claude/commands" 2>/dev/null || true
-    mkdir -p "$CCODE_HOME/.local/bin" 2>/dev/null || true
-    mkdir -p "$CCODE_HOME/.local/share/claude" 2>/dev/null || true
-    mkdir -p "$CCODE_HOME/.local/state/claude" 2>/dev/null || true
-    mkdir -p "$CCODE_HOME/.cache/claude" 2>/dev/null || true
-    # Credentials placeholder (0600): created once so the fine-grained bind
-    # mount has a source even before the first `claude auth login`.
-    if [ ! -f "$CCODE_HOME/.claude/.credentials.json" ]; then
-        : >"$CCODE_HOME/.claude/.credentials.json" 2>/dev/null || true
-        chmod 600 "$CCODE_HOME/.claude/.credentials.json" 2>/dev/null || true
-    fi
-    # MCP OAuth store for `mcp-remote` servers (0700, tokens are credentials).
-    # Lives in the generated home: the host ~/.mcp-auth is never shared.
-    mkdir -p "$CCODE_HOME/.mcp-auth" 2>/dev/null || true
-    chmod 700 "$CCODE_HOME/.mcp-auth" 2>/dev/null || true
+    ensure_home_tree
     # claude-dockerized directory + generated security layer
     ensure_claude_dockerized_config
 }
@@ -35,21 +130,7 @@ ensure_claude_dirs() {
 # the second pass of a `run` (check_config already did the full ensure).
 # Usage: ensure_claude_mount_sources
 ensure_claude_mount_sources() {
-    mkdir -p "$CCODE_HOME/.claude/hooks-guard/policies" 2>/dev/null || true
-    mkdir -p "$CCODE_HOME/.claude/plugins" 2>/dev/null || true
-    mkdir -p "$CCODE_HOME/.claude/skills" 2>/dev/null || true
-    mkdir -p "$CCODE_HOME/.claude/agents" 2>/dev/null || true
-    mkdir -p "$CCODE_HOME/.claude/commands" 2>/dev/null || true
-    mkdir -p "$CCODE_HOME/.local/bin" 2>/dev/null || true
-    mkdir -p "$CCODE_HOME/.local/share/claude" 2>/dev/null || true
-    mkdir -p "$CCODE_HOME/.local/state/claude" 2>/dev/null || true
-    mkdir -p "$CCODE_HOME/.cache/claude" 2>/dev/null || true
-    if [ ! -f "$CCODE_HOME/.claude/.credentials.json" ]; then
-        : >"$CCODE_HOME/.claude/.credentials.json" 2>/dev/null || true
-        chmod 600 "$CCODE_HOME/.claude/.credentials.json" 2>/dev/null || true
-    fi
-    [ -f "$CCODE_HOME/.claude.json" ] || printf '{}\n' >"$CCODE_HOME/.claude.json" 2>/dev/null || true
-    mkdir -p "$HOME/.mcp-auth" 2>/dev/null || true
+    ensure_home_tree
 }
 
 # Ensure the claude-dockerized directory and its generated security layer exist.
@@ -129,9 +210,11 @@ write_managed_settings() {
 # container, so /model, /config and /permissions persist). A missing file is
 # seeded from config/user-settings.default.json; a legacy file that still
 # carries the old wrapper-managed policy or disableAllHooks (T-16) is backed
-# up to .bak and rewritten with only the user's own keys
-# (lib/migrate-settings.js). Without node the legacy file is backed up and
-# reseeded. Otherwise the file is never touched.
+# up to $CONFIG_DIR/backups (outside every mount) and rewritten with only the
+# user's own keys (lib/migrate-settings.js). Without node the legacy file is
+# backed up and reseeded. A symlink or special file in its place (planted by a
+# session) is never followed: it is replaced by the defaults. Otherwise the
+# file is never touched.
 # Usage: ensure_user_settings <settings.json>
 ensure_user_settings() {
     local target="$1" repo_dir
@@ -139,36 +222,50 @@ ensure_user_settings() {
     local defaults="$repo_dir/config/user-settings.default.json"
     [ -f "$defaults" ] || return 0
 
+    if [ -L "$target" ] || { [ -e "$target" ] && [ ! -f "$target" ]; }; then
+        config_warning "user settings.json is a symlink or special file; replacing it with the defaults (never followed)"
+        safe_copy_file "$defaults" "$target" 644
+        return 0
+    fi
     if [ ! -f "$target" ]; then
-        cp "$defaults" "$target" 2>/dev/null && config_success "Seeded user settings at $target"
+        safe_copy_file "$defaults" "$target" 644 && config_success "Seeded user settings at $target"
         return 0
     fi
     grep -qE 'claude-guard-bash\.sh|"disableAllHooks"' "$target" 2>/dev/null || return 0
 
-    cp "$target" "$target.bak" 2>/dev/null || return 0
-    local migrated
+    local backup migrated
+    backup=$(user_settings_backup "$target") || return 0
     migrated=$(mktemp 2>/dev/null) || return 0
     if command -v node >/dev/null 2>&1 &&
-        node "$repo_dir/lib/migrate-settings.js" "$target" "$defaults" "$migrated" >/dev/null 2>&1; then
-        cat "$migrated" >"$target" 2>/dev/null || true
-        config_success "Migrated settings.json to user scope (policy now in managed-settings.json; backup kept)"
+        node "$repo_dir/lib/migrate-settings.js" "$backup" "$defaults" "$migrated" >/dev/null 2>&1; then
+        safe_copy_file "$migrated" "$target" 644 || true
+        config_success "Migrated settings.json to user scope (policy now in managed-settings.json; backup kept at $backup)"
     else
-        cat "$defaults" >"$target" 2>/dev/null || true
-        config_warning "Reseeded user settings.json from defaults (legacy copy kept as settings.json.bak)"
+        safe_copy_file "$defaults" "$target" 644 || true
+        config_warning "Reseeded user settings.json from defaults (legacy copy kept at $backup)"
     fi
     rm -f "$migrated"
 }
 
-# Atomically replace <dest> with <src> (same-dir temp + mv, so a concurrent
-# session never reads a half-written file). Usage: atomic_install <src> <dest>
+# Back up the user settings.json to $CONFIG_DIR/backups/user-settings (0700,
+# never mounted) and print the backup path. A backup inside the read-write
+# ~/.claude would be a write target a session could redirect with a symlink.
+# Usage: backup=$(user_settings_backup <settings.json>)
+user_settings_backup() {
+    local src="$1" dir backup
+    home_file_regular "$src" || return 1
+    dir="$CONFIG_DIR/backups/user-settings"
+    mkdir -p "$dir" 2>/dev/null && chmod 700 "$CONFIG_DIR/backups" "$dir" 2>/dev/null || return 1
+    backup="$dir/${PROFILE_NAME:-default}.settings.json.$(date +%Y%m%d%H%M%S).$$.bak"
+    cp "$src" "$backup" 2>/dev/null && chmod 600 "$backup" 2>/dev/null || return 1
+    printf '%s' "$backup"
+}
+
+# Atomically replace <dest> with <src> (staged + rename, so a concurrent
+# session never reads a half-written file and a symlink at <dest> is replaced,
+# not followed). Usage: atomic_install <src> <dest>
 atomic_install() {
-    local src="$1" dest="$2" tmp
-    tmp=$(mktemp "$dest.tmp.XXXXXX" 2>/dev/null) || return 1
-    if cat "$src" >"$tmp" 2>/dev/null && chmod 644 "$tmp" 2>/dev/null && mv -f "$tmp" "$dest" 2>/dev/null; then
-        return 0
-    fi
-    rm -f "$tmp" 2>/dev/null
-    return 1
+    safe_write_file "$2" 644 <"$1" 2>/dev/null
 }
 
 # Directory holding this library's checkout root (lib/ -> repo root), used to
@@ -324,20 +421,19 @@ SESSION_RULES_PROFILE_HEADER="## Profile rules"
 # never a replacement, and it lives outside every mount, like the global one.
 # Usage: session_rules_render <dest>
 session_rules_render() {
-    local dest="$1" extra="${PROFILE_DIR:-}/CLAUDE.md" tmp
-    tmp=$(mktemp "$dest.tmp.XXXXXX" 2>/dev/null) || return 1
-    {
-        cat "$CONFIG_DIR/CLAUDE.md"
+    local dest="$1" extra="${PROFILE_DIR:-}/CLAUDE.md" rules
+    # Rendered in memory first: a failed read must not install half the rules.
+    rules=$(
+        cat "$CONFIG_DIR/CLAUDE.md" || exit 1
         if [ -n "${PROFILE_DIR:-}" ] && [ -s "$extra" ]; then
             printf '\n%s (%s)\n\n' "$SESSION_RULES_PROFILE_HEADER" "${PROFILE_NAME:-default}"
             echo "These rules add to the global rules above; where they conflict, the global rules win."
             echo
-            cat "$extra"
+            cat "$extra" || exit 1
         fi
-    } >"$tmp" && mv -f "$tmp" "$dest" || {
-        rm -f "$tmp"
-        return 1
-    }
+    ) || return 1
+    # The destination sits in the read-write ~/.claude: staged + renamed.
+    printf '%s\n' "$rules" | safe_write_file "$dest" 644
 }
 
 # Write the allow-patterns.json the guard of this profile reads: the installed
@@ -362,7 +458,53 @@ allow_patterns_render() {
     return 1
 }
 
-# Mirror the security layer into the generated home.
+# Copy one guard file into the hooks-guard mirror; a failure is reported (the
+# guard would run stale or not at all; guard_mirror_problem then refuses the
+# session). Usage: _mirror_guard_file <src> <dest> <mode>
+_mirror_guard_file() {
+    safe_copy_file "$1" "$2" "$3" ||
+        config_warning "Could not mirror $(basename "$1") into $(dirname "$2") (the guard would run a stale copy)"
+}
+
+# Why the hooks-guard mirror cannot enforce the policy (missing, not
+# executable, or differing from the installed layer), or return 1 when it is
+# complete. A hook script that does not exist makes Claude Code skip the hook,
+# which fails open: sessions refuse to start instead (see
+# build_standard_volume_args). Usage: problem=$(guard_mirror_problem) && refuse
+guard_mirror_problem() {
+    local mirror="$CCODE_HOME/.claude/hooks-guard" f
+    for f in claude-guard-bash.sh claude-guard-file.sh; do
+        if [ ! -x "$mirror/$f" ] || [ -L "$mirror/$f" ]; then
+            echo "$f is missing or not executable in $mirror"
+            return 0
+        fi
+    done
+    for f in claude-guard-bash.sh claude-guard-file.sh guard-eval.js policies/unsafe-tool-patterns.json \
+        policies/prompt-injection-patterns.json policies/allow-patterns.json; do
+        if ! home_file_regular "$mirror/$f"; then
+            echo "$f is missing from $mirror"
+            return 0
+        fi
+        case "$f" in
+        policies/allow-patterns.json) ;; # rendered per profile (checked by config sync --check)
+        *)
+            if ! cmp -s "$CONFIG_DIR/hooks/$f" "$mirror/$f" 2>/dev/null; then
+                echo "$f in $mirror differs from the installed layer"
+                return 0
+            fi
+            ;;
+        esac
+    done
+    if [ "$(head -n 1 "$mirror/policy-mode" 2>/dev/null)" != "${SECURITY_POLICY:-balanced}" ]; then
+        echo "the pinned policy mode in $mirror/policy-mode is not '${SECURITY_POLICY:-balanced}'"
+        return 0
+    fi
+    return 1
+}
+
+# Mirror the security layer into the generated home. Copy failures are
+# reported; check_security_layer and guard_mirror_problem (which refuses the
+# session) catch what they leave behind.
 # Usage: mirror_security_layer
 mirror_security_layer() {
     local pf
@@ -372,31 +514,37 @@ mirror_security_layer() {
     # the sources in "$CONFIG_DIR" instead.
     local claude_dir="$CCODE_HOME/.claude"
     if [ -d "$claude_dir" ]; then
-        mkdir -p "$claude_dir/hooks-guard/policies" 2>/dev/null || true
-        if [ -f "$CONFIG_DIR/hooks/claude-guard-bash.sh" ]; then
-            cp "$CONFIG_DIR/hooks/claude-guard-bash.sh" "$claude_dir/hooks-guard/claude-guard-bash.sh" 2>/dev/null || true
-            cp "$CONFIG_DIR/hooks/claude-guard-file.sh" "$claude_dir/hooks-guard/claude-guard-file.sh" 2>/dev/null || true
-            chmod +x "$claude_dir/hooks-guard/"*.sh 2>/dev/null || true
-        fi
-        if [ -f "$CONFIG_DIR/hooks/guard-eval.js" ]; then
-            cp "$CONFIG_DIR/hooks/guard-eval.js" "$claude_dir/hooks-guard/guard-eval.js" 2>/dev/null || true
-        fi
-        for pf in unsafe-tool-patterns.json prompt-injection-patterns.json; do
-            if [ -f "$CONFIG_DIR/hooks/policies/$pf" ]; then
-                cp "$CONFIG_DIR/hooks/policies/$pf" "$claude_dir/hooks-guard/policies/$pf" 2>/dev/null || true
+        ensure_home_dir "$claude_dir/hooks-guard" || true
+        ensure_home_dir "$claude_dir/hooks-guard/policies" || true
+        local gf
+        for gf in claude-guard-bash.sh claude-guard-file.sh guard-eval.js; do
+            if [ -f "$CONFIG_DIR/hooks/$gf" ]; then
+                local gmode=755
+                [ "$gf" = guard-eval.js ] && gmode=644
+                _mirror_guard_file "$CONFIG_DIR/hooks/$gf" "$claude_dir/hooks-guard/$gf" "$gmode"
+            else
+                config_warning "Guard file $CONFIG_DIR/hooks/$gf is missing; sessions refuse to start until 'claude-dockerized config sync' restores it"
             fi
         done
-        allow_patterns_render "$claude_dir/hooks-guard/policies/allow-patterns.json" || true
-        if [ -f "$CONFIG_DIR/hooks/policies/VERSION" ]; then
-            cp "$CONFIG_DIR/hooks/policies/VERSION" "$claude_dir/hooks-guard/policies/VERSION" 2>/dev/null || true
+        for pf in unsafe-tool-patterns.json prompt-injection-patterns.json VERSION; do
+            if [ -f "$CONFIG_DIR/hooks/policies/$pf" ]; then
+                _mirror_guard_file "$CONFIG_DIR/hooks/policies/$pf" "$claude_dir/hooks-guard/policies/$pf" 644
+            else
+                config_warning "Policy file $CONFIG_DIR/hooks/policies/$pf is missing (run 'claude-dockerized config sync')"
+            fi
+        done
+        if ! allow_patterns_render "$claude_dir/hooks-guard/policies/allow-patterns.json"; then
+            config_warning "Could not mirror allow-patterns.json into $claude_dir/hooks-guard/policies"
         fi
         if [ -f "$CONFIG_DIR/CLAUDE.md" ]; then
-            session_rules_render "$claude_dir/CLAUDE.md" || true
+            session_rules_render "$claude_dir/CLAUDE.md" ||
+                config_warning "Could not mirror the session rules into $claude_dir/CLAUDE.md"
         fi
         # Pin the policy mode next to the hooks (read-only mount): the hooks
         # prefer it over the env var, which project settings could inject.
-        printf '%s\n' "${SECURITY_POLICY:-balanced}" >"$claude_dir/hooks-guard/policy-mode" 2>/dev/null ||
+        if ! printf '%s\n' "${SECURITY_POLICY:-balanced}" | safe_write_file "$claude_dir/hooks-guard/policy-mode" 644; then
             config_warning "Could not pin the policy mode in hooks-guard/policy-mode (hooks would fall back to the environment)"
+        fi
         # Regenerate the managed policy (mounted read-only at /etc/claude-code,
         # highest precedence: user and project settings cannot relax it) and
         # seed/migrate the read-write user settings.
@@ -537,7 +685,10 @@ _layer_check_user_settings() {
     # The user settings must exist, parse, and carry neither the legacy
     # wrapper policy nor disableAllHooks (T-16; sync migrates both away).
     local user_settings="$CCODE_HOME/.claude/settings.json" v=0
-    if [ ! -f "$user_settings" ]; then
+    if [ -L "$user_settings" ] || { [ -e "$user_settings" ] && [ ! -f "$user_settings" ]; }; then
+        config_warning "user settings.json is a symlink or special file (replaced on sync, never followed)"
+        stale=true
+    elif [ ! -f "$user_settings" ]; then
         config_warning "user settings.json missing (seeded on sync)"
         stale=true
     elif grep -q 'claude-guard-bash.sh' "$user_settings" 2>/dev/null; then
@@ -645,7 +796,7 @@ _layer_check_user_files() {
     # file breaks sessions: fail the check early.
     local uoc
     for uoc in "$CCODE_HOME/.claude.json" "$CCODE_HOME/.claude/.mcp.json"; do
-        [ -f "$uoc" ] || continue
+        home_file_regular "$uoc" || continue
         v=0; json_valid "$uoc" || v=$?
         if [ "$v" -eq 1 ]; then
             config_warning "$uoc is not valid JSON (fix it; sync never edits this file)"
@@ -656,8 +807,8 @@ _layer_check_user_files() {
     # LSP config must parse when LSP support is enabled.
     if [ "$LSP_ENABLED" = true ]; then
         local lsp_json="$CCODE_HOME/.claude/.lsp.json"
-        if [ ! -f "$lsp_json" ]; then
-            config_warning ".lsp.json missing (reseeded on sync)"
+        if ! home_file_regular "$lsp_json"; then
+            config_warning ".lsp.json missing or not a regular file (reseeded on sync)"
             stale=true
         else
             v=0; json_valid "$lsp_json" || v=$?
@@ -737,13 +888,13 @@ sync_security_layer() {
     ensure_claude_dockerized_config
     # Repair an unparsable user settings.json (preferences are only lost
     # when the file is already broken; the broken copy is kept as .bak).
-    local user_settings="$CCODE_HOME/.claude/settings.json" v
-    if [ -f "$user_settings" ]; then
+    local user_settings="$CCODE_HOME/.claude/settings.json" v backup defaults
+    defaults="$(layer_repo_dir)/config/user-settings.default.json"
+    if home_file_regular "$user_settings"; then
         v=0; json_valid "$user_settings" || v=$?
-        if [ "$v" -eq 1 ]; then
-            mv "$user_settings" "$user_settings.bak" 2>/dev/null || true
-            ensure_user_settings "$user_settings"
-            config_warning "Backed up broken settings.json to settings.json.bak and reseeded it"
+        if [ "$v" -eq 1 ] && backup=$(user_settings_backup "$user_settings") &&
+            safe_copy_file "$defaults" "$user_settings" 644; then
+            config_warning "Backed up broken settings.json to $backup and reseeded it"
         fi
     fi
     # Drop the legacy ~/.local/bin symlink (nothing is ever installed there
@@ -789,7 +940,7 @@ sync_security_layer() {
 validate_claude_config() {
     local oc
     for oc in "$CCODE_HOME/etc/claude-code/managed-settings.json" "$CCODE_HOME/.claude/settings.json" "$CCODE_HOME/.claude.json"; do
-        [ -f "$oc" ] || continue
+        home_file_regular "$oc" || continue
         local hits m keys=""
         hits=$(grep -oE '"[A-Za-z0-9_.-]*(apiKey|api_key|api-key|accessToken|access_token|clientSecret|client_secret|token|secret|password|passwd|authorization|bearer|API_KEY|SECRET|TOKEN|PASSWORD|PASSWD)[A-Za-z0-9_.-]*"[[:space:]]*:[[:space:]]*"[^"]*"' "$oc" 2>/dev/null || true)
         [ -n "$hits" ] || continue

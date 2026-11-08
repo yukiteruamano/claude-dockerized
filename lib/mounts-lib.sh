@@ -186,6 +186,23 @@ build_common_docker_args() {
     fi
 }
 
+# True when a generated-home mount source is a real <file|dir>, not a
+# symlink: docker resolves a symlinked bind source on the host, so a link a
+# session left in the read-write home would mount any host path into the next
+# session. A refused source is skipped with a warning.
+# Usage: home_mount_source_ok <path> file|dir
+home_mount_source_ok() {
+    local path="$1" kind="$2"
+    if [ -L "$path" ]; then
+        config_warning "Not mounting $path: it is a symlink (remove it on the host)"
+        return 1
+    fi
+    case "$kind" in
+    file) [ -f "$path" ] ;;
+    *) [ -d "$path" ] ;;
+    esac
+}
+
 # Build standard volume mount arguments for Claude Code directories. The
 # policy is a read-only /etc/claude-code (managed settings, highest
 # precedence); ~/.claude comes from the generated home read-write (user
@@ -226,6 +243,15 @@ build_standard_volume_args() {
     # directories/files the -v sources below need.
     ensure_claude_mount_sources
 
+    # The guard must be complete before a session starts: Claude Code skips a
+    # hook whose script is missing, which would fail open.
+    local guard_problem
+    if guard_problem=$(guard_mirror_problem); then
+        config_error "Refusing to start: the security guard is incomplete ($guard_problem)."
+        config_info "Run 'claude-dockerized config sync' to restore it."
+        exit 1
+    fi
+
     # Managed policy (read-only directory, so no drop-in can be added;
     # highest precedence: hooks, deny rules, env).
     if [ -f "$chome/etc/claude-code/managed-settings.json" ]; then
@@ -236,24 +262,19 @@ build_standard_volume_args() {
 
     # Claude state (read-write directory: a single-file bind would make every
     # settings save fail with EBUSY). Credentials stay 0600.
-    chmod 600 "$chome/.claude/.credentials.json" 2>/dev/null || true
     VOLUME_ARGS+=(-v "$chome/.claude:/home/coder/.claude:rw")
 
-    # Security hooks (read-only overlay).
-    if [ -d "$chome/.claude/hooks-guard" ]; then
-        VOLUME_ARGS+=(-v "$chome/.claude/hooks-guard:/home/coder/.claude/hooks-guard:ro")
-    else
-        config_warning "Security hooks not found at $chome/.claude/hooks-guard"
-    fi
+    # Security hooks (read-only overlay; complete, checked above).
+    VOLUME_ARGS+=(-v "$chome/.claude/hooks-guard:/home/coder/.claude/hooks-guard:ro")
 
     # Managed session rules (read-only overlay).
-    if [ -f "$chome/.claude/CLAUDE.md" ]; then
+    if home_mount_source_ok "$chome/.claude/CLAUDE.md" file; then
         VOLUME_ARGS+=(-v "$chome/.claude/CLAUDE.md:/home/coder/.claude/CLAUDE.md:ro")
     fi
 
     # Credentials (read-write, 0600) — auth persists across restarts/rebuilds.
-    if [ -f "$chome/.claude/.credentials.json" ]; then
-        chmod 600 "$chome/.claude/.credentials.json" 2>/dev/null || true
+    if home_mount_source_ok "$chome/.claude/.credentials.json" file; then
+        safe_chmod 600 "$chome/.claude/.credentials.json" || true
         VOLUME_ARGS+=(-v "$chome/.claude/.credentials.json:/home/coder/.claude/.credentials.json:rw")
     fi
 
@@ -266,7 +287,7 @@ build_standard_volume_args() {
     # User plugins / agents / commands.
     local d
     for d in plugins agents commands; do
-        if [ -d "$chome/.claude/$d" ]; then
+        if home_mount_source_ok "$chome/.claude/$d" dir; then
             VOLUME_ARGS+=(-v "$chome/.claude/$d:/home/coder/.claude/$d:$persist")
         fi
     done
@@ -278,27 +299,25 @@ build_standard_volume_args() {
     # With setting.share_skills=true a non-default profile mounts the default
     # profile's skills instead of its own (still read-only, and the only part
     # of another profile that is ever mounted; T-31).
-    mkdir -p "$chome/.claude/skills" 2>/dev/null || true
+    ensure_home_dir "$chome/.claude/skills" || true
     local skills_src="$chome/.claude/skills"
     if [ "$SHARE_SKILLS" = true ] && [ "$PROFILE_NAME" != default ]; then
         skills_src="$(profile_home_of default)/.claude/skills"
         mkdir -p "$skills_src" 2>/dev/null || true
     fi
-    if [ -d "$skills_src" ]; then
+    if home_mount_source_ok "$skills_src" dir; then
         VOLUME_ARGS+=(-v "$skills_src:/home/coder/.claude/skills:ro")
     fi
 
     # LSP config (regenerated when setting.lsp=true).
-    if [ -f "$chome/.claude/.lsp.json" ]; then
+    if { [ -e "$chome/.claude/.lsp.json" ] || [ -L "$chome/.claude/.lsp.json" ]; } &&
+        home_mount_source_ok "$chome/.claude/.lsp.json" file; then
         VOLUME_ARGS+=(-v "$chome/.claude/.lsp.json:/home/coder/.claude/.lsp.json:$persist")
     fi
 
-    # MCP user-scope state (read-write).
-    if [ -f "$chome/.claude.json" ]; then
+    # MCP user-scope state (read-write; seeded by ensure_claude_mount_sources).
+    if home_mount_source_ok "$chome/.claude.json" file; then
         VOLUME_ARGS+=(-v "$chome/.claude.json:/home/coder/.claude.json:rw")
-    else
-        printf '{}\n' >"$chome/.claude.json" 2>/dev/null || true
-        [ -f "$chome/.claude.json" ] && VOLUME_ARGS+=(-v "$chome/.claude.json:/home/coder/.claude.json:rw")
     fi
 
     # Generated-home binaries: LSP servers and formatters installed by
@@ -311,14 +330,14 @@ build_standard_volume_args() {
         bin_mode=ro
         mkdir -p "$bin_src" 2>/dev/null || true
     fi
-    if [ -d "$bin_src" ]; then
+    if home_mount_source_ok "$bin_src" dir; then
         VOLUME_ARGS+=(-v "$bin_src:/home/coder/.local/bin:$bin_mode")
     fi
 
     # Sessions / history / caches (read-write).
     for d in "$chome/.local/share/claude:/home/coder/.local/share/claude" "$chome/.local/state/claude:/home/coder/.local/state/claude" "$chome/.cache/claude:/home/coder/.cache/claude"; do
         local src="${d%%:*}"
-        if [ -d "$src" ]; then
+        if home_mount_source_ok "$src" dir; then
             VOLUME_ARGS+=(-v "$d:rw")
         fi
     done
@@ -327,7 +346,7 @@ build_standard_volume_args() {
     # read-write: tokens, not code, so strict keeps it writable; without it
     # the tokens die with the container, or cannot be written on a read-only
     # rootfs). Native Claude MCP OAuth lives in .credentials.json instead.
-    if [ -d "$chome/.mcp-auth" ]; then
+    if home_mount_source_ok "$chome/.mcp-auth" dir; then
         VOLUME_ARGS+=(-v "$chome/.mcp-auth:/home/coder/.mcp-auth:rw")
     fi
 

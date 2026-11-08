@@ -1036,7 +1036,9 @@ if sync_security_layer --check >/dev/null 2>&1; then
     fail "--check must flag a legacy user settings.json"
 fi
 sync_security_layer >/dev/null 2>&1 || fail "sync must migrate a legacy settings.json"
-[ -f "$user_settings.bak" ] || fail "legacy settings.json must be backed up"
+settings_backups() { find "$CONFIG_DIR/backups/user-settings" -name 'default.settings.json.*.bak' 2>/dev/null; }
+[ -n "$(settings_backups)" ] || fail "legacy settings.json must be backed up (outside the mounted ~/.claude)"
+[ ! -e "$user_settings.bak" ] || fail "the settings backup must not live in the read-write ~/.claude"
 if grep -qE 'claude-guard|DISABLE_AUTOUPDATER|"model"|"deny"' "$user_settings"; then
     fail "migration must drop the legacy policy and the null model"
 fi
@@ -1045,7 +1047,7 @@ if command -v node >/dev/null 2>&1; then
     grep -q '"MY_FLAG": "1"' "$user_settings" || fail "migration must keep user env"
     grep -qF 'Bash(mycmd *)' "$user_settings" || fail "migration must keep user allow rules"
 fi
-rm -f "$user_settings.bak"
+rm -rf "$CONFIG_DIR/backups/user-settings"
 
 # A stray disableAllHooks (T-16) is drift: --check flags it and sync drops
 # it while keeping the user's own keys.
@@ -1067,13 +1069,13 @@ fs.writeFileSync(p, JSON.stringify(s, null, 2));
     fi
     grep -qF -- 'customUserKey' "$user_settings" ||
         fail "dropping disableAllHooks must keep unknown user keys"
-    rm -f "$user_settings.bak"
+    rm -rf "$CONFIG_DIR/backups/user-settings"
 fi
 
 # Broken settings.json is backed up and reseeded, never silently dropped.
 printf 'not json{{{' >"$user_settings"
 sync_security_layer >/dev/null 2>&1 || fail "sync must survive broken settings.json"
-[ -f "$user_settings.bak" ] || fail "broken settings.json must be backed up"
+find "$CONFIG_DIR/backups/user-settings" -name '*.bak' -exec grep -l 'not json' {} + 2>/dev/null | grep -q . || fail "broken settings.json must be backed up"
 cmp -s "$REPO_DIR/config/user-settings.default.json" "$user_settings" ||
     fail "broken settings.json must be reseeded from the defaults"
 

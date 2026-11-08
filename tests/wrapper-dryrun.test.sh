@@ -156,6 +156,100 @@ wrapper doctor
 check "doctor runs a bash script" argv_pair bash -c
 check "doctor keeps --cap-drop=ALL" argv_has --cap-drop=ALL
 
+# --- host writes into the generated home never follow a planted symlink -----------
+# Most of the generated home is mounted read-write: a session can leave a
+# symlink where the wrapper writes next time (settings.json and its backup,
+# .lsp.json, the LSP stamp, the credentials placeholder). The next wrapper
+# command must replace the link, never write through it to the host file.
+VICTIM="$HOME/victim-rc"
+reset_victim() { printf 'ORIGINAL\n' >"$VICTIM"; }
+victim_intact() { [ "$(cat "$VICTIM")" = ORIGINAL ]; }
+legacy_marker="claude-guard-bash.sh"
+CL="$CCODE_HOME/.claude"
+
+# Legacy settings.json + a backup path pointing at a host file (the old .bak).
+reset_victim
+printf '{"hooks": {"PreToolUse": [{"command": "/x/%s"}]}, "theme": "dark"}\n' "$legacy_marker" >"$CL/settings.json"
+ln -sfn "$VICTIM" "$CL/settings.json.bak"
+DRY_RUN=true wrapper run "$PROJECT"
+check "a planted settings.json.bak symlink is never written through" victim_intact
+check "the legacy settings are still migrated" lacks_text "$legacy_marker" "$(cat "$CL/settings.json")"
+check "the settings backup lives outside the mounted ~/.claude" \
+    test -n "$(find "$CONFIG_DIR/backups/user-settings" -name '*.bak' 2>/dev/null)"
+rm -f "$CL/settings.json.bak"
+
+# settings.json itself a symlink to a host file carrying the legacy marker.
+printf '{"hooks": "%s"}\n' "$legacy_marker" >"$VICTIM"
+ln -sfn "$VICTIM" "$CL/settings.json"
+DRY_RUN=true wrapper run "$PROJECT"
+check "a symlinked settings.json is never written through" grep -q "$legacy_marker" "$VICTIM"
+check "a symlinked settings.json is replaced by a regular file" test ! -L "$CL/settings.json" -a -f "$CL/settings.json"
+check "the replacement is reported" has_text "symlink or special file" "$OUT"
+
+# A FIFO in its place must not hang the wrapper.
+rm -f "$CL/settings.json"
+mkfifo "$CL/settings.json"
+RC=0
+OUT="$(cd "$PROJECT" && DRY_RUN=true timeout 20 "$WRAPPER" run "$PROJECT" 2>&1)" || RC=$?
+assert_eq "$RC" 0 "a FIFO planted as settings.json does not hang the wrapper"
+check "a FIFO settings.json is replaced by a regular file" test -f "$CL/settings.json" -a ! -p "$CL/settings.json"
+
+# LSP: .lsp.json and the install stamp in the read-write .local/bin.
+reset_victim
+ln -sfn "$VICTIM" "$CL/.lsp.json"
+DRY_RUN=true wrapper run "$PROJECT"
+check "a .lsp.json symlink is not mounted while LSP is off" lacks_text ":/home/coder/.claude/.lsp.json" "$OUT"
+check "the unmounted .lsp.json symlink is reported" has_text "it is a symlink" "$OUT"
+printf 'setting.lsp=true\nsetting.lsp_servers=go\nsetting.formatters=true\n' >"$CONFIG_DIR/config"
+mkdir -p "$CCODE_HOME/.local/bin"
+for b in prettier ruff; do
+    printf '#!/bin/sh\n' >"$CCODE_HOME/.local/bin/$b"
+    chmod +x "$CCODE_HOME/.local/bin/$b"
+done
+ln -sfn "$VICTIM" "$CCODE_HOME/.local/bin/.lsp-versions"
+CLAUDE_DOCKERIZED_SKIP_LSP_INSTALL='' DRY_RUN=true wrapper run "$PROJECT"
+check "write_lsp_json never writes through a .lsp.json symlink" victim_intact
+check "the LSP stamp never writes through a symlink" victim_intact
+check ".lsp.json is regenerated as a regular file" test -f "$CL/.lsp.json" -a ! -L "$CL/.lsp.json"
+check "the LSP stamp is a regular file" test -f "$CCODE_HOME/.local/bin/.lsp-versions" -a ! -L "$CCODE_HOME/.local/bin/.lsp-versions"
+rm -f "$CONFIG_DIR/config" "$CL/.lsp.json"
+
+# Credentials placeholder: a dangling link would create (and chmod) a host file.
+mv "$CL/.credentials.json" "$TMP/creds.saved"
+ln -sfn "$HOME/created-by-session" "$CL/.credentials.json"
+DRY_RUN=true wrapper run "$PROJECT"
+check "a dangling credentials link never creates a host file" test ! -e "$HOME/created-by-session"
+check "the credentials placeholder is a regular file again" test -f "$CL/.credentials.json" -a ! -L "$CL/.credentials.json"
+mv -f "$TMP/creds.saved" "$CL/.credentials.json"
+
+# A symlinked mount source (planted while it was not a mount point) is never
+# handed to docker, which would resolve it to the host path.
+rm -rf "$CL/agents"
+ln -sfn "$HOME" "$CL/agents"
+DRY_RUN=true wrapper run "$PROJECT"
+check "a symlinked agents dir is replaced, never mounted through" lacks_text "$HOME:/home/coder/.claude/agents" "$OUT"
+check "the agents dir is a real directory again" test -d "$CL/agents" -a ! -L "$CL/agents"
+
+# The MCP OAuth store lives in the generated home only (T-02): the host
+# ~/.mcp-auth is never created.
+rm -rf "$HOME/.mcp-auth"
+DRY_RUN=true wrapper run "$PROJECT"
+check "the host ~/.mcp-auth is never created" test ! -e "$HOME/.mcp-auth"
+check "the generated .mcp-auth exists (0700)" test "$(stat -c '%a' "$CCODE_HOME/.mcp-auth")" = 700
+
+# A guard file that cannot be mirrored fails closed: Claude Code skips a hook
+# whose script is missing, so no session may start without it.
+rm -f "$CL/hooks-guard/claude-guard-file.sh"
+chmod 555 "$CL/hooks-guard"
+wrapper run "$PROJECT"
+chmod 755 "$CL/hooks-guard"
+assert_eq "$RC" 1 "an incomplete guard mirror refuses the session"
+check "the failed copy is reported" has_text "Could not mirror claude-guard-file.sh" "$OUT"
+check "the refusal names the guard" has_text "security guard is incomplete" "$OUT"
+check_not "no container without the guard" ran_container
+wrapper run "$PROJECT"
+assert_eq "$RC" 0 "the next run restores the guard"
+
 # --- host-only refusals (no container is started) ------------------------------
 for sub in "mcp add srv" "mcp remove srv" "plugin install p" "plugin remove p"; do
     # shellcheck disable=SC2086  # intentional word splitting of the subcommand
