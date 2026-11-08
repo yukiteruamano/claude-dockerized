@@ -128,19 +128,29 @@ _profile_edit_overlay() {
     done
 }
 
+# Say which stale approvals were dropped (empty list: nothing to say).
+# Usage: _profile_report_pruned <name> <keys newline-separated>
+_profile_report_pruned() {
+    [ -n "$2" ] || return 0
+    config_info "Profile '$1': dropped approvals that no longer match their value: $(printf '%s' "$2" | paste -sd, -) (approve again with: profile set … --allow-loosen)"
+}
+
 # Problems of an overlay file, one per line, as `profile set` would report
 # them: unknown lines, settings a profile cannot override, invalid values or
 # mounts, and loosenings without approval. Prints nothing when it is clean.
 # Usage: profile_overlay_problems <file>
 profile_overlay_problems() {
-    local file="$1" key value lineno=0 reason item
+    local file="$1" line key value lineno=0 reason item
     [ -f "$file" ] || return 0
-    while IFS='=' read -r key value || [ -n "$key" ]; do
+    if reason=$(config_file_bad_bytes "$file"); then
+        echo "$reason (only tabs and line endings are allowed): every run ignores the whole overlay"
+        return 0
+    fi
+    while IFS= read -r line || [ -n "$line" ]; do
         lineno=$((lineno + 1))
-        key="${key#"${key%%[![:space:]]*}"}"
-        key="${key%"${key##*[![:space:]]}"}"
-        value="${value#"${value%%[![:space:]]*}"}"
-        value="${value%"${value##*[![:space:]]}"}"
+        config_split_line "$line"
+        key="$_CFG_KEY"
+        value="$_CFG_VALUE"
         case "$key" in
         "" | \#* | allow_loosen.*) ;;
         mount.*)
@@ -245,6 +255,10 @@ profile_cmd_set() {
     fi
     line_key=$(_profile_line_key "$key")
     cfg="$(profile_dir_of "$name")/config"
+    if reason=$(config_file_bad_bytes "$cfg"); then
+        config_error "Refusing to change $cfg: $reason. Fix it with: claude-dockerized profile edit $name"
+        return 1
+    fi
     tmp=$(mktemp "$cfg.tmp.XXXXXX" 2>/dev/null) || return 1
     [ ! -f "$cfg" ] || cat "$cfg" >"$tmp"
     profile_file_unset "$tmp" "allow_loosen.$key"
@@ -274,7 +288,7 @@ profile_cmd_set() {
 
 # Usage: profile_cmd_unset NAME KEY
 profile_cmd_unset() {
-    local name="${1:-}" key="${2:-}" cfg line_key
+    local name="${1:-}" key="${2:-}" cfg line_key reason
     _profile_require "$name" || return 1
     if [ -z "$key" ]; then
         config_error "Usage: claude-dockerized profile unset NAME KEY"
@@ -282,7 +296,12 @@ profile_cmd_unset() {
     fi
     cfg="$(profile_dir_of "$name")/config"
     line_key=$(_profile_line_key "$key")
+    if reason=$(config_file_bad_bytes "$cfg"); then
+        config_error "Refusing to change $cfg: $reason. Fix it with: claude-dockerized profile edit $name"
+        return 1
+    fi
     profile_file_unset "$cfg" "$line_key"
     profile_file_unset "$cfg" "allow_loosen.$key"
+    _profile_report_pruned "$name" "$(profile_prune_orphan_approvals "$cfg")"
     config_success "Profile '$name': $line_key now follows the global config"
 }

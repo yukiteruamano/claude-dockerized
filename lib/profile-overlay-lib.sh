@@ -73,11 +73,29 @@ profile_overlay_key_ok() {
     return 1
 }
 
+# Record the approvals (allow_loosen.<key>=<value>) of the overlay just read
+# by config_read_file, as "key=value" in PROFILE_APPROVALS: the same parse the
+# settings get, so an approval and the value it names are always read alike.
+# Usage: profile_collect_approvals
+profile_collect_approvals() {
+    local i
+    PROFILE_APPROVALS=()
+    for i in "${!_CFG_KEYS[@]}"; do
+        case "${_CFG_KEYS[$i]}" in
+        allow_loosen.?*) PROFILE_APPROVALS+=("${_CFG_KEYS[$i]#allow_loosen.}=${_CFG_VALUES[$i]}") ;;
+        esac
+    done
+}
+
 # Has the overlay approved loosening <key> to exactly <value>? The approval
-# line names the value as written, so editing the value voids it.
-# Usage: profile_loosen_approved <overlay_file> <key> <value>
+# names the value as written, so editing the value voids it.
+# Usage: profile_loosen_approved <key> <value>
 profile_loosen_approved() {
-    grep -qxF "allow_loosen.$2=$3" "$1" 2>/dev/null
+    local item
+    for item in "${PROFILE_APPROVALS[@]}"; do
+        [ "$item" = "$1=$2" ] && return 0
+    done
+    return 1
 }
 
 # Print a warning once per process (settings are parsed several times per
@@ -100,12 +118,16 @@ profile_overlay_apply_setting() {
     fi
     var=$(profile_key_var "$key")
     [ -z "$var" ] || before="${!var}"
-    _config_apply_setting "$key" "$value"
+    # Only what the loader really applied counts (config show sources, the
+    # post-checks): a rejected value leaves the global one in place.
+    _config_apply_setting "$key" "$value" || return 0
     PROFILE_SET_KEYS+=("$key")
+    PROFILE_RAW_KEYS+=("$key")
+    PROFILE_RAW_VALUES+=("$value")
     [ -n "$var" ] || return 0
     after="${!var}"
     profile_value_loosens "$key" "$before" "$after" || return 0
-    if profile_loosen_approved "$file" "$key" "$value"; then
+    if profile_loosen_approved "$key" "$value"; then
         PROFILE_LOOSENED+=("$key=$after")
         return 0
     fi
@@ -117,10 +139,10 @@ profile_overlay_apply_setting() {
 # May an overlay mount be added? A read-write mount exposes host files for
 # writing and needs approval of that exact spec; read-only mounts are free
 # (validate_mount_spec still vets every mount). Records what it decides.
-# Usage: profile_overlay_mount_allowed <name> <spec> <overlay_file>
+# Usage: profile_overlay_mount_allowed <name> <spec>
 profile_overlay_mount_allowed() {
     case "$2" in *:rw) ;; *) return 0 ;; esac
-    if profile_loosen_approved "$3" "mount.$1" "$2"; then
+    if profile_loosen_approved "mount.$1" "$2"; then
         PROFILE_LOOSENED+=("mount.$1=rw")
         return 0
     fi
@@ -129,13 +151,20 @@ profile_overlay_mount_allowed() {
     return 1
 }
 
-# Raw value of setting.<key> in an overlay (last assignment, trimmed); returns
-# 1 when the overlay does not set it. Usage: _profile_overlay_raw <file> <key>
+# Value of setting.<key> the loader applied from the overlay (the last one);
+# returns 1 when the overlay did not apply it. The post-checks judge what the
+# loader really did, never a second parse of the file.
+# Usage: _profile_overlay_raw <key>
 _profile_overlay_raw() {
-    local v
-    grep -q "^[[:space:]]*setting\\.$2[[:space:]]*=" "$1" 2>/dev/null || return 1
-    v=$(sed -n "s/^[[:space:]]*setting\\.$2[[:space:]]*=[[:space:]]*//p" "$1" | tail -n 1)
-    printf '%s' "${v%"${v##*[![:space:]]}"}"
+    local i found=1 value=""
+    for i in "${!PROFILE_RAW_KEYS[@]}"; do
+        if [ "${PROFILE_RAW_KEYS[$i]}" = "$1" ]; then
+            value="${PROFILE_RAW_VALUES[$i]}"
+            found=0
+        fi
+    done
+    [ "$found" -eq 0 ] || return 1
+    printf '%s' "$value"
 }
 
 # Bytes of a docker memory size (4g, 512m, 100k, 2048b) as a decimal string
@@ -174,29 +203,29 @@ _profile_limit_loosens() {
 # leaves the global bridge network) and the resource limits (dropping or
 # raising a global memory/cpus limit). A loosening without approval is
 # reverted to the global value.
-# Usage: _profile_overlay_post_checks <file> <g_network> <g_explicit> <g_memory> <g_cpus>
+# Usage: _profile_overlay_post_checks <g_network> <g_explicit> <g_memory> <g_cpus>
 _profile_overlay_post_checks() {
-    local file="$1" raw kind var old new
-    if raw=$(_profile_overlay_raw "$file" network) && [ "$2" = bridge ] && [ "$NETWORK" = host ]; then
-        if profile_loosen_approved "$file" network "$raw"; then
+    local raw kind var old new
+    if raw=$(_profile_overlay_raw network) && [ "$1" = bridge ] && [ "$NETWORK" = host ]; then
+        if profile_loosen_approved network "$raw"; then
             PROFILE_LOOSENED+=("network=host")
         else
-            NETWORK="$2"
-            NETWORK_EXPLICIT="$3"
+            NETWORK="$1"
+            NETWORK_EXPLICIT="$2"
             PROFILE_UNAPPROVED+=("network")
             _profile_warn_once "$PROFILE_NAME:network" "Profile '$PROFILE_NAME' loosens network (bridge -> host) without approval; keeping bridge (approve with: claude-dockerized profile set $PROFILE_NAME network \"$raw\" --allow-loosen)"
         fi
     fi
     for kind in memory cpus; do
-        raw=$(_profile_overlay_raw "$file" "$kind") || continue
+        raw=$(_profile_overlay_raw "$kind") || continue
         if [ "$kind" = memory ]; then
-            var=MEMORY old="$4"
+            var=MEMORY old="$3"
         else
-            var=CPUS old="$5"
+            var=CPUS old="$4"
         fi
         new="${!var}"
         _profile_limit_loosens "$kind" "$old" "$new" || continue
-        if profile_loosen_approved "$file" "$kind" "$raw"; then
+        if profile_loosen_approved "$kind" "$raw"; then
             PROFILE_LOOSENED+=("$kind=${raw:-none}")
         else
             printf -v "$var" '%s' "$old"
@@ -216,15 +245,15 @@ profile_sha256_file() {
 # T-36) apply only while the overlay approves that exact content: the line
 # allow_loosen.allow_patterns=<sha256 of the file>, written by
 # `profile approve NAME allow-patterns`. Editing the file voids it. Sets
-# PROFILE_ALLOW_PATTERNS to the file when approved.
-# Usage: _profile_allow_patterns_check <overlay_file>
+# PROFILE_ALLOW_PATTERNS to the file when approved. Runs after the overlay
+# was read (PROFILE_APPROVALS). Usage: _profile_allow_patterns_check <overlay_file>
 _profile_allow_patterns_check() {
     local overlay="$1" rules sha
     PROFILE_ALLOW_PATTERNS=""
     rules="$(dirname "$overlay")/allow-patterns.json"
     [ -f "$rules" ] || return 0
     sha=$(profile_sha256_file "$rules")
-    if [ -n "$sha" ] && profile_loosen_approved "$overlay" allow_patterns "$sha"; then
+    if [ -n "$sha" ] && profile_loosen_approved allow_patterns "$sha"; then
         PROFILE_ALLOW_PATTERNS="$rules"
         PROFILE_LOOSENED+=("allow_patterns=${sha:0:12}")
         return 0
@@ -234,7 +263,9 @@ _profile_allow_patterns_check() {
 }
 
 # Layer an overlay file on top of the settings loaded so far. Fills
-# PROFILE_LOOSENED (approved loosenings) and PROFILE_UNAPPROVED (dropped ones).
+# PROFILE_LOOSENED (approved loosenings) and PROFILE_UNAPPROVED (dropped ones);
+# an overlay with control bytes is ignored as a whole (PROFILE_REJECTED), so
+# nothing of it applies, approvals included.
 # Usage: profile_apply_overlay_file <file>
 profile_apply_overlay_file() {
     local file="$1" g_n="$NETWORK" g_e="$NETWORK_EXPLICIT" g_m="$MEMORY" g_c="$CPUS"
@@ -242,10 +273,17 @@ profile_apply_overlay_file() {
     PROFILE_UNAPPROVED=()
     PROFILE_SET_KEYS=()
     PROFILE_DROPPED_MOUNTS=()
+    PROFILE_APPROVALS=()
+    PROFILE_RAW_KEYS=()
+    PROFILE_RAW_VALUES=()
+    PROFILE_REJECTED=""
+    if [ -f "$file" ] && ! _load_config_file "$file" overlay; then
+        PROFILE_REJECTED="$file"
+        PROFILE_APPROVALS=()
+    fi
     _profile_allow_patterns_check "$file"
-    [ -f "$file" ] || return 0
-    _load_config_file "$file" overlay
-    _profile_overlay_post_checks "$file" "$g_n" "$g_e" "$g_m" "$g_c"
+    [ -f "$file" ] && [ -z "$PROFILE_REJECTED" ] || return 0
+    _profile_overlay_post_checks "$g_n" "$g_e" "$g_m" "$g_c"
 }
 
 # Layer the active profile's overlay on top of the global settings.
@@ -284,6 +322,11 @@ profile_overlay_state() {
         for item in "${PROFILE_UNAPPROVED[@]}"; do
             printf 'unapproved:%s\n' "$item"
         done
+        [ -z "$PROFILE_REJECTED" ] || printf 'rejected:overlay\n'
+        ! profile_permissions_bad_bytes >/dev/null || printf 'rejected:permissions\n'
+        for item in $(profile_overlay_orphan_approvals "$PROFILE_CONFIG_FILE"); do
+            printf 'orphan:%s\n' "$item"
+        done
     )
 }
 
@@ -313,6 +356,10 @@ profile_permission_rule_error() {
 profile_permission_rules() {
     local file="${PROFILE_DIR:-}/permissions" line kind rule reason lineno=0
     [ -n "${PROFILE_DIR:-}" ] && [ -f "$file" ] || return 0
+    if reason=$(profile_permissions_bad_bytes); then
+        config_error_once "bad-bytes:$file" "Ignoring $file: $reason (only tabs and line endings are allowed). Fix it with: claude-dockerized profile edit $PROFILE_NAME permissions"
+        return 0
+    fi
     while IFS= read -r line || [ -n "$line" ]; do
         lineno=$((lineno + 1))
         line="${line#"${line%%[![:space:]]*}"}"
@@ -327,6 +374,73 @@ profile_permission_rules() {
         fi
         printf '%s\t%s\n' "$kind" "$rule"
     done <"$file"
+}
+
+# Why the active profile's permissions file cannot be parsed safely, or
+# nothing (status 1). Usage: profile_permissions_bad_bytes
+profile_permissions_bad_bytes() {
+    [ -n "${PROFILE_DIR:-}" ] || return 1
+    config_file_bad_bytes "$PROFILE_DIR/permissions"
+}
+
+# Approvals of an overlay that no longer match the value they name, one key
+# per line: an orphan would silently re-approve its value if it came back.
+# allow_patterns names the sha256 of the profile's allow-patterns.json.
+# Usage: profile_overlay_orphan_approvals <file>
+profile_overlay_orphan_approvals() {
+    local file="$1" i j k v cur found line_key sha="" rules
+    [ -f "$file" ] || return 0
+    ! config_file_bad_bytes "$file" >/dev/null || return 0
+    rules="$(dirname "$file")/allow-patterns.json"
+    [ ! -f "$rules" ] || sha=$(profile_sha256_file "$rules")
+    config_read_file "$file"
+    local -a keys=("${_CFG_KEYS[@]}") values=("${_CFG_VALUES[@]}")
+    for i in "${!keys[@]}"; do
+        case "${keys[$i]}" in allow_loosen.?*) ;; *) continue ;; esac
+        k="${keys[$i]#allow_loosen.}"
+        v="${values[$i]}"
+        found=false
+        cur=""
+        if [ "$k" = allow_patterns ]; then
+            [ -z "$sha" ] || { found=true; cur="$sha"; }
+        else
+            case "$k" in mount.*) line_key="$k" ;; *) line_key="setting.$k" ;; esac
+            for j in "${!keys[@]}"; do
+                [ "${keys[$j]}" != "$line_key" ] || { found=true; cur="${values[$j]}"; }
+            done
+        fi
+        [ "$found" = true ] && [ "$v" = "$cur" ] || printf '%s\n' "$k"
+    done | awk '!seen[$0]++'
+}
+
+# Drop the approvals of <file> that no longer match their value (see
+# profile_overlay_orphan_approvals); prints the keys it dropped.
+# Usage: profile_prune_orphan_approvals <file>
+profile_prune_orphan_approvals() {
+    local file="$1" k cur keep
+    for k in $(profile_overlay_orphan_approvals "$file"); do
+        # A key can carry a still-valid approval next to stale ones: keep that one.
+        keep=false
+        case "$k" in
+        allow_patterns) cur=$(profile_sha256_file "$(dirname "$file")/allow-patterns.json" 2>/dev/null) && [ -n "$cur" ] ;;
+        mount.*) cur=$(config_file_value "$file" "$k") ;;
+        *) cur=$(config_file_value "$file" "setting.$k") ;;
+        esac && _profile_has_approval "$file" "$k" "$cur" && keep=true
+        profile_file_unset "$file" "allow_loosen.$k" || continue
+        [ "$keep" = false ] || profile_file_set "$file" "allow_loosen.$k" "$cur" || continue
+        printf '%s\n' "$k"
+    done
+}
+
+# Does <file> carry the approval allow_loosen.<key>=<value>?
+# Usage: _profile_has_approval <file> <key> <value>
+_profile_has_approval() {
+    local i
+    config_read_file "$1"
+    for i in "${!_CFG_KEYS[@]}"; do
+        [ "${_CFG_KEYS[$i]}" = "allow_loosen.$2" ] && [ "${_CFG_VALUES[$i]}" = "$3" ] && return 0
+    done
+    return 1
 }
 
 # One warning per run when the profile weakens the global posture on purpose.

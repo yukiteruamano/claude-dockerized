@@ -29,6 +29,11 @@ declare -a PROFILE_LOOSENED=() # "key=value" pairs the active profile loosened o
 declare -a PROFILE_UNAPPROVED=() # settings the overlay tried to loosen without approval (dropped)
 declare -a PROFILE_SET_KEYS=()   # settings and mount.<name> keys the overlay applied (config show sources)
 declare -a PROFILE_DROPPED_MOUNTS=() # global mounts the overlay removed (mount.<name>=-)
+declare -a PROFILE_APPROVALS=()  # allow_loosen.<key>=<value> of the overlay, as "key=value" (read by the loader)
+declare -a PROFILE_RAW_KEYS=() PROFILE_RAW_VALUES=() # setting keys/values the loader applied from the overlay
+PROFILE_REJECTED=""              # the overlay file when it was refused as a whole (control bytes)
+PROFILE_BOUND_PATH=""            # set by profile_bound_entry: the map entry that applies...
+PROFILE_BOUND_NAME=""            # ...and its profile
 PROFILE_ALLOW_PATTERNS=""        # the profile's approved allow-patterns.json (T-36), or empty
 _PROFILE_WARNED=""               # ids of warnings already printed by this process
 
@@ -127,6 +132,10 @@ profile_extract_flag() {
                 continue
                 ;;
             --profile=*)
+                if [ -z "${1#--profile=}" ]; then
+                    print_error "--profile needs a profile name (see: claude-dockerized profiles)"
+                    exit 1
+                fi
                 PROFILE_FLAG="${1#--profile=}"
                 shift
                 continue
@@ -138,31 +147,50 @@ profile_extract_flag() {
     done
 }
 
-# The profile pinned to <dir> (or an ancestor; the longest match wins) in
-# profiles.map, or nothing. The map lives next to the config, never inside a
-# project: the agent can write to the project but not to $CONFIG_DIR (T-32).
-# Usage: profile_bound_name <dir>
-profile_bound_name() {
-    local dir="$1" p n best="" best_len=0
+# Is profiles.map safe to parse? A NUL or control byte would make bash and
+# awk read different lines; the map is then ignored (no bind applies) with one
+# error. Usage: profile_map_ok
+profile_map_ok() {
+    local reason
+    reason=$(config_file_bad_bytes "$PROFILE_MAP_FILE") || return 0
+    config_error_once "bad-bytes:$PROFILE_MAP_FILE" "Ignoring $PROFILE_MAP_FILE: $reason (only tabs and line endings are allowed); no project bind applies until it is fixed by hand."
+    return 1
+}
+
+# The bind that applies to <dir>: the entry for <dir> or its closest
+# ancestor (the longest match wins). Sets PROFILE_BOUND_PATH and
+# PROFILE_BOUND_NAME (both empty when nothing is bound). The map lives next to
+# the config, never inside a project: the agent can write to the project but
+# not to $CONFIG_DIR (T-32). Usage: profile_bound_entry <dir>
+profile_bound_entry() {
+    local dir="$1" p n best_len=0
+    PROFILE_BOUND_PATH=""
+    PROFILE_BOUND_NAME=""
     [ -n "$dir" ] && [ -f "$PROFILE_MAP_FILE" ] || return 0
+    profile_map_ok || return 0
     dir=$(canonical_host_path "$dir")
     while IFS=$'\t' read -r p n || [ -n "$p" ]; do
         [ -n "$p" ] && [ -n "$n" ] || continue
         if path_within "$dir" "$p" && [ "${#p}" -gt "$best_len" ]; then
-            best="$n"
+            PROFILE_BOUND_PATH="$p"
+            PROFILE_BOUND_NAME="$n"
             best_len=${#p}
         fi
     done <"$PROFILE_MAP_FILE"
-    printf '%s' "$best"
+}
+
+# The profile pinned to <dir> (or an ancestor), or nothing.
+# Usage: profile_bound_name <dir>
+profile_bound_name() {
+    profile_bound_entry "$1"
+    printf '%s' "$PROFILE_BOUND_NAME"
 }
 
 # setting.profile from the global config, read before the full parse because
 # the selected profile decides which files get parsed. Usage: profile_config_default
 profile_config_default() {
-    [ -f "$CONFIG_FILE" ] || return 0
     local v
-    v=$(sed -n 's/^[[:space:]]*setting\.profile[[:space:]]*=[[:space:]]*//p' "$CONFIG_FILE" 2>/dev/null | tail -n 1)
-    v="${v%"${v##*[![:space:]]}"}"
+    v=$(config_file_value "$CONFIG_FILE" setting.profile) || return 0
     profile_name_valid "$v" && printf '%s' "$v"
     return 0
 }
@@ -177,7 +205,8 @@ profile_resolve() {
     elif [ -n "${CLAUDE_DOCKERIZED_PROFILE:-}" ]; then
         name="$CLAUDE_DOCKERIZED_PROFILE" src=env
     else
-        bound=$(profile_bound_name "$project")
+        profile_bound_entry "$project"
+        bound="$PROFILE_BOUND_NAME"
         if [ -n "$bound" ] && profile_name_valid "$bound" && { profile_exists "$bound" || [ "$CCODE_HOME_PINNED" = true ]; }; then
             name="$bound" src=bind
         else

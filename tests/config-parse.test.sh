@@ -56,6 +56,30 @@ assert_eq "${CUSTOM_MOUNT_KEYS[0]:-}" data "mount key parsed"
 load_from 'mount.eq=~/a=b:/data\n'
 assert_eq "${CUSTOM_MOUNTS[0]:-}" "~/a=b:/data" "values may contain '='"
 
+load_from 'mount.eq=~/a:/data=\n'
+assert_eq "${CUSTOM_MOUNTS[0]:-}" "~/a:/data=" "a trailing '=' is kept (whole-line split, not IFS='=' read)"
+
+load_from 'mount.eq=~/a:/data==\nsetting.memory= 2g \n'
+assert_eq "${CUSTOM_MOUNTS[0]:-}" "~/a:/data==" "several trailing '=' are kept"
+assert_eq "$MEMORY" 2g "values are still trimmed"
+
+load_from 'setting.memory=4g'
+assert_eq "$MEMORY" 4g "a last line without a newline is read"
+
+# A NUL or other control byte refuses the whole file (bash read and sed/grep
+# would not agree on its lines); tabs and CRLF endings are fine.
+load_from 'setting.memory=4g\nsetting.netw\000ork=host\n'
+assert_eq "$NETWORK" bridge "a NUL-split key is never applied"
+assert_eq "$MEMORY" "" "…nor anything else of a file with a NUL"
+load_from 'setting.memory=4g\nsetting.model=opus\033[0m\n'
+assert_eq "$MEMORY" "" "an escape byte refuses the file too"
+load_from '\tsetting.memory=4g\t\r\n'
+assert_eq "$MEMORY" 4g "tabs and CRLF are not control bytes for this purpose"
+assert_eq "$(printf 'a\0b\n' >"$TMP/nul"; config_file_bad_bytes "$TMP/nul")" "it contains NUL or other control bytes" "config_file_bad_bytes names the problem"
+check_not "a clean file passes" config_file_bad_bytes "$CONFIG_FILE"
+assert_eq "$(printf 'setting.profile=work\0x\n' >"$CONFIG_FILE"; profile_config_default)" "" "setting.profile is not read from a file with control bytes"
+: >"$CONFIG_FILE"
+
 # Secrets are per profile: a legacy global setting.env_file is ignored (with a warning).
 # save_config must not leave a setting that load_config then rejects (an empty
 # setting.profile used to warn on every load), and must keep a chosen default.

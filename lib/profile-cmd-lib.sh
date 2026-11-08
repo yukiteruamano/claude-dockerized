@@ -21,6 +21,16 @@ _profile_line_is_key() {
     return 1
 }
 
+# May <file> be rewritten line by line? Not with NUL or control bytes: `read`
+# would drop the NULs and turn an ignored `setting.netw<NUL>ork=host` into a
+# live setting. Usage: _profile_file_rewritable <file>
+_profile_file_rewritable() {
+    local reason
+    reason=$(config_file_bad_bytes "$1") || return 0
+    config_error "Refusing to rewrite $1: $reason (only tabs and line endings are allowed); fix it by hand first."
+    return 1
+}
+
 # Write or replace one key=value line in an INI file, preserving the rest. A
 # key or value with a line break is refused: it would write extra lines (an
 # injected setting). Usage: profile_file_set <file> <key> <value>
@@ -32,6 +42,7 @@ profile_file_set() {
         return 1
         ;;
     esac
+    _profile_file_rewritable "$file" || return 1
     mkdir -p "$(dirname "$file")" 2>/dev/null || return 1
     tmp=$(mktemp "$file.tmp.XXXXXX" 2>/dev/null) || return 1
     if [ -f "$file" ]; then
@@ -56,6 +67,7 @@ profile_file_set() {
 profile_file_unset() {
     local file="$1" key="$2" tmp line
     [ -f "$file" ] || return 0
+    _profile_file_rewritable "$file" || return 1
     tmp=$(mktemp "$file.tmp.XXXXXX" 2>/dev/null) || return 1
     while IFS= read -r line || [ -n "$line" ]; do
         _profile_line_is_key "$line" "$key" || printf '%s\n' "$line" >>"$tmp"
@@ -115,26 +127,10 @@ _profile_confirm() {
     }
 }
 
-# Model of a profile as set in its overlay ("" when inherited).
-# Usage: _profile_overlay_value <name> <key>
+# A setting as written in a profile's overlay ("" when inherited), parsed
+# like the loader does. Usage: _profile_overlay_value <name> <key>
 _profile_overlay_value() {
-    local cfg
-    cfg="$(profile_dir_of "$1")/config"
-    [ -f "$cfg" ] || return 0
-    sed -n "s/^setting\\.$2=//p" "$cfg" 2>/dev/null | tail -n 1
-}
-
-# Keys a profile loosens on purpose and that are really in effect (an
-# approval that no longer matches its value does not count).
-# Usage: _profile_loosened_keys <name>
-_profile_loosened_keys() {
-    profile_overlay_state "$1" 2>/dev/null | sed -n 's/^approved://p'
-}
-
-# Keys the overlay of a profile tries to loosen without a valid approval
-# (they are ignored). Usage: _profile_unapproved_keys <name>
-_profile_unapproved_keys() {
-    profile_overlay_state "$1" 2>/dev/null | sed -n 's/^unapproved://p'
+    config_file_value "$(profile_dir_of "$1")/config" "setting.$2" || true
 }
 
 # Date a profile was last used (YYYY-MM-DD) or "never". Usage: _profile_last_used <name>
@@ -163,7 +159,7 @@ profile_cmd_list() {
         return 1
         ;;
     esac
-    local name home state email model used size binds loosened ignored ovl first=true note
+    local name home state email model used size binds loosened ignored rejected ovl first=true note
     [ "$json" = true ] && printf '{"active":"%s","profiles":[' "$PROFILE_NAME"
     if [ "$json" = false ]; then
         printf '  %-16s %-9s %-28s %-12s %-11s %-6s %s\n' NAME LOGIN ACCOUNT MODEL USED SIZE NOTES
@@ -180,20 +176,23 @@ profile_cmd_list() {
         ovl=$(profile_overlay_state "$name" 2>/dev/null) || ovl=""
         loosened=$(printf '%s\n' "$ovl" | sed -n 's/^approved://p' | paste -sd, -)
         ignored=$(printf '%s\n' "$ovl" | sed -n 's/^unapproved://p' | paste -sd, -)
+        rejected=$(printf '%s\n' "$ovl" | sed -n 's/^rejected://p' | paste -sd, -)
         if [ "$json" = true ]; then
             [ "$first" = true ] || printf ','
             first=false
-            printf '{"name":"%s","active":%s,"login":"%s","account":%s,"model":%s,"last_used":"%s","size":%s,"binds":%s,"loosened":%s,"ignored":%s}' \
+            printf '{"name":"%s","active":%s,"login":"%s","account":%s,"model":%s,"last_used":"%s","size":%s,"binds":%s,"loosened":%s,"ignored":%s,"rejected":%s}' \
                 "$name" "$([ "$name" = "$PROFILE_NAME" ] && echo true || echo false)" "$state" \
                 "$(printf '%s' "$email" | _integrity_json_string)" "$(printf '%s' "$model" | _integrity_json_string)" "$used" \
                 "$(printf '%s' "${size:--}" | _integrity_json_string)" "$binds" \
                 "$(printf '%s' "$loosened" | tr ',' '\n' | _integrity_json_array)" \
-                "$(printf '%s' "$ignored" | tr ',' '\n' | _integrity_json_array)"
+                "$(printf '%s' "$ignored" | tr ',' '\n' | _integrity_json_array)" \
+                "$(printf '%s' "$rejected" | tr ',' '\n' | _integrity_json_array)"
             continue
         fi
         note=""
         [ -z "$loosened" ] || note="$UI_SYM_WARN loosens: $loosened"
         [ -z "$ignored" ] || note="${note:+$note; }$UI_SYM_WARN ignored (unapproved): $ignored"
+        [ -z "$rejected" ] || note="${note:+$note; }$UI_SYM_WARN ignored (control bytes): $rejected"
         [ "$binds" -eq 0 ] || note="${note:+$note; }$binds project(s)"
         printf '%s %-16s %-9s %-28s %-12s %-11s %-6s %s\n' "$([ "$name" = "$PROFILE_NAME" ] && echo '*' || echo ' ')" \
             "$name" "$state" "${email:--}" "${model:--}" "$used" "${size:--}" "$note"
@@ -565,7 +564,7 @@ profile_cmd_delete() {
 
 # Checks of one profile in the current (sub)shell. Usage: _profile_doctor_one <name>
 _profile_doctor_one() {
-    local name="$1" rc=0 mode dir key
+    local name="$1" rc=0 mode dir key state
     dir=$(profile_dir_of "$name")
     mode=$(stat -c '%a' "$dir" 2>/dev/null || stat -f '%Lp' "$dir" 2>/dev/null || true)
     if [ -n "$mode" ] && [ $((8#$mode & 8#077)) -ne 0 ]; then
@@ -580,11 +579,20 @@ _profile_doctor_one() {
         fi
     fi
     [ "$(profile_login_state "$name")" != none ] || config_warning "$name: no login and no API key (profile login $name)"
-    for key in $(_profile_loosened_keys "$name"); do
+    state=$(profile_overlay_state "$name" 2>/dev/null) || state=""
+    for key in $(printf '%s\n' "$state" | sed -n 's/^approved://p'); do
         config_warning "$name: loosens $key on purpose (--allow-loosen)"
     done
-    for key in $(_profile_unapproved_keys "$name"); do
+    for key in $(printf '%s\n' "$state" | sed -n 's/^unapproved://p'); do
         config_warning "$name: its overlay tries to loosen $key without approval, so it is ignored (profile set $name $key VALUE --allow-loosen)"
+        rc=1
+    done
+    for key in $(printf '%s\n' "$state" | sed -n 's/^rejected://p'); do
+        config_error "$name: its $key file contains NUL or other control bytes and is ignored as a whole (fix it with: claude-dockerized profile edit $name ${key/overlay/config})"
+        rc=1
+    done
+    for key in $(printf '%s\n' "$state" | sed -n 's/^orphan://p'); do
+        config_warning "$name: approval allow_loosen.$key no longer matches the value it names and would re-approve it if that value came back (drop it with: claude-dockerized profile edit $name)"
         rc=1
     done
     if ! (
