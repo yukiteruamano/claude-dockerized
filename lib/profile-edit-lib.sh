@@ -46,6 +46,7 @@ profile_cmd_edit() {
         target="$(profile_dir_of "$name")/allow-patterns.json"
         [ -f "$target" ] || printf '[]\n' >"$target"
         "$editor" "$target"
+        _profile_report_pruned "$name" "$(profile_prune_orphan_approvals "$(profile_dir_of "$name")/config")"
         config_info "Profile '$name': review and activate them with: claude-dockerized profile approve $name allow-patterns"
         ;;
     *)
@@ -115,6 +116,7 @@ _profile_edit_overlay() {
     local name="$1" editor="$2" file="$3" problems answer
     while :; do
         "$editor" "$file"
+        _profile_report_pruned "$name" "$(profile_prune_orphan_approvals "$file")"
         problems=$(profile_overlay_problems "$file")
         if [ -z "$problems" ]; then
             config_success "Profile '$name': overlay checked, no problems."
@@ -278,6 +280,7 @@ profile_cmd_set() {
         }
         config_warning "Profile '$name' now loosens $key; it is marked in 'profile list' and reported on every run."
     fi
+    _profile_report_pruned "$name" "$(profile_prune_orphan_approvals "$tmp")"
     cat "$tmp" >"$cfg" || {
         rm -f "$tmp"
         return 1
