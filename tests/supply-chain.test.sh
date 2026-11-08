@@ -67,6 +67,43 @@ done
 for url in http://github.com/o/r.git git://github.com/o/r.git ftp://x/r.git "file://x" "-oProxyCommand=x"; do
     check_not "install.sh refuses $url" url_ok "$url"
 done
+# install_fn <name> <args...> — runs one install.sh function in a subshell.
+install_fn() {
+    (
+        # shellcheck source=/dev/null
+        eval "$(sed -n "/^$1() {/,/^}/p" "$IS")"
+        # shellcheck source=/dev/null
+        eval "$(sed -n '/^check_ref_name() {/,/^}/p' "$IS")"
+        "$@"
+    )
+}
+for ref in v1.2.0 0123abc feature/x; do
+    check "install.sh accepts CCODE_REF=$ref" install_fn check_ref_name "$ref" 2>/dev/null
+done
+for ref in --orphan=x -b "v1..v2" "HEAD@{1}" "v1^" "a b" "" /abs; do
+    check_not "install.sh refuses CCODE_REF='$ref'" install_fn check_ref_name "$ref" 2>/dev/null
+done
+check "install.sh describes the keyring it verified against" matches 'your own GnuPG keyring' "$IS"
+check_not "install.sh never calls the local keyring a trusted release check" matches 'signature valid for your GnuPG keyring\)' "$IS"
+
+if command -v git >/dev/null 2>&1; then
+    export TMPDIR="${TMPDIR:-/tmp/claude}"
+    REF_REPO="$(t_tmpdir)/ref-repo"
+    git_q() { git -C "$REF_REPO" -c user.name=t -c user.email=t@example.invalid "$@" >/dev/null 2>&1; }
+    git init -q "$REF_REPO"
+    git_q commit --allow-empty -m tagged
+    git_q tag -a v1.0.0 -m v1.0.0
+    tagged="$(git -C "$REF_REPO" rev-parse HEAD)"
+    git_q commit --allow-empty -m branch
+    git_q branch v1.0.0
+    checked_out() { [ "$(git -C "$REF_REPO" rev-parse HEAD)" = "$1" ]; }
+    install_fn checkout_ref "$REF_REPO" v1.0.0 >/dev/null 2>&1
+    check "CCODE_REF prefers the tag over a same-named branch" checked_out "$tagged"
+    check_not "CCODE_REF '--orphan=x' is refused" install_fn checkout_ref "$REF_REPO" --orphan=x 2>/dev/null
+    check_not "a refused CCODE_REF leaves no orphan branch" git -C "$REF_REPO" rev-parse --verify -q refs/heads/x
+    check_not "an unknown CCODE_REF fails" install_fn checkout_ref "$REF_REPO" v9.9.9 2>/dev/null
+    rm -rf "$(dirname "$REF_REPO")"
+fi
 
 # --- CI (T-29) -----------------------------------------------------------------------------
 for wf in "$REPO_DIR"/.github/workflows/*.yml; do

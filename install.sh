@@ -33,21 +33,44 @@ check_repo_url() {
     return 1
 }
 
-# Check out CCODE_REF (tag or commit) and report its signature status.
+# Refuse a CCODE_REF that git could parse as an option or a revision
+# expression: only plain names (tag, branch, commit hash) are accepted.
+# Usage: check_ref_name <ref>
+check_ref_name() {
+    case "$1" in
+    "" | -* | *..* | *[!A-Za-z0-9._/-]* | */ | /*) ;;
+    *) return 0 ;;
+    esac
+    echo "error: refusing CCODE_REF '$1' (use a release tag such as v1.2.0 or a commit hash)" >&2
+    return 1
+}
+
+# Check out CCODE_REF (tag or commit) and report its signature status. A
+# release tag wins over any other ref of the same name (refs/tags/ first);
+# the commit it resolves to is checked out detached, never as an option.
 # Usage: checkout_ref <dir> <ref>
 checkout_ref() {
-    local dir="$1" ref="$2"
+    local dir="$1" ref="$2" commit tag_ref=""
     [ -n "$ref" ] || return 0
-    if ! git -C "$dir" -c advice.detachedHead=false checkout -q "$ref"; then
+    check_ref_name "$ref" || return 1
+    if git -C "$dir" rev-parse --verify -q "refs/tags/$ref" >/dev/null; then
+        tag_ref="refs/tags/$ref"
+    fi
+    if ! commit=$(git -C "$dir" rev-parse --verify -q "${tag_ref:-$ref}^{commit}") ||
+        ! git -C "$dir" -c advice.detachedHead=false checkout -q --detach "$commit"; then
         echo "error: could not check out CCODE_REF=$ref" >&2
         return 1
     fi
-    if git -C "$dir" verify-tag "$ref" >/dev/null 2>&1; then
-        echo "Checked out $ref (signature valid for your GnuPG keyring)."
+    # Only the user's own GnuPG keyring is consulted here: this is not the
+    # pinned release trust store that `claude-dockerized update` relies on.
+    if [ -n "$tag_ref" ] && git -C "$dir" verify-tag "$tag_ref" >/dev/null 2>&1; then
+        echo "Checked out $ref (tag signature valid for a key in your own GnuPG keyring;"
+        echo "  this is not the pinned release trust store used by updates)."
     else
-        echo "Checked out $ref (signature not verified locally; pin the release key with"
-        echo "  claude-dockerized update --trust-key <key-file>  before the next update)."
+        echo "Checked out $ref (signature not verified)."
     fi
+    echo "Pin the release key before the next update:"
+    echo "  claude-dockerized update --trust-key <key-file>"
 }
 
 main() {
