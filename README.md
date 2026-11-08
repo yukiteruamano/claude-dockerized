@@ -770,11 +770,14 @@ They should not: agents are forwarded per session (see [Multiple concurrent sess
 
 ### Shared Modules
 
-- **`lib/config-lib.sh`** - Entry point of the shared library: constants, config parsing/saving and image helpers; sources the modules below. Sourced by every script; not executable directly
-- **`lib/mounts-lib.sh`** - `docker run` arguments: mount plan and its validation, env, hardening profiles, project path checks
+- **`lib/config-lib.sh`** - Entry point of the shared library: constants, `parse_config`/`print_config` and image helpers; sources the modules below. Sourced by every script; not executable directly
+- **`lib/config-file-lib.sh`** - The config file: settings, loading (global file and profile overlays), saving
+- **`lib/mount-validate-lib.sh`** - The single path validator: custom mounts, sensitive host paths, container targets, project directory
+- **`lib/mounts-lib.sh`** - `docker run` arguments: mount plan, env, network, hardening profiles
 - **`lib/layer-lib.sh`** - Security layer: managed policy and settings generation, hooks/policies mirror, sync and checks
 - **`lib/agent-lib.sh`** - Forwarded GnuPG/SSH agents: per-session public GnuPG mirror, agent socket resolution and the socket relay
-- **`lib/profile-lib.sh`**, **`lib/profile-cmd-lib.sh`** - Account profiles: selection, per-profile home, config overlay with the loosening guard, legacy migration, and the `profile`/`profiles` commands
+- **`lib/profile-lib.sh`**, **`lib/profile-overlay-lib.sh`**, **`lib/profile-migrate-lib.sh`** - Account profiles: selection and per-profile home; the config overlay with the loosening guard, allow and permission rules; the legacy migration
+- **`lib/profile-cmd-lib.sh`**, **`lib/profile-edit-lib.sh`** - The `profile`/`profiles` commands; `edit`/`set`/`unset`/`approve` and overlay validation
 - **`lib/lsp-lib.sh`** - Opt-in LSP servers and formatters (installed into the generated home)
 - **`lib/wizard-lib.sh`** - Interactive configuration prompts
 - **`lib/install-lib.sh`** - Install wizard library sourced by the wrapper's `install` command
