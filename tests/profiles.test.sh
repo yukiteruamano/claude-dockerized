@@ -400,6 +400,15 @@ check "…and stays in the other profiles" argv_has_text ":/shared:ro"
 printf 'mount.local=-\n' >>"$CONFIG_DIR/config"
 wrapper config show
 check "a '-' mount in the global config is ignored with a warning" has_text "only works in a profile overlay" "$OUT"
+# profile show says where each value comes from
+wrapper profile set guard model opus
+printf 'setting.docker_socket=true\n' >>"$P/guard/config"
+wrapper profile show guard
+check "an overlay value is marked [profile]" has_text "Model: opus [profile]" "$OUT"
+check "a dropped loosening is marked as the global value" has_text "Docker socket: false [global; profile value dropped]" "$OUT"
+check "a global value carries no marker" has_line "  Security policy: strict" "$OUT"
+check "a dropped global mount is listed" has_text "mount.shared dropped by this profile" "$OUT"
+check "the legend names the overlay file" has_text "[profile] = $P/guard/config" "$OUT"
 wrapper profile unset guard mount.shared
 cp "$TMP/global.bak" "$CONFIG_DIR/config"
 wrapper profile delete guard --yes

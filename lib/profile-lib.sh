@@ -24,6 +24,8 @@ PROFILE_FLAG=""
 declare -a PROFILE_ARGS=()
 declare -a PROFILE_LOOSENED=() # "key=value" pairs the active profile loosened on purpose
 declare -a PROFILE_UNAPPROVED=() # settings the overlay tried to loosen without approval (dropped)
+declare -a PROFILE_SET_KEYS=()   # settings and mount.<name> keys the overlay applied (config show sources)
+declare -a PROFILE_DROPPED_MOUNTS=() # global mounts the overlay removed (mount.<name>=-)
 _PROFILE_WARNED=""               # ids of warnings already printed by this process
 
 # ============================================
@@ -336,6 +338,7 @@ profile_overlay_apply_setting() {
     var=$(profile_key_var "$key")
     [ -z "$var" ] || before="${!var}"
     _config_apply_setting "$key" "$value"
+    PROFILE_SET_KEYS+=("$key")
     [ -n "$var" ] || return 0
     after="${!var}"
     profile_value_loosens "$key" "$before" "$after" || return 0
@@ -447,6 +450,8 @@ profile_apply_overlay_file() {
     local file="$1" g_n="$NETWORK" g_e="$NETWORK_EXPLICIT" g_m="$MEMORY" g_c="$CPUS"
     PROFILE_LOOSENED=()
     PROFILE_UNAPPROVED=()
+    PROFILE_SET_KEYS=()
+    PROFILE_DROPPED_MOUNTS=()
     [ -f "$file" ] || return 0
     _load_config_file "$file" overlay
     _profile_overlay_post_checks "$file" "$g_n" "$g_e" "$g_m" "$g_c"

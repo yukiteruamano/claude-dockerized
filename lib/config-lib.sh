@@ -609,6 +609,7 @@ _load_config_file() {
             if [ "$value" = - ]; then
                 if [ "$mode" = overlay ]; then
                     _config_drop_mount "${key#mount.}"
+                    PROFILE_DROPPED_MOUNTS+=("${key#mount.}")
                 else
                     config_warning "Ignoring $key=- in $file: removing a mount only works in a profile overlay"
                 fi
@@ -621,6 +622,7 @@ _load_config_file() {
                     continue
                 fi
                 if [ "$mode" = overlay ]; then
+                    PROFILE_SET_KEYS+=("mount.${key#mount.}")
                     for i in "${!CUSTOM_MOUNT_KEYS[@]}"; do
                         if [ "${CUSTOM_MOUNT_KEYS[$i]}" = "${key#mount.}" ]; then
                             CUSTOM_MOUNTS[i]="$value"
@@ -787,22 +789,25 @@ print_config() {
     echo "Current configuration:"
     echo "  Config file: $CONFIG_FILE"
     echo "  Profile: ${PROFILE_NAME:-default} (${PROFILE_SOURCE:-default})"
-    echo "  SSH agent forwarding: $SSH_AGENT_SUPPORT"
-    echo "  GnuPG agent forwarding: $GPG_AGENT_SUPPORT"
-    echo "  GPG main-socket fallback: $GPG_ALLOW_MAIN_SOCKET"
-    echo "  GPG agent autostart: $GPG_AUTOSTART_AGENT"
-    echo "  GPG socket relay: $GPG_RELAY"
-    echo "  Docker socket: $DOCKER_SOCKET"
+    if [ ${#PROFILE_SET_KEYS[@]} -gt 0 ] || [ ${#PROFILE_UNAPPROVED[@]} -gt 0 ]; then
+        echo "  Sources: [profile] = $PROFILE_CONFIG_FILE, [global; profile value dropped] = unapproved loosening, unmarked = global config or default"
+    fi
+    echo "  SSH agent forwarding: $SSH_AGENT_SUPPORT$(_config_source ssh_agent_support)"
+    echo "  GnuPG agent forwarding: $GPG_AGENT_SUPPORT$(_config_source gpg_agent_support)"
+    echo "  GPG main-socket fallback: $GPG_ALLOW_MAIN_SOCKET$(_config_source gpg_allow_main_socket)"
+    echo "  GPG agent autostart: $GPG_AUTOSTART_AGENT$(_config_source gpg_autostart_agent)"
+    echo "  GPG socket relay: $GPG_RELAY$(_config_source gpg_relay)"
+    echo "  Docker socket: $DOCKER_SOCKET$(_config_source docker_socket)"
     if [ "$DOCKER_SOCKET" = true ]; then
         echo "  Docker socket WARNING: root-equivalent on the host (Docker-in-Docker only)"
     fi
-    echo "  Container network: $NETWORK"
-    echo "  Security policy: $SECURITY_POLICY"
-    echo "  Hardening profile: $HARDENING"
-    echo "  Session integrity check: $INTEGRITY_CHECK"
+    echo "  Container network: $NETWORK$(_config_source network)"
+    echo "  Security policy: $SECURITY_POLICY$(_config_source security_policy)"
+    echo "  Hardening profile: $HARDENING$(_config_source hardening)"
+    echo "  Session integrity check: $INTEGRITY_CHECK$(_config_source integrity_check)"
     echo "  Image: strip setuid=$IMAGE_STRIP_SETUID, Docker CLI=$IMAGE_DOCKER_CLI, require Claude sha256=$REQUIRE_CLAUDE_SHA"
-    echo "  Memory limit: ${MEMORY:-(none)}"
-    echo "  CPU limit: ${CPUS:-(none)}"
+    echo "  Memory limit: ${MEMORY:-(none)}$(_config_source memory)"
+    echo "  CPU limit: ${CPUS:-(none)}$(_config_source cpus)"
     if [ -n "$ENV_FILE" ]; then
         local env_key_count="?" env_file_path
         env_file_path=$(canonical_host_path "$ENV_FILE")
@@ -813,12 +818,12 @@ print_config() {
     else
         echo "  Env file: (none)"
     fi
-    echo "  Model: ${CLAUDE_MODEL:-(default)}"
-    echo "  Session retention: ${CLEANUP_DAYS:-(default)} days"
-    if [ "$LSP_ENABLED" = true ]; then echo "  LSP: true ($LSP_SERVERS)"; else echo "  LSP: false"; fi
-    echo "  Formatters: $FORMATTERS_ENABLED"
-    echo "  Shared skills (from default): $SHARE_SKILLS"
-    echo "  LSP binaries from: ${LSP_FROM:-(own)}"
+    echo "  Model: ${CLAUDE_MODEL:-(default)}$(_config_source model)"
+    echo "  Session retention: ${CLEANUP_DAYS:-(default)} days$(_config_source cleanup_days)"
+    if [ "$LSP_ENABLED" = true ]; then echo "  LSP: true ($LSP_SERVERS)$(_config_source lsp lsp_servers)"; else echo "  LSP: false$(_config_source lsp)"; fi
+    echo "  Formatters: $FORMATTERS_ENABLED$(_config_source formatters)"
+    echo "  Shared skills (from default): $SHARE_SKILLS$(_config_source share_skills)"
+    echo "  LSP binaries from: ${LSP_FROM:-(own)}$(_config_source lsp_from)"
     local loosened
     for loosened in "${PROFILE_LOOSENED[@]}"; do
         echo "  $UI_SYM_WARN loosened by this profile: $loosened"
@@ -829,13 +834,38 @@ print_config() {
         echo "  Custom mounts:"
         local i
         for i in "${!CUSTOM_MOUNTS[@]}"; do
-            echo "    [$i] mount.${CUSTOM_MOUNT_KEYS[$i]}=${CUSTOM_MOUNTS[$i]}"
+            echo "    [$i] mount.${CUSTOM_MOUNT_KEYS[$i]}=${CUSTOM_MOUNTS[$i]}$(_config_source "mount.${CUSTOM_MOUNT_KEYS[$i]}")"
         done
     else
         echo ""
         echo "  Custom mounts: (none)"
     fi
+    local dropped
+    for dropped in "${PROFILE_DROPPED_MOUNTS[@]}"; do
+        echo "    mount.$dropped dropped by this profile"
+    done
     echo ""
+}
+
+# Where the active value of a setting comes from, as a suffix for
+# print_config: " [profile]", " [profile, approved loosening]",
+# " [global; profile value dropped]" or nothing (global config / default).
+# Several keys share one line (lsp + lsp_servers): the first match wins.
+# Usage: _config_source <key>...
+_config_source() {
+    local key item
+    for key in "$@"; do
+        for item in "${PROFILE_UNAPPROVED[@]}"; do
+            [ "$item" = "$key" ] && { printf ' [global; profile value dropped]'; return 0; }
+        done
+        for item in "${PROFILE_LOOSENED[@]}"; do
+            [ "${item%%=*}" = "$key" ] && { printf ' [profile, approved loosening]'; return 0; }
+        done
+        for item in "${PROFILE_SET_KEYS[@]}"; do
+            [ "$item" = "$key" ] && { printf ' [profile]'; return 0; }
+        done
+    done
+    return 0
 }
 
 # Print a docker command for DRY_RUN with secret-bearing values redacted:
