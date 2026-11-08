@@ -126,7 +126,7 @@ Status legend: **mitigated** (control in place, test green) · **detected**
 | T-21 | Residual setuid/setgid binaries in the image | accepted (neutralized by no_new_privs) · opt-in `image_strip_setuid` | integration setuid inventory; CI hardened image build |
 | T-22 | Writable root filesystem and group-writable toolchain | accepted (default) · opt-in read-only rootfs (strict hardening) | hardening `strict: read-only rootfs`; integration strict profile |
 | T-23 | Resource exhaustion (no pids/memory limits by default) | accepted (default) · opt-in pids limit (standard/strict) | hardening `standard: pids limit` |
-| T-24 | Image supply chain (base by tag, piped installers, unpinned tools) | mitigated (TOFU for the Claude binary sha256) | `tests/supply-chain.test.sh` (base digest, NVM commit, Node/uv/Claude versions, apt key fingerprint) |
+| T-24 | Image supply chain (base by tag, piped installers, unpinned tools) | mitigated (TOFU for the Claude binary sha256, recorded for every built version and enforceable with `setting.require_claude_sha`) | `tests/supply-chain.test.sh` (base digest, NVM commit, Node/uv/Claude versions, apt key fingerprint); self-update `require_claude_sha refuses a version with no recorded sha256` |
 | T-25 | Cloud metadata / link-local exfiltration | mitigated | claude-guard metadata cases |
 | T-26 | Secret file reads through tools (`.env`, keys, `auth.json`, symlink escapes) | mitigated | claude-guard read cases; corpus `grep-home-root`, `grep-filesystem-root`, `glob-home-root` (recursive search roots over secret stores are refused); corpus `glob-*`, `quote-split-*` (shell globs and split quotes over secret names); denied since guard v7; known gaps `brace-expansion-env`, `variable-concat-env` in balanced/none |
 | T-27 | Wrapper started as root on the host | mitigated | dryrun `root is refused` |
@@ -169,4 +169,7 @@ Status legend: **mitigated** (control in place, test green) · **detected**
 - **`--network host` by default** (T-06): loopback services on the host are
   reachable. Use `setting.network=bridge` or `setting.hardening=strict`.
 - **First-use trust.** The release key and the Claude binary hash are
-  trusted on first use; verify the key fingerprint out of band.
+  trusted on first use; verify the key fingerprint out of band. The first
+  build of a Claude version (pinned or the Dockerfile default) warns and
+  records its sha256; `setting.require_claude_sha=true` refuses it unless
+  `--trust-first-use` accepts it explicitly.

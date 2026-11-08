@@ -65,7 +65,10 @@ treated as untrusted code execution inside the container.
 - In the default profile the root filesystem is writable and persistent
   paths are read-write (changes are detected, not prevented).
 - The release key and the Claude binary hash are trusted on first use:
-  check the key fingerprint through a second channel.
+  check the key fingerprint through a second channel. Every build warns
+  when it trusts a Claude version for the first time;
+  `setting.require_claude_sha=true` turns that into a refusal unless
+  `build --trust-first-use` accepts it.
 - Prompt injection is only partly mitigated. Review the agent's actions.
 
 ## Reporting a vulnerability

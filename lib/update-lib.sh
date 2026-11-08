@@ -342,3 +342,50 @@ update_dockerfile_claude_version() {
 update_claude_sha_file() {
     printf '%s/claude-%s-%s.sha256' "$UPDATE_STATE_DIR" "$1" "$(uname -m)"
 }
+
+# Claude Code version a build produces: an explicit --claude-version, the
+# saved pin, else the Dockerfile default. Usage: update_claude_effective_version
+update_claude_effective_version() {
+    local v="${_UP_CLAUDE_VERSION:-}"
+    [ -n "$v" ] || v=$(update_saved_claude_version)
+    [ -n "$v" ] || v=$(update_dockerfile_claude_version)
+    printf '%s' "$v"
+}
+
+# Recorded sha256 of <version> on this architecture, or nothing.
+# Usage: update_claude_recorded_sha <version>
+update_claude_recorded_sha() {
+    [ -n "$1" ] || return 0
+    head -n1 "$(update_claude_sha_file "$1")" 2>/dev/null | grep -E '^[0-9a-f]{64}$' || true
+}
+
+# Gate a build of <version> on a recorded sha256, so trust on first use is a
+# visible decision: without a record it warns, or refuses under
+# setting.require_claude_sha=true unless --trust-first-use was given.
+# Usage: update_claude_sha_gate <version>
+update_claude_sha_gate() {
+    [ -n "$1" ] || return 0
+    [ -z "$(update_claude_recorded_sha "$1")" ] || return 0
+    if [ "${REQUIRE_CLAUDE_SHA:-false}" = true ] && [ "${_TRUST_FIRST_USE:-false}" != true ]; then
+        config_error "No recorded sha256 for Claude Code $1 ($(uname -m)) and setting.require_claude_sha=true."
+        config_info "Trust this download once and record its hash with: claude-dockerized build --trust-first-use"
+        return 1
+    fi
+    config_warning "No recorded sha256 for Claude Code $1 ($(uname -m)): this build trusts the download on first use; the hash is recorded and later builds of $1 must match."
+}
+
+# Record the sha256 of the Claude binary in <image> for <version>, once (a
+# record is never replaced) and only when the image really runs <version>.
+# Usage: update_record_claude_sha <version> <image>
+update_record_claude_sha() {
+    local version="$1" image="$2" sha_file actual sha
+    [ -n "$version" ] || return 0
+    sha_file=$(update_claude_sha_file "$version")
+    [ -s "$sha_file" ] && return 0
+    actual=$(docker run --rm --entrypoint bash "$image" -c "claude --version" 2>/dev/null | cut -d' ' -f1)
+    [ "$actual" = "$version" ] || return 0
+    sha=$(docker run --rm --entrypoint sha256sum "$image" /usr/local/bin/claude 2>/dev/null | cut -d' ' -f1)
+    [[ "$sha" =~ ^[0-9a-f]{64}$ ]] || return 0
+    _update_ensure_dirs || return 1
+    printf '%s\n' "$sha" >"$sha_file"
+}

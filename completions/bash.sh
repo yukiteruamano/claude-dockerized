@@ -107,13 +107,13 @@ _claude_dockerized() {
             [ "$COMP_CWORD" -eq 2 ] && mapfile -t COMPREPLY < <(compgen -W "${opts}" -- "${cur}")
             ;;
         upgrade | update)
-            mapfile -t COMPREPLY < <(compgen -W "--check --dry-run --yes --no-build --channel --claude-version --allow-unsigned --trust-key --help" -- "${cur}")
+            mapfile -t COMPREPLY < <(compgen -W "--check --dry-run --yes --no-build --trust-first-use --channel --claude-version --allow-unsigned --trust-key --help" -- "${cur}")
             ;;
         rollback)
             mapfile -t COMPREPLY < <(compgen -W "--yes --help" -- "${cur}")
             ;;
         build)
-            mapfile -t COMPREPLY < <(compgen -W "--no-cache --pull --help" -- "${cur}")
+            mapfile -t COMPREPLY < <(compgen -W "--no-cache --pull --trust-first-use --help" -- "${cur}")
             ;;
         doctor | version)
             mapfile -t COMPREPLY < <(compgen -W "--json --help" -- "${cur}")

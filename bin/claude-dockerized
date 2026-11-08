@@ -48,17 +48,16 @@ image_build_args() {
     IMAGE_BUILD_ARGS=()
     [ "$IMAGE_STRIP_SETUID" = true ] && IMAGE_BUILD_ARGS+=(--build-arg STRIP_SETUID=1)
     [ "$IMAGE_DOCKER_CLI" = false ] && IMAGE_BUILD_ARGS+=(--build-arg DOCKER_CLI=0)
-    # A Claude Code version pinned with `update --claude-version` sticks, with
-    # the sha256 recorded on its first build (trust on first use).
-    local pinned sha_file
+    # A Claude Code version pinned with `update --claude-version` sticks. The
+    # sha256 recorded on the first build of a version (pinned or the
+    # Dockerfile default) is enforced on every later build of it.
+    local pinned sha
     pinned=$(update_saved_claude_version)
     if [ -n "$pinned" ] && [ -z "${_UP_CLAUDE_VERSION:-}" ]; then
         IMAGE_BUILD_ARGS+=(--build-arg "CLAUDE_CODE_VERSION=$pinned")
-        sha_file=$(update_claude_sha_file "$pinned")
-        if [ -s "$sha_file" ]; then
-            IMAGE_BUILD_ARGS+=(--build-arg "CLAUDE_CODE_SHA256=$(head -n1 "$sha_file")")
-        fi
     fi
+    sha=$(update_claude_recorded_sha "$(update_claude_effective_version)")
+    [ -z "$sha" ] || IMAGE_BUILD_ARGS+=(--build-arg "CLAUDE_CODE_SHA256=$sha")
     return 0
 }
 
@@ -69,17 +68,22 @@ build_image() {
     for arg in "$@"; do
         case "$arg" in
         --no-cache | --pull) extra+=("$arg") ;;
+        --trust-first-use) _TRUST_FIRST_USE=true ;;
         *)
-            print_error "Unknown build option: $arg (use --no-cache, --pull)"
+            print_error "Unknown build option: $arg (use --no-cache, --pull, --trust-first-use)"
             return 1
             ;;
         esac
     done
     print_info "Building Claude Code Docker image..."
     image_build_args
+    local version
+    version=$(update_claude_effective_version)
+    update_claude_sha_gate "$version" || return 1
     # Regular build uses Docker layer cache normally.
     # Only the 'update' command passes CLAUDE_BUILD_TIME to bust the cache.
     docker build "${extra[@]}" "${IMAGE_BUILD_ARGS[@]}" -t "$IMAGE_NAME" "$REPO_ROOT"
+    update_record_claude_sha "$version" "$IMAGE_NAME" || print_warning "Could not record the Claude Code sha256."
     print_success "Docker image built successfully"
 }
 
@@ -371,7 +375,7 @@ run_claude() {
 # Self-update (`update`, with `upgrade` as an alias): verified, fast-forward
 # only, previewed, reversible. See lib/update-lib.sh for the trust model.
 #   update [--check] [--yes] [--dry-run] [--no-build] [--channel tags|branch]
-#          [--claude-version X.Y.Z] [--allow-unsigned] [--trust-key FILE]
+#          [--claude-version X.Y.Z] [--trust-first-use] [--allow-unsigned] [--trust-key FILE]
 # --check exit codes: 0 up to date, 100 update available, 1 error.
 
 # Print the update usage. Usage: update_usage <command-name>
@@ -389,6 +393,7 @@ Options:
   --no-build               update code + security layer, skip the image rebuild
   --channel tags|branch    signed release tags (default) or signed upstream commits
   --claude-version X.Y.Z   pin another Claude Code release (kept for later builds)
+  --trust-first-use        accept a Claude Code binary with no recorded sha256
   --allow-unsigned         accept unverified code (interactive confirmation required)
   --trust-key FILE         pin a release-signing key (OpenPGP key or ssh allowed-signers)
 
@@ -413,6 +418,7 @@ _parse_self_update_flags() {
         --check) _UP_CHECK=true ;;
         --yes) _UP_YES=true ;;
         --no-build) _UP_NO_BUILD=true ;;
+        --trust-first-use) _TRUST_FIRST_USE=true ;;
         --dry-run) _UP_DRY_RUN=true ;;
         --allow-unsigned) _UP_ALLOW_UNSIGNED=true ;;
         --post-pull) _UP_POST_PULL=true ;;
@@ -466,10 +472,8 @@ _rebuild_claude_image() {
     # --claude-version is added here.
     if [ -n "${_UP_CLAUDE_VERSION:-}" ]; then
         version_args+=(--build-arg "CLAUDE_CODE_VERSION=$version")
-        local sha_file
-        sha_file=$(update_claude_sha_file "$version")
-        [ -s "$sha_file" ] && version_args+=(--build-arg "CLAUDE_CODE_SHA256=$(head -n1 "$sha_file")")
     fi
+    update_claude_sha_gate "$(update_claude_effective_version)" || return 1
     local default_version
     default_version=$(update_dockerfile_claude_version)
     if [ -n "$version" ] && [ -n "$default_version" ] && [ "$version" != "$default_version" ]; then
@@ -492,7 +496,7 @@ _rebuild_claude_image() {
         print_info "Retry the rebuild with: claude-dockerized update (or undo the code update with: claude-dockerized rollback)"
         return 1
     fi
-    local installed_sha actual_version
+    local actual_version
     actual_version=$(docker run --rm --entrypoint bash "$IMAGE_NAME" -c "claude --version" 2>/dev/null | cut -d' ' -f1)
     print_info "Claude Code in the image: ${actual_version:-unknown}"
     if [ -n "$version" ] && [ -n "$actual_version" ] && [ "$actual_version" != "$version" ]; then
@@ -500,12 +504,7 @@ _rebuild_claude_image() {
         print_info "Retry with: claude-dockerized update; undo the code update with: claude-dockerized rollback"
         return 1
     fi
-    installed_sha=$(docker run --rm --entrypoint sha256sum "$IMAGE_NAME" /usr/local/bin/claude 2>/dev/null | cut -d' ' -f1)
-    if [ -n "$version" ] && [ -n "$installed_sha" ]; then
-        local sha_file
-        sha_file=$(update_claude_sha_file "$version")
-        [ -s "$sha_file" ] || printf '%s\n' "$installed_sha" >"$sha_file"
-    fi
+    update_record_claude_sha "$(update_claude_effective_version)" "$IMAGE_NAME" || print_warning "Could not record the Claude Code sha256."
     [ -n "$version" ] && update_save_claude_version "$version"
     update_clear_rebuild_pending
     return 0
@@ -669,6 +668,7 @@ full_upgrade() {
     # Continue with the NEW code (sync + rebuild).
     local -a post=(--post-pull)
     [ "$_UP_NO_BUILD" = true ] && post+=(--no-build)
+    [ "${_TRUST_FIRST_USE:-false}" = true ] && post+=(--trust-first-use)
     [ -n "$_UP_CLAUDE_VERSION" ] && post+=(--claude-version "$_UP_CLAUDE_VERSION")
     exec "$REPO_ROOT/bin/claude-dockerized" update "${post[@]}"
 }

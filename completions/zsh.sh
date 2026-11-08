@@ -105,6 +105,7 @@ _claude_dockerized() {
                         '--dry-run[verify and preview, change nothing]' \
                         '--yes[apply without confirmation]' \
                         '--no-build[skip the image rebuild]' \
+                        '--trust-first-use[accept a Claude binary with no recorded sha256]' \
                         '--channel[release channel]:channel:(tags branch)' \
                         '--claude-version[pin a Claude Code release]:version (X.Y.Z):' \
                         '--allow-unsigned[accept unverified code (interactive)]' \
@@ -115,7 +116,7 @@ _claude_dockerized() {
                     _values 'rollback flag' --yes --help
                     ;;
                 build)
-                    _values 'build flag' --no-cache --pull --help
+                    _values 'build flag' --no-cache --pull --trust-first-use --help
                     ;;
                 doctor|version)
                     _values 'output flag' --json --help

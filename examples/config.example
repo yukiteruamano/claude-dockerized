@@ -109,9 +109,13 @@
 # Image build options (used by `build` and `update`).
 #   image_strip_setuid = clear setuid/setgid bits in the image (defense in depth)
 #   image_docker_cli   = include the Docker CLI (only useful with docker_socket)
+#   require_claude_sha = refuse to build a Claude Code version whose binary
+#                        sha256 was never recorded; accept one explicitly with
+#                        `build --trust-first-use` (off = warn, then record it)
 #
 # setting.image_strip_setuid=false
 # setting.image_docker_cli=true
+# setting.require_claude_sha=false
 
 # Optional container resource limits (docker --memory / --cpus). Empty = no limit.
 # setting.memory=4g

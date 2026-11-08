@@ -24,7 +24,7 @@ Everyday:
 
 Setup and maintenance:
     install [OPTS]       First-time setup / repair: PATH, config, completions, aliases
-    build [OPTS]         Build the image (--no-cache, --pull)
+    build [OPTS]         Build the image (--no-cache, --pull, --trust-first-use)
     update [OPTS]        Verified self-update: signed release, preview, sync, rebuild
     upgrade [OPTS]       Alias of update
     rollback [--yes]     Undo the last update (checkout + previous image)
@@ -103,11 +103,14 @@ EOF
     install) echo "Usage: $CCD_NAME install [--yes] [--only config,completions,aliases,global[,path][,build]]" ;;
     build)
         cat <<EOF
-Usage: $CCD_NAME build [--no-cache] [--pull]
+Usage: $CCD_NAME build [--no-cache] [--pull] [--trust-first-use]
 
 Build $IMAGE_NAME from the checkout. Honors setting.image_strip_setuid,
 setting.image_docker_cli and a Claude Code version pinned with
 'update --claude-version'. --pull refreshes the (digest-pinned) base layers.
+The Claude Code binary's sha256 is recorded on the first build of a version
+and enforced on later ones; with setting.require_claude_sha=true a version
+with no record is refused unless --trust-first-use accepts it once.
 EOF
         ;;
     update | upgrade) update_usage "$1" ;;

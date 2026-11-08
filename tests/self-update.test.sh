@@ -69,7 +69,12 @@ n=$(find "$DOCKER_STUB_CALLS" -type f | wc -l)
 printf '%s\n' "$@" >"$DOCKER_STUB_CALLS/$(printf '%04d' "$n")"
 case "$1" in
 build) [ "${DOCKER_STUB_FAIL_BUILD:-}" = 1 ] && exit 1 ;;
-run) printf '%s (Claude Code)\n' "${DOCKER_STUB_CLAUDE_VERSION:-2.1.311}" ;;
+run)
+    case " $* " in
+    *" sha256sum "*) printf '%s  /usr/local/bin/claude\n' "${DOCKER_STUB_CLAUDE_SHA:-$(printf 'a%.0s' {1..64})}" ;;
+    *) printf '%s (Claude Code)\n' "${DOCKER_STUB_CLAUDE_VERSION:-2.1.311}" ;;
+    esac
+    ;;
 esac
 exit 0
 EOF
@@ -203,6 +208,27 @@ assert_eq "$(cat "$CONFIG_DIR/state/claude-version" 2>/dev/null)" 2.1.300 "Claud
 check "binary sha256 recorded for the pinned version (TOFU)" [ -s "$CONFIG_DIR/state/claude-2.1.300-$(uname -m).sha256" ]
 DOCKER_STUB_CLAUDE_VERSION=2.1.300 up build
 check "a later build reuses the pinned version" docker_called_with "CLAUDE_CODE_VERSION=2.1.300"
+check "a later build enforces the recorded sha256" docker_called_with "CLAUDE_CODE_SHA256=$(printf 'a%.0s' {1..64})"
+check_not "a recorded version builds without the first-use warning" has_text "No recorded sha256" "$OUT"
+
+# --- an unrecorded version: warned by default, refused under require_claude_sha -------------------------------
+printf '2.1.299\n' >"$CONFIG_DIR/state/claude-version"
+printf 'setting.require_claude_sha=true\n' >>"$CONFIG_DIR/config"
+DOCKER_STUB_CLAUDE_VERSION=2.1.299 up build
+assert_eq "$RC" 1 "require_claude_sha refuses a version with no recorded sha256"
+check "the refusal names --trust-first-use" has_text "--trust-first-use" "$OUT"
+check_not "nothing is built after the refusal" docker_called_with "build"
+DOCKER_STUB_CLAUDE_VERSION=2.1.299 up build --trust-first-use
+assert_eq "$RC" 0 "--trust-first-use accepts the first download"
+check "the accepted download's sha256 is recorded" [ -s "$CONFIG_DIR/state/claude-2.1.299-$(uname -m).sha256" ]
+sed -i '/^setting.require_claude_sha=/d' "$CONFIG_DIR/config"
+rm -f "$CONFIG_DIR/state/claude-2.1.299-$(uname -m).sha256"
+DOCKER_STUB_CLAUDE_VERSION=2.1.299 up build
+assert_eq "$RC" 0 "without require_claude_sha an unrecorded version builds"
+check "an unrecorded version is called out as trust on first use" has_text "No recorded sha256 for Claude Code 2.1.299" "$OUT"
+DOCKER_STUB_CLAUDE_SHA=nothex DOCKER_STUB_CLAUDE_VERSION=2.1.298 up update --yes --claude-version 2.1.298
+check_not "a hash that is not a sha256 is never recorded" [ -e "$CONFIG_DIR/state/claude-2.1.298-$(uname -m).sha256" ]
+printf '2.1.300\n' >"$CONFIG_DIR/state/claude-version"
 up update --yes --claude-version 2.1.301
 assert_eq "$RC" 1 "a build reporting another Claude version fails"
 

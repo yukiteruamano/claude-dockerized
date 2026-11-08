@@ -155,6 +155,7 @@ config_reset_settings() {
     INTEGRITY_CHECK=true        # Fingerprint persistent paths before/after each session and report changes
     IMAGE_STRIP_SETUID=false    # Build the image without setuid/setgid bits (opt-in)
     IMAGE_DOCKER_CLI=true       # Build the image with the Docker CLI (needed only with docker_socket)
+    REQUIRE_CLAUDE_SHA=false    # Refuse to build a Claude Code version with no recorded sha256 (opt-in)
     NETWORK_EXPLICIT=false      # setting.network was set in the config (strict keeps an explicit choice)
     MEMORY=""                   # Optional container memory limit (docker --memory), e.g. 4g
     CPUS=""                     # Optional container CPU limit (docker --cpus), e.g. 2
@@ -375,6 +376,9 @@ init_config_file() {
 # leave out the Docker CLI (only needed with docker_socket).
 # setting.image_strip_setuid=false
 # setting.image_docker_cli=true
+# Refuse to build a Claude Code version whose binary sha256 was never recorded
+# (accept one explicitly with `build --trust-first-use`).
+# setting.require_claude_sha=false
 
 # Optional container resource limits (docker --memory / --cpus). Empty = no limit.
 # setting.memory=4g
@@ -541,6 +545,7 @@ _config_apply_setting() {
         ;;
     image_strip_setuid) _config_apply_bool IMAGE_STRIP_SETUID "$value" ;;
     image_docker_cli) _config_apply_bool IMAGE_DOCKER_CLI "$value" ;;
+    require_claude_sha) _config_apply_bool REQUIRE_CLAUDE_SHA "$value" ;;
     security_policy)
         case "$value" in
         strict | balanced | none) SECURITY_POLICY="$value" ;;
@@ -695,6 +700,8 @@ save_config() {
         echo "# Image build options (build/update): strip setuid bits, include the Docker CLI"
         echo "setting.image_strip_setuid=$IMAGE_STRIP_SETUID"
         echo "setting.image_docker_cli=$IMAGE_DOCKER_CLI"
+        echo "# Refuse to build a Claude Code version whose sha256 was never recorded"
+        echo "setting.require_claude_sha=$REQUIRE_CLAUDE_SHA"
         echo "# Optional container resource limits (empty = no limit)"
         echo "setting.memory=$MEMORY"
         echo "setting.cpus=$CPUS"
@@ -768,7 +775,7 @@ print_config() {
     echo "  Security policy: $SECURITY_POLICY"
     echo "  Hardening profile: $HARDENING"
     echo "  Session integrity check: $INTEGRITY_CHECK"
-    echo "  Image: strip setuid=$IMAGE_STRIP_SETUID, Docker CLI=$IMAGE_DOCKER_CLI"
+    echo "  Image: strip setuid=$IMAGE_STRIP_SETUID, Docker CLI=$IMAGE_DOCKER_CLI, require Claude sha256=$REQUIRE_CLAUDE_SHA"
     echo "  Memory limit: ${MEMORY:-(none)}"
     echo "  CPU limit: ${CPUS:-(none)}"
     if [ -n "$ENV_FILE" ]; then
