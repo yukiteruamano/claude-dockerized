@@ -246,4 +246,50 @@ assert_eq "$(canonical_spec "~/data:/opt//app/./x/../data")" "$HOME/data:/opt/ap
 check "a mount under /home/coder is accepted" mount_ok "~/data:/home/coder/data"
 check "a mount under /opt is accepted" mount_ok "~/data:/opt/data"
 
+# --- git worktrees: only a genuine linked worktree pulls its main .git in -------------
+# The project is writable by the session, so its .git file is untrusted: a
+# hand-written "gitdir:" must never make the wrapper mount another host repo or
+# an arbitrary directory (it used to, via `git rev-parse --git-common-dir`).
+worktree_args() { (
+    build_git_worktree_args "$1" >/dev/null 2>&1
+    printf '%s\n' "${GIT_WORKTREE_ARGS[@]}"
+); }
+if command -v git >/dev/null 2>&1; then
+    export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t \
+        GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
+    git init -q "$HOME/work/repo" && git -C "$HOME/work/repo" commit -q --allow-empty -m init
+    git -C "$HOME/work/repo" worktree add -q "$HOME/work/wt" >/dev/null 2>&1
+    repo_git=$(canonical_host_path "$HOME/work/repo/.git")
+    check "a genuine linked worktree mounts its main git dir read-only" \
+        has_text "$repo_git:$repo_git:ro" "$(worktree_args "$(canonical_host_path "$HOME/work/wt")")"
+
+    git init -q "$HOME/private-repo"
+    fake="$HOME/work/fake-wt"
+    mkdir -p "$fake/fake"
+    printf 'ref: refs/heads/main\n' >"$fake/fake/HEAD"
+    printf '%s\n' "$HOME/private-repo/.git" >"$fake/fake/commondir"
+    printf 'gitdir: %s\n' "$fake/fake" >"$fake/.git"
+    check_not "T-07 a gitdir inside the project naming another repo mounts nothing" \
+        has_text "private-repo" "$(worktree_args "$fake")"
+    printf 'gitdir: ../../private-repo/.git\n' >"$fake/.git"
+    check_not "T-07 a relative gitdir naming another repo mounts nothing" \
+        has_text "private-repo" "$(worktree_args "$fake")"
+    printf 'gitdir: %s\n' "$HOME/private-repo/.git/worktrees/x" >"$fake/.git"
+    check_not "T-07 a gitdir naming a worktree the repo does not have mounts nothing" \
+        has_text "private-repo" "$(worktree_args "$fake")"
+    # A real worktree of another checkout: its admin dir points back at that
+    # checkout, not at this project.
+    printf 'gitdir: %s\n' "$repo_git/worktrees/wt" >"$fake/.git"
+    check_not "T-07 another checkout's worktree admin dir mounts nothing" \
+        has_text "$repo_git" "$(worktree_args "$fake")"
+    mkdir -p "$HOME/notgit/objects" "$HOME/notgit/refs"
+    printf '%s\n' "$HOME/notgit" >"$fake/fake/commondir"
+    printf 'gitdir: %s\n' "$fake/fake" >"$fake/.git"
+    check_not "T-07 an arbitrary directory with objects/ and refs/ mounts nothing" \
+        has_text "notgit" "$(worktree_args "$fake")"
+    refusal() { ({ build_git_worktree_args "$1" >/dev/null; } 2>&1); }
+    printf 'gitdir: %s\n' "$repo_git/worktrees/wt" >"$fake/.git"
+    check "the refusal is explained" has_text "Not mounting the git directory" "$(refusal "$fake")"
+fi
+
 t_summary

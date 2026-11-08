@@ -3,41 +3,67 @@
 # Sourced by lib/config-lib.sh (which keeps the constants, config parsing and
 # saving). Not executable directly; no `set -e`: callers own error handling.
 
-# Detect if a directory is a git worktree and return the main repo's .git directory path
-# A worktree has a .git FILE (not directory) containing "gitdir: <path>"
-# Returns (via stdout): "<git_common_dir>" if worktree, empty string otherwise
-# Usage: main_git_dir=$(detect_git_worktree "/path/to/worktree")
+# First line of a small git pointer file (.git, commondir, gitdir), at most
+# 4 KiB read; empty when it is missing or not a regular file.
+# Usage: line=$(_git_pointer_line <file>)
+_git_pointer_line() {
+    [ ! -L "$1" ] && [ -f "$1" ] || return 0
+    head -c 4096 "$1" 2>/dev/null | head -n 1
+}
+
+# Detect a genuine linked git worktree and print the main repository's git
+# directory (the "common dir") that must be mounted for git to work in it;
+# prints nothing otherwise. The project is writable by the session, so its
+# .git file is untrusted: git itself is never run on it, and the common dir is
+# only accepted when the whole chain is consistent, as `git worktree add`
+# writes it:
+#   <project>/.git          "gitdir: <common>/worktrees/<name>"
+#   <admin>/commondir       resolves to <common> (the admin dir's grandparent)
+#   <admin>/gitdir          points back at <project>/.git
+# and <common> is a git dir (objects/, refs/) outside the project. Anything
+# else (a hand-written .git file naming another repo or any directory) is
+# refused with a warning, so it can never pull a host path into the mounts.
+# Usage: main_git_dir=$(detect_git_worktree "/canonical/project")
 detect_git_worktree() {
-    local project_dir="$1"
+    local project_dir="$1" line admin common back
+    line=$(_git_pointer_line "$project_dir/.git")
+    case "$line" in
+    "gitdir: "?*) ;;
+    *) return 0 ;;
+    esac
+    line=${line#gitdir: }
+    [[ "$line" == /* ]] || line="$project_dir/$line"
+    admin=$(canonical_host_path "$line")
+    # An admin dir inside the project is already mounted: nothing to add.
+    path_within "$admin" "$project_dir" && return 0
 
-    # Quick check: if .git is a directory (normal repo) or doesn't exist, not a worktree
-    if [ ! -f "$project_dir/.git" ]; then
-        return 0
-    fi
-
-    # Use git to reliably resolve paths (handles relative/absolute gitdir pointers)
-    if ! command -v git >/dev/null 2>&1; then
-        config_warning "Git worktree detected but 'git' is not installed on the host — git info will be unavailable in container"
-        return 0
-    fi
-
-    # git rev-parse --git-common-dir gives us the shared .git directory
-    local git_common_dir
-    git_common_dir=$(git -C "$project_dir" rev-parse --git-common-dir 2>/dev/null) || return 0
-
-    # Resolve to absolute path
-    if [[ "$git_common_dir" != /* ]]; then
-        git_common_dir=$(cd "$project_dir" && cd "$git_common_dir" && pwd)
+    local why=""
+    if [ "$(basename "$(dirname "$admin")")" != worktrees ] || [ ! -d "$admin" ]; then
+        why="it does not name <repo>/worktrees/<name>"
     else
-        git_common_dir=$(cd "$git_common_dir" && pwd)
+        line=$(_git_pointer_line "$admin/commondir")
+        [ -n "$line" ] && [[ "$line" != /* ]] && line="$admin/$line"
+        common=""
+        [ -n "$line" ] && common=$(canonical_host_path "$line")
+        line=$(_git_pointer_line "$admin/gitdir")
+        [ -n "$line" ] && [[ "$line" != /* ]] && line="$admin/$line"
+        back=""
+        [ -n "$line" ] && back=$(canonical_host_path "$line")
+        if [ -z "$common" ] || [ "$common" != "$(dirname "$(dirname "$admin")")" ]; then
+            why="its commondir does not lead back to the repository that holds it"
+        elif [ "$back" != "$project_dir/.git" ]; then
+            why="the repository does not list this directory as its worktree"
+        elif [ ! -d "$common/objects" ] || [ ! -d "$common/refs" ]; then
+            why="$common is not a git directory"
+        elif path_within "$common" "$project_dir"; then
+            return 0
+        fi
     fi
-
-    # Sanity check: the common dir should be a real .git directory
-    if [ ! -d "$git_common_dir/objects" ] || [ ! -d "$git_common_dir/refs" ]; then
+    if [ -n "$why" ]; then
+        config_warning "Not mounting the git directory named by $project_dir/.git: $why (git will not work in the container)."
         return 0
     fi
-
-    echo "$git_common_dir"
+    echo "$common"
 }
 
 # Build Docker volume/bind args needed for git worktree support
