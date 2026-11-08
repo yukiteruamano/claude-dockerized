@@ -62,7 +62,7 @@ profile_cmd_edit() {
 # An allow rule only skips the vendored deny rules; the built-in backstops
 # still run, which the confirmation says.
 profile_cmd_approve() {
-    local name="${1:-}" what="${2:-}" yes=false rules cfg sha listing answer
+    local name="${1:-}" what="${2:-}" yes=false rules
     _profile_require "$name" || return 1
     [ "${3:-}" = --yes ] && yes=true
     if [ "$what" != allow-patterns ]; then
@@ -78,9 +78,30 @@ profile_cmd_approve() {
         config_error "node is needed to validate the allow rules"
         return 1
     fi
-    local repo_dir
+    # Everything below works on one private copy: what is listed, validated
+    # and confirmed is exactly what gets hashed, even if the file changes
+    # meanwhile (the approval then simply does not match the new content).
+    local copy rc=0
+    copy=$(mktemp "$(profile_dir_of "$name")/.allow-patterns.approve.XXXXXX" 2>/dev/null) || {
+        config_error "Cannot create a temporary copy of $rules"
+        return 1
+    }
+    if cat -- "$rules" >"$copy"; then
+        _profile_approve_copy "$name" "$copy" "$rules" "$yes" || rc=$?
+    else
+        config_error "Cannot read $rules"
+        rc=1
+    fi
+    rm -f -- "$copy"
+    return "$rc"
+}
+
+# Validate, list, confirm and pin the sha256 of <copy> (a private snapshot of
+# <rules>) for profile <name>. Usage: _profile_approve_copy <name> <copy> <rules> <yes>
+_profile_approve_copy() {
+    local name="$1" copy="$2" rules="$3" yes="$4" repo_dir listing answer sha cfg
     repo_dir="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
-    if ! listing=$(node "$repo_dir/lib/merge-allow-patterns.js" "$CONFIG_DIR/hooks/policies/allow-patterns.json" "$rules" 2>&1); then
+    if ! listing=$(node "$repo_dir/lib/merge-allow-patterns.js" "$CONFIG_DIR/hooks/policies/allow-patterns.json" "$copy" 2>&1); then
         config_error "Invalid allow rules in $rules: $listing"
         return 1
     fi
@@ -97,11 +118,14 @@ profile_cmd_approve() {
             return 1
         }
     fi
-    sha=$(profile_sha256_file "$rules")
+    sha=$(profile_sha256_file "$copy")
     [ -n "$sha" ] || {
         config_error "Cannot hash $rules (sha256sum or shasum needed)"
         return 1
     }
+    if [ "$(profile_sha256_file "$rules")" != "$sha" ]; then
+        config_warning "$rules changed while it was being approved; the approval covers the content shown above, so the changed file stays inactive until it is approved again."
+    fi
     cfg="$(profile_dir_of "$name")/config"
     [ -f "$cfg" ] || : >"$cfg"
     profile_file_unset "$cfg" allow_loosen.allow_patterns
