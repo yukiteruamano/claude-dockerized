@@ -19,6 +19,11 @@ Releases are signed annotated tags (`docs/security/YELLOW.md#releases`).
 - `profile edit` completes its file argument (`config env rules permissions allow-patterns`).
 - `config show` and `profile show` mark where each value comes from: `[profile]`, `[profile, approved loosening]` or `[global; profile value dropped]` (unmarked = global config or default), and list the global mounts a profile drops.
 
+### Internal
+
+- The largest libraries are split by responsibility (`config-file-lib`, `mount-validate-lib`, `profile-overlay-lib`, `profile-migrate-lib`, `profile-edit-lib`), and the longest functions (`run_install_main`, `check_security_layer`, the wrapper's `main`) are split into one function per step or check. Functions moved verbatim; no behavior change.
+- `install --only build` builds through the wrapper's `build` (image options and the Claude sha256 gate) instead of a bare `docker build`.
+
 ### Security
 
 - **Guard v7** (`CLAUDE_DOCKERIZED_GUARD_VERSION=7`, all modes):

@@ -273,12 +273,10 @@ ensure_git_upstream() {
     return 0
 }
 
-# First-time install / repair wizard. Idempotent.
-# Non-interactive (piped stdin, no TTY) defaults to --yes so a single
-# `curl .../install.sh | bash` performs the full setup (config, PATH,
-# completions, aliases) without requiring a second manual run.
-# Usage: run_install_main [--yes] [--only ...]
-run_install_main() {
+# Parse the install flags into SETUP_YES / SETUP_ONLY (",path" is an alias of
+# ",global"). Returns 0 to proceed, 3 after --help, 1 on bad usage.
+# Usage: _install_parse_args [--yes] [--only ...]
+_install_parse_args() {
     SETUP_YES=false
     SETUP_ONLY="config,completions,aliases,global"
     while [ $# -gt 0 ]; do
@@ -296,7 +294,7 @@ run_install_main() {
         --only=*) SETUP_ONLY="${1#--only=}" ;;
         -h | --help)
             _install_usage
-            return 0
+            return 3
             ;;
         *)
             echo "Unknown option: $1" >&2
@@ -324,6 +322,330 @@ run_install_main() {
         return 1
     fi
     unset _residue
+}
+
+# Create the generated home tree and install the security layer.
+# Usage: _install_seed_home
+_install_seed_home() {
+    mkdir -p "$CCODE_HOME/.claude/hooks-guard/policies" "$CCODE_HOME/.claude/plugins" \
+        "$CCODE_HOME/.claude/skills" "$CCODE_HOME/.claude/agents" \
+        "$CCODE_HOME/.claude/commands" "$CCODE_HOME/.local/bin" \
+        "$CCODE_HOME/.local/share/claude" "$CCODE_HOME/.local/state/claude" \
+        "$CCODE_HOME/.cache/claude" "$CCODE_HOME/.mcp-auth" 2>/dev/null || true
+    chmod 700 "$CCODE_HOME/.mcp-auth" 2>/dev/null || true
+    if [ ! -f "$CCODE_HOME/.claude/.credentials.json" ]; then
+        : >"$CCODE_HOME/.claude/.credentials.json" 2>/dev/null || true
+        chmod 600 "$CCODE_HOME/.claude/.credentials.json" 2>/dev/null || true
+    fi
+    if [ ! -f "$CCODE_HOME/.claude.json" ]; then
+        : >"$CCODE_HOME/.claude.json" 2>/dev/null || true
+    fi
+    ensure_claude_dockerized_config
+}
+
+# Config file: keep or seed it (--yes), else the interactive wizard.
+# Usage: _install_step_config <repo_root>
+_install_step_config() {
+    local REPO_ROOT="$1"
+    if [ "$SETUP_YES" = true ]; then
+        if config_exists; then
+            config_info "Non-interactive defaults: keeping existing config."
+        else
+            init_config_file
+        fi
+    else
+        interactive_config_setup
+    fi
+    return 0
+}
+
+# Shell completions for bash/zsh (rc files that exist, under --yes).
+# Usage: _install_step_completions <repo_root>
+_install_step_completions() {
+    local REPO_ROOT="$1"
+    echo ""
+    echo "Shell Completions Setup"
+    local bash_completion_line="[ -f \"$REPO_ROOT/completions/bash.sh\" ] && source \"$REPO_ROOT/completions/bash.sh\""
+    local zsh_completion_line="[ -f \"$REPO_ROOT/completions/zsh.sh\" ] && source \"$REPO_ROOT/completions/zsh.sh\""
+    local bash_completion_installed=false zsh_completion_installed=false
+    if [ -f "$HOME/.bashrc" ] && grep -qF -- "$bash_completion_line" "$HOME/.bashrc" 2>/dev/null; then
+        bash_completion_installed=true
+    fi
+    if [ -f "$HOME/.zshrc" ] && grep -qF -- "$zsh_completion_line" "$HOME/.zshrc" 2>/dev/null; then
+        zsh_completion_installed=true
+    fi
+    if [ "$SETUP_YES" = true ]; then
+        echo "Non-interactive defaults: installing for shells with existing rc files."
+        [ -f "$HOME/.bashrc" ] && _install_bash_completion "$REPO_ROOT"
+        [ -f "$HOME/.zshrc" ] && _install_zsh_completion "$REPO_ROOT"
+    else
+        local install_completions=""
+        if [ "$bash_completion_installed" = true ] && [ "$zsh_completion_installed" = true ]; then
+            echo "Shell completions already configured (bash + zsh)"
+            local reconfigure_completions=""
+            read -r -p "Reconfigure completions? (y/N): " reconfigure_completions || reconfigure_completions=""
+            [[ "$reconfigure_completions" =~ ^[Yy]$ ]] || install_completions="skip"
+        elif [ "$bash_completion_installed" = true ]; then
+            echo "Bash completion already configured"
+            echo "Would you like to also install zsh completions?"
+            local install_zsh_only=""
+            read -r -p "Install zsh completions? (y/N): " install_zsh_only || install_zsh_only=""
+            if [[ "$install_zsh_only" =~ ^[Yy]$ ]]; then
+                _install_zsh_completion "$REPO_ROOT"
+            fi
+            install_completions="skip"
+        elif [ "$zsh_completion_installed" = true ]; then
+            echo "Zsh completion already configured"
+            echo "Would you like to also install bash completions?"
+            local install_bash_only=""
+            read -r -p "Install bash completions? (y/N): " install_bash_only || install_bash_only=""
+            if [[ "$install_bash_only" =~ ^[Yy]$ ]]; then
+                _install_bash_completion "$REPO_ROOT"
+            fi
+            install_completions="skip"
+        fi
+        if [ "${install_completions:-}" != "skip" ]; then
+            echo "Would you like to install shell completions? (enables tab completion for commands)"
+            read -r -p "Install completions? (y/n): " install_completions || install_completions=""
+            if [[ "$install_completions" =~ ^[Yy]$ ]]; then
+                echo ""
+                echo "Available completions:"
+                echo "  1) bash"
+                echo "  2) zsh"
+                echo "  3) both"
+                echo "  4) skip"
+                local shell_choice=""
+                read -r -p "Select option (1-4): " shell_choice || shell_choice=""
+                case "$shell_choice" in
+                1) _install_bash_completion "$REPO_ROOT" ;;
+                2) _install_zsh_completion "$REPO_ROOT" ;;
+                3)
+                    _install_bash_completion "$REPO_ROOT"
+                    _install_zsh_completion "$REPO_ROOT"
+                    ;;
+                4) echo "Skipping completions installation." ;;
+                *) echo "Invalid choice, skipping completions." ;;
+                esac
+            else
+                echo "Skipping completions installation."
+            fi
+        fi
+    fi
+    return 0
+}
+
+# Short aliases (ccd, ccd-run, ccd-auth) for bash/zsh.
+# Usage: _install_step_aliases <repo_root>
+_install_step_aliases() {
+    local REPO_ROOT="$1"
+    echo ""
+    echo "Shell Aliases Setup"
+    local bash_aliases_installed=false zsh_aliases_installed=false
+    if [ -f "$HOME/.bashrc" ] && aliases_configured "$HOME/.bashrc"; then
+        bash_aliases_installed=true
+    fi
+    if [ -f "$HOME/.zshrc" ] && aliases_configured "$HOME/.zshrc"; then
+        zsh_aliases_installed=true
+    fi
+    local setup_aliases="ask"
+    if [ "$SETUP_YES" = true ]; then
+        echo "Non-interactive defaults: installing for shells with existing rc files."
+        [ -f "$HOME/.bashrc" ] && _install_bash_aliases
+        [ -f "$HOME/.zshrc" ] && _install_zsh_aliases
+    else
+        if [ "$bash_aliases_installed" = true ] && [ "$zsh_aliases_installed" = true ]; then
+            echo "Shell aliases already configured (bash + zsh)"
+            local reconfigure_aliases=""
+            read -r -p "Reconfigure aliases? (y/N): " reconfigure_aliases || reconfigure_aliases=""
+            [[ "$reconfigure_aliases" =~ ^[Yy]$ ]] || setup_aliases="skip"
+        elif [ "$bash_aliases_installed" = true ]; then
+            echo "Bash aliases already configured"
+            echo "Would you like to also install zsh aliases?"
+            local install_zsh_aliases_only=""
+            read -r -p "Install zsh aliases? (y/N): " install_zsh_aliases_only || install_zsh_aliases_only=""
+            if [[ "$install_zsh_aliases_only" =~ ^[Yy]$ ]]; then
+                _install_zsh_aliases
+            fi
+            setup_aliases="skip"
+        elif [ "$zsh_aliases_installed" = true ]; then
+            echo "Zsh aliases already configured"
+            echo "Would you like to also install bash aliases?"
+            local install_bash_aliases_only=""
+            read -r -p "Install bash aliases? (y/N): " install_bash_aliases_only || install_bash_aliases_only=""
+            if [[ "$install_bash_aliases_only" =~ ^[Yy]$ ]]; then
+                _install_bash_aliases
+            fi
+            setup_aliases="skip"
+        fi
+        if [ "$setup_aliases" != "skip" ]; then
+            echo "Would you like to set up convenient aliases for claude-dockerized?"
+            echo "This will create short aliases like 'ccd' for easier command access."
+            read -r -p "Setup aliases? (y/n): " setup_aliases || setup_aliases=""
+            if [[ "$setup_aliases" =~ ^[Yy]$ ]]; then
+                echo ""
+                echo "Recommended aliases:"
+                echo "  ccd       -> claude-dockerized"
+                echo "  ccd-run   -> claude-dockerized run"
+                echo "  ccd-auth  -> claude-dockerized auth"
+                echo ""
+                echo "Available shells:"
+                echo "  1) bash"
+                echo "  2) zsh"
+                echo "  3) both"
+                echo "  4) skip"
+                local alias_shell_choice=""
+                read -r -p "Select option (1-4): " alias_shell_choice || alias_shell_choice=""
+                case "$alias_shell_choice" in
+                1) _install_bash_aliases ;;
+                2) _install_zsh_aliases ;;
+                3)
+                    _install_bash_aliases
+                    _install_zsh_aliases
+                    ;;
+                4) echo "Skipping aliases installation." ;;
+                *) echo "Invalid choice, skipping aliases." ;;
+                esac
+            else
+                echo "Skipping aliases installation."
+            fi
+        fi
+    fi
+    return 0
+}
+
+# Put this checkout's bin/ on PATH; drop legacy ~/.local/bin links.
+# Usage: _install_step_global <repo_root>
+_install_step_global() {
+    local REPO_ROOT="$1"
+    echo ""
+    echo "PATH Installation"
+    local path_already_ok=false
+    if command -v claude-dockerized >/dev/null 2>&1; then
+        path_already_ok=true
+    fi
+    if [ -L "$HOME/.local/bin/claude-dockerized" ]; then
+        rm -f "$HOME/.local/bin/claude-dockerized" 2>/dev/null || true
+        echo "Removed legacy symlink ~/.local/bin/claude-dockerized"
+    elif [ -e "$HOME/.local/bin/claude-dockerized" ]; then
+        echo "$HOME/.local/bin/claude-dockerized exists and is not a symlink; left untouched (remove it manually)"
+    fi
+    # Obsolete second binary: bin/ holds only claude-dockerized now.
+    if [ -e "$CCODE_BIN_DIR/install" ]; then
+        rm -f "$CCODE_BIN_DIR/install" 2>/dev/null || true
+        echo "Removed obsolete $CCODE_BIN_DIR/install (use 'claude-dockerized install')"
+    fi
+    if [ "$path_already_ok" = true ]; then
+        echo "Already on PATH: $(command -v claude-dockerized)"
+        local rc
+        for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
+            [ -f "$rc" ] || continue
+            if ensure_path_in_rc "$rc"; then
+                echo "Added claude-dockerized/bin to PATH in $rc"
+            fi
+        done
+    else
+        echo "Put this checkout's bin/ on PATH so 'claude-dockerized' works anywhere."
+        echo "No symlink, stub or copy is created in ~/.local/bin."
+        local install_global=""
+        if [ "$SETUP_YES" = true ]; then
+            echo "Non-interactive defaults: adding to PATH."
+            install_global="y"
+        else
+            read -r -p "Add to PATH? (y/n): " install_global || install_global=""
+        fi
+        if [[ "$install_global" =~ ^[Yy]$ ]]; then
+            local bin_target="$REPO_ROOT/bin/claude-dockerized"
+            if [ ! -x "$bin_target" ] && ! chmod +x "$bin_target" 2>/dev/null; then
+                echo "Could not make $bin_target executable"
+            fi
+            local added_to_rc=false rc_file
+            for rc_file in "$HOME/.zshrc" "$HOME/.bashrc"; do
+                [ -f "$rc_file" ] || continue
+                if ensure_path_in_rc "$rc_file"; then
+                    echo "Added claude-dockerized/bin to PATH in $rc_file"
+                    added_to_rc=true
+                fi
+            done
+            if [ "$added_to_rc" = true ]; then
+                echo "  Restart your shell or run: source ~/.bashrc (or ~/.zshrc)"
+            else
+                echo "  Add this to your shell rc file:"
+                echo "    $CCODE_BIN_PATH_LINE"
+            fi
+            echo ""
+            echo "  You can now run 'claude-dockerized' from any directory:"
+            echo "    claude-dockerized run"
+            echo "    claude-dockerized build"
+            echo "    claude-dockerized auth"
+        else
+            echo "Skipping PATH installation."
+            echo "  You can always run it directly: $REPO_ROOT/bin/claude-dockerized"
+        fi
+    fi
+    if [ "$(readlink -f "$REPO_ROOT")" != "$(readlink -f "$CCODE_INSTALL_DIR")" ] && [ -d "$CCODE_INSTALL_DIR/.git" ]; then
+        echo "Note: running from $REPO_ROOT (canonical: $CCODE_INSTALL_DIR)"
+    fi
+    return 0
+}
+
+# Build the image now (needs a running Docker daemon).
+# Usage: _install_step_build <repo_root>
+_install_step_build() {
+    local REPO_ROOT="$1"
+    echo ""
+    echo "Docker Image"
+    if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
+        echo "Docker is not running; skipping build (run 'claude-dockerized build' later)"
+    else
+        local build_answer=""
+        if [ "$SETUP_YES" = true ]; then
+            build_answer="y"
+        else
+            read -r -p "Build the Docker image now? (Y/n): " build_answer || build_answer=""
+            build_answer="${build_answer:-y}"
+        fi
+        if [[ "$build_answer" =~ ^[Yy]$ ]]; then
+            # The wrapper's build applies the image options and the Claude
+            # sha256 gate; a bare docker build would skip both.
+            if declare -F build_image >/dev/null; then
+                build_image || echo "Build failed; run 'claude-dockerized build' later"
+            else
+                docker build -t "claude-dockerized:latest" "$REPO_ROOT" || echo "Build failed; run 'claude-dockerized build' later"
+            fi
+        else
+            echo "Skipping build (run 'claude-dockerized build' later)."
+        fi
+    fi
+    return 0
+}
+
+# Usage: _install_next_steps
+_install_next_steps() {
+    echo ""
+    echo "Install complete!"
+    echo ""
+    echo "Next steps:"
+    echo "  1. Build the Docker image:"
+    echo "     claude-dockerized build"
+    echo ""
+    echo "  2. Authenticate with your LLM provider (no local Claude Code needed!):"
+    echo "     claude-dockerized auth"
+    echo ""
+    echo "  3. Run Claude Code in your project:"
+    echo "     claude-dockerized run /path/to/your/project"
+    echo ""
+}
+
+# First-time install / repair wizard. Idempotent.
+# Non-interactive (piped stdin, no TTY) defaults to --yes so a single
+# `curl .../install.sh | bash` performs the full setup (config, PATH,
+# completions, aliases) without requiring a second manual run.
+# Usage: run_install_main [--yes] [--only ...]
+run_install_main() {
+    local rc=0
+    _install_parse_args "$@" || rc=$?
+    [ "$rc" -eq 3 ] && return 0
+    [ "$rc" -eq 0 ] || return "$rc"
 
     # Piped/curl installs have no TTY for prompts: apply recommended defaults
     # instead of stopping after the core directories.
@@ -351,283 +673,13 @@ run_install_main() {
     echo "Checking Claude Code configuration..."
     echo ""
 
-    mkdir -p "$CCODE_HOME/.claude/hooks-guard/policies" "$CCODE_HOME/.claude/plugins" \
-        "$CCODE_HOME/.claude/skills" "$CCODE_HOME/.claude/agents" \
-        "$CCODE_HOME/.claude/commands" "$CCODE_HOME/.local/bin" \
-        "$CCODE_HOME/.local/share/claude" "$CCODE_HOME/.local/state/claude" \
-        "$CCODE_HOME/.cache/claude" "$CCODE_HOME/.mcp-auth" 2>/dev/null || true
-    chmod 700 "$CCODE_HOME/.mcp-auth" 2>/dev/null || true
-    if [ ! -f "$CCODE_HOME/.claude/.credentials.json" ]; then
-        : >"$CCODE_HOME/.claude/.credentials.json" 2>/dev/null || true
-        chmod 600 "$CCODE_HOME/.claude/.credentials.json" 2>/dev/null || true
-    fi
-    if [ ! -f "$CCODE_HOME/.claude.json" ]; then
-        : >"$CCODE_HOME/.claude.json" 2>/dev/null || true
-    fi
-    ensure_claude_dockerized_config
+    _install_seed_home
 
-    if wants_section config; then
-        if [ "$SETUP_YES" = true ]; then
-            if config_exists; then
-                config_info "Non-interactive defaults: keeping existing config."
-            else
-                init_config_file
-            fi
-        else
-            interactive_config_setup
-        fi
-    fi
-
-    if wants_section completions; then
-        echo ""
-        echo "Shell Completions Setup"
-        local bash_completion_line="[ -f \"$REPO_ROOT/completions/bash.sh\" ] && source \"$REPO_ROOT/completions/bash.sh\""
-        local zsh_completion_line="[ -f \"$REPO_ROOT/completions/zsh.sh\" ] && source \"$REPO_ROOT/completions/zsh.sh\""
-        local bash_completion_installed=false zsh_completion_installed=false
-        if [ -f "$HOME/.bashrc" ] && grep -qF -- "$bash_completion_line" "$HOME/.bashrc" 2>/dev/null; then
-            bash_completion_installed=true
-        fi
-        if [ -f "$HOME/.zshrc" ] && grep -qF -- "$zsh_completion_line" "$HOME/.zshrc" 2>/dev/null; then
-            zsh_completion_installed=true
-        fi
-        if [ "$SETUP_YES" = true ]; then
-            echo "Non-interactive defaults: installing for shells with existing rc files."
-            [ -f "$HOME/.bashrc" ] && _install_bash_completion "$REPO_ROOT"
-            [ -f "$HOME/.zshrc" ] && _install_zsh_completion "$REPO_ROOT"
-        else
-            local install_completions=""
-            if [ "$bash_completion_installed" = true ] && [ "$zsh_completion_installed" = true ]; then
-                echo "Shell completions already configured (bash + zsh)"
-                local reconfigure_completions=""
-                read -r -p "Reconfigure completions? (y/N): " reconfigure_completions || reconfigure_completions=""
-                [[ "$reconfigure_completions" =~ ^[Yy]$ ]] || install_completions="skip"
-            elif [ "$bash_completion_installed" = true ]; then
-                echo "Bash completion already configured"
-                echo "Would you like to also install zsh completions?"
-                local install_zsh_only=""
-                read -r -p "Install zsh completions? (y/N): " install_zsh_only || install_zsh_only=""
-                if [[ "$install_zsh_only" =~ ^[Yy]$ ]]; then
-                    _install_zsh_completion "$REPO_ROOT"
-                fi
-                install_completions="skip"
-            elif [ "$zsh_completion_installed" = true ]; then
-                echo "Zsh completion already configured"
-                echo "Would you like to also install bash completions?"
-                local install_bash_only=""
-                read -r -p "Install bash completions? (y/N): " install_bash_only || install_bash_only=""
-                if [[ "$install_bash_only" =~ ^[Yy]$ ]]; then
-                    _install_bash_completion "$REPO_ROOT"
-                fi
-                install_completions="skip"
-            fi
-            if [ "${install_completions:-}" != "skip" ]; then
-                echo "Would you like to install shell completions? (enables tab completion for commands)"
-                read -r -p "Install completions? (y/n): " install_completions || install_completions=""
-                if [[ "$install_completions" =~ ^[Yy]$ ]]; then
-                    echo ""
-                    echo "Available completions:"
-                    echo "  1) bash"
-                    echo "  2) zsh"
-                    echo "  3) both"
-                    echo "  4) skip"
-                    local shell_choice=""
-                    read -r -p "Select option (1-4): " shell_choice || shell_choice=""
-                    case "$shell_choice" in
-                    1) _install_bash_completion "$REPO_ROOT" ;;
-                    2) _install_zsh_completion "$REPO_ROOT" ;;
-                    3)
-                        _install_bash_completion "$REPO_ROOT"
-                        _install_zsh_completion "$REPO_ROOT"
-                        ;;
-                    4) echo "Skipping completions installation." ;;
-                    *) echo "Invalid choice, skipping completions." ;;
-                    esac
-                else
-                    echo "Skipping completions installation."
-                fi
-            fi
-        fi
-    fi
-
-    if wants_section aliases; then
-        echo ""
-        echo "Shell Aliases Setup"
-        local bash_aliases_installed=false zsh_aliases_installed=false
-        if [ -f "$HOME/.bashrc" ] && aliases_configured "$HOME/.bashrc"; then
-            bash_aliases_installed=true
-        fi
-        if [ -f "$HOME/.zshrc" ] && aliases_configured "$HOME/.zshrc"; then
-            zsh_aliases_installed=true
-        fi
-        local setup_aliases="ask"
-        if [ "$SETUP_YES" = true ]; then
-            echo "Non-interactive defaults: installing for shells with existing rc files."
-            [ -f "$HOME/.bashrc" ] && _install_bash_aliases
-            [ -f "$HOME/.zshrc" ] && _install_zsh_aliases
-        else
-            if [ "$bash_aliases_installed" = true ] && [ "$zsh_aliases_installed" = true ]; then
-                echo "Shell aliases already configured (bash + zsh)"
-                local reconfigure_aliases=""
-                read -r -p "Reconfigure aliases? (y/N): " reconfigure_aliases || reconfigure_aliases=""
-                [[ "$reconfigure_aliases" =~ ^[Yy]$ ]] || setup_aliases="skip"
-            elif [ "$bash_aliases_installed" = true ]; then
-                echo "Bash aliases already configured"
-                echo "Would you like to also install zsh aliases?"
-                local install_zsh_aliases_only=""
-                read -r -p "Install zsh aliases? (y/N): " install_zsh_aliases_only || install_zsh_aliases_only=""
-                if [[ "$install_zsh_aliases_only" =~ ^[Yy]$ ]]; then
-                    _install_zsh_aliases
-                fi
-                setup_aliases="skip"
-            elif [ "$zsh_aliases_installed" = true ]; then
-                echo "Zsh aliases already configured"
-                echo "Would you like to also install bash aliases?"
-                local install_bash_aliases_only=""
-                read -r -p "Install bash aliases? (y/N): " install_bash_aliases_only || install_bash_aliases_only=""
-                if [[ "$install_bash_aliases_only" =~ ^[Yy]$ ]]; then
-                    _install_bash_aliases
-                fi
-                setup_aliases="skip"
-            fi
-            if [ "$setup_aliases" != "skip" ]; then
-                echo "Would you like to set up convenient aliases for claude-dockerized?"
-                echo "This will create short aliases like 'ccd' for easier command access."
-                read -r -p "Setup aliases? (y/n): " setup_aliases || setup_aliases=""
-                if [[ "$setup_aliases" =~ ^[Yy]$ ]]; then
-                    echo ""
-                    echo "Recommended aliases:"
-                    echo "  ccd       -> claude-dockerized"
-                    echo "  ccd-run   -> claude-dockerized run"
-                    echo "  ccd-auth  -> claude-dockerized auth"
-                    echo ""
-                    echo "Available shells:"
-                    echo "  1) bash"
-                    echo "  2) zsh"
-                    echo "  3) both"
-                    echo "  4) skip"
-                    local alias_shell_choice=""
-                    read -r -p "Select option (1-4): " alias_shell_choice || alias_shell_choice=""
-                    case "$alias_shell_choice" in
-                    1) _install_bash_aliases ;;
-                    2) _install_zsh_aliases ;;
-                    3)
-                        _install_bash_aliases
-                        _install_zsh_aliases
-                        ;;
-                    4) echo "Skipping aliases installation." ;;
-                    *) echo "Invalid choice, skipping aliases." ;;
-                    esac
-                else
-                    echo "Skipping aliases installation."
-                fi
-            fi
-        fi
-    fi
-
-    if wants_section global; then
-        echo ""
-        echo "PATH Installation"
-        local path_already_ok=false
-        if command -v claude-dockerized >/dev/null 2>&1; then
-            path_already_ok=true
-        fi
-        if [ -L "$HOME/.local/bin/claude-dockerized" ]; then
-            rm -f "$HOME/.local/bin/claude-dockerized" 2>/dev/null || true
-            echo "Removed legacy symlink ~/.local/bin/claude-dockerized"
-        elif [ -e "$HOME/.local/bin/claude-dockerized" ]; then
-            echo "$HOME/.local/bin/claude-dockerized exists and is not a symlink; left untouched (remove it manually)"
-        fi
-        # Obsolete second binary: bin/ holds only claude-dockerized now.
-        if [ -e "$CCODE_BIN_DIR/install" ]; then
-            rm -f "$CCODE_BIN_DIR/install" 2>/dev/null || true
-            echo "Removed obsolete $CCODE_BIN_DIR/install (use 'claude-dockerized install')"
-        fi
-        if [ "$path_already_ok" = true ]; then
-            echo "Already on PATH: $(command -v claude-dockerized)"
-            local rc
-            for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
-                [ -f "$rc" ] || continue
-                if ensure_path_in_rc "$rc"; then
-                    echo "Added claude-dockerized/bin to PATH in $rc"
-                fi
-            done
-        else
-            echo "Put this checkout's bin/ on PATH so 'claude-dockerized' works anywhere."
-            echo "No symlink, stub or copy is created in ~/.local/bin."
-            local install_global=""
-            if [ "$SETUP_YES" = true ]; then
-                echo "Non-interactive defaults: adding to PATH."
-                install_global="y"
-            else
-                read -r -p "Add to PATH? (y/n): " install_global || install_global=""
-            fi
-            if [[ "$install_global" =~ ^[Yy]$ ]]; then
-                local bin_target="$REPO_ROOT/bin/claude-dockerized"
-                if [ ! -x "$bin_target" ] && ! chmod +x "$bin_target" 2>/dev/null; then
-                    echo "Could not make $bin_target executable"
-                fi
-                local added_to_rc=false rc_file
-                for rc_file in "$HOME/.zshrc" "$HOME/.bashrc"; do
-                    [ -f "$rc_file" ] || continue
-                    if ensure_path_in_rc "$rc_file"; then
-                        echo "Added claude-dockerized/bin to PATH in $rc_file"
-                        added_to_rc=true
-                    fi
-                done
-                if [ "$added_to_rc" = true ]; then
-                    echo "  Restart your shell or run: source ~/.bashrc (or ~/.zshrc)"
-                else
-                    echo "  Add this to your shell rc file:"
-                    echo "    $CCODE_BIN_PATH_LINE"
-                fi
-                echo ""
-                echo "  You can now run 'claude-dockerized' from any directory:"
-                echo "    claude-dockerized run"
-                echo "    claude-dockerized build"
-                echo "    claude-dockerized auth"
-            else
-                echo "Skipping PATH installation."
-                echo "  You can always run it directly: $REPO_ROOT/bin/claude-dockerized"
-            fi
-        fi
-        if [ "$(readlink -f "$REPO_ROOT")" != "$(readlink -f "$CCODE_INSTALL_DIR")" ] && [ -d "$CCODE_INSTALL_DIR/.git" ]; then
-            echo "Note: running from $REPO_ROOT (canonical: $CCODE_INSTALL_DIR)"
-        fi
-    fi
-
-    if wants_section build; then
-        echo ""
-        echo "Docker Image"
-        if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
-            echo "Docker is not running; skipping build (run 'claude-dockerized build' later)"
-        else
-            local build_answer=""
-            if [ "$SETUP_YES" = true ]; then
-                build_answer="y"
-            else
-                read -r -p "Build the Docker image now? (Y/n): " build_answer || build_answer=""
-                build_answer="${build_answer:-y}"
-            fi
-            if [[ "$build_answer" =~ ^[Yy]$ ]]; then
-                docker build -t "claude-dockerized:latest" "$REPO_ROOT" || echo "Build failed; run 'claude-dockerized build' later"
-            else
-                echo "Skipping build (run 'claude-dockerized build' later)."
-            fi
-        fi
-    fi
-
-    echo ""
-    echo "Install complete!"
-    echo ""
-    echo "Next steps:"
-    echo "  1. Build the Docker image:"
-    echo "     claude-dockerized build"
-    echo ""
-    echo "  2. Authenticate with your LLM provider (no local Claude Code needed!):"
-    echo "     claude-dockerized auth"
-    echo ""
-    echo "  3. Run Claude Code in your project:"
-    echo "     claude-dockerized run /path/to/your/project"
-    echo ""
+    wants_section config && _install_step_config "$REPO_ROOT"
+    wants_section completions && _install_step_completions "$REPO_ROOT"
+    wants_section aliases && _install_step_aliases "$REPO_ROOT"
+    wants_section global && _install_step_global "$REPO_ROOT"
+    wants_section build && _install_step_build "$REPO_ROOT"
+    _install_next_steps
     return 0
 }

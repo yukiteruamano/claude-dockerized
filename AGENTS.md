@@ -41,7 +41,7 @@ Shell script-based Docker wrapper for running [Claude Code](https://code.claude.
 - `tests/guard-bypass-corpus.test.mjs` + `tests/fixtures/guard-corpus.json` — Data-driven Red-team bypass corpus, tagged by threat id
 - `tests/guard-failure-modes.test.mjs`, `tests/guard-tool-coverage.test.mjs`, `tests/guard-eval.test.mjs`, `tests/migrate-settings.test.mjs` — Guard fail-closed behaviour, hook wiring, policy data integrity, legacy settings migration
 - `tests/wrapper-args.test.sh` — Wrapper mount/env contract test (no Docker)
-- `tests/commands.test.sh` — models, stats, debug, exec, uninstall, upgrade/rollback help and wrapper-level refusals (project that would shadow the image, world-readable env file) via a docker stub
+- `tests/commands.test.sh` — models, stats, debug, exec, uninstall, upgrade/rollback help, `install --only build` (through the wrapper's `build`) and wrapper-level refusals (project that would shadow the image, world-readable env file) via a docker stub
 - `tests/profiles.test.sh` — Account profiles via a docker stub with `CCODE_HOME` unpinned: migration + backup + rollback, selection precedence, home/env isolation (T-31, T-33), project binds (T-32), overlay loosening guard (T-34), shared skills/LSP, list/rename/delete/doctor/sync
 - `tests/wrapper-dryrun.test.sh`, `tests/mounts.test.sh`, `tests/config-parse.test.sh`, `tests/self-update.test.sh`, `tests/cli-contract.test.sh` — Full `docker run` argv via a docker stub, mount/path validation, config parsing, self-update against a local bare origin, help/completion drift
 - `tests/integration/container.test.sh` — Container runtime contract (non-root, zero caps, no_new_privs, read-only mounts); skips without Docker
@@ -203,17 +203,24 @@ All volume mount logic lives in `lib/mounts-lib.sh` to eliminate duplication (th
 ### Main Entry Point Pattern
 
 ```bash
-main() {
-    local command="${1:-run}"
-    shift || true
+dispatch_command() {          # tests/cli-contract.test.sh reads this case block
+    local command="$1"
+    shift
     case "$command" in
         run)    check_docker; check_config; run_claude "$@" ;;   # check_docker per command:
         build)  check_docker; build_image "$@" ;;                # config, version, doctor, update...
         config) show_config "$@" ;;                              # work without a daemon
         clean)  check_docker; clean_image ;;
-        help|--help|-h) show_help ;;
-        *)      print_error "Unknown command: $command"; show_help; exit 1 ;;
+        *)      print_error "Unknown command: $command"; exit 1 ;;
     esac
+}
+main() {
+    check_not_root
+    parse_global_options "$@"; set -- "${MAIN_ARGS[@]}"
+    local command="${1:-run}"; shift || true
+    command_help_requested "$command" "$@" && return 0
+    select_profile_for "$command" "$@"; set -- "${PROFILE_ARGS[@]}"
+    dispatch_command "$command" "$@"
 }
 main "$@"
 ```

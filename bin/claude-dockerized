@@ -1017,10 +1017,9 @@ show_config() {
 }
 
 # Main script logic
-main() {
-    check_not_root
-
-    # Global options (before the command).
+# Global options before the command (--no-color, -V/--version, -p/--profile).
+# Sets MAIN_ARGS to the remaining arguments. Usage: parse_global_options "$@"
+parse_global_options() {
     while [ $# -gt 0 ]; do
         case "$1" in
         --no-color)
@@ -1048,45 +1047,58 @@ main() {
         *) break ;;
         esac
     done
+    MAIN_ARGS=("$@")
+}
 
-    local command="${1:-run}"
-    shift || true
-
-    # `<command> --help` for every command; update/install/run/doctor parse
-    # their own flags (and print the same help).
+# `<command> --help` for every command; update/install/run/doctor parse their
+# own flags (and print the same help). Returns 0 when the help was printed.
+# Usage: command_help_requested <command> [args...]
+command_help_requested() {
+    local command="$1"
     case "$command" in
-    update | upgrade | install | doctor) ;;
-    *)
-        case "${1:-}" in
-        -h | --help)
-            command_help "$command" || {
-                print_error "Unknown command: $command"
-                exit 1
-            }
-            return 0
-            ;;
-        esac
+    update | upgrade | install | doctor) return 1 ;;
+    esac
+    case "${2:-}" in
+    -h | --help)
+        command_help "$command" || {
+            print_error "Unknown command: $command"
+            exit 1
+        }
+        return 0
         ;;
     esac
+    return 1
+}
 
-    # Account selection: --profile NAME anywhere before `--` (-p NAME as a
-    # global option or after `run`), then CLAUDE_DOCKERIZED_PROFILE, the
-    # project bind, setting.profile and default. Activating the profile points
-    # CCODE_HOME at its home (and migrates the single-account layout once).
+# Account selection: --profile NAME anywhere before `--` (-p NAME as a
+# global option or after `run`), then CLAUDE_DOCKERIZED_PROFILE, the
+# project bind, setting.profile and default. Activating the profile points
+# CCODE_HOME at its home (and migrates the single-account layout once).
+# Sets PROFILE_ARGS to the arguments without the flag.
+# Usage: select_profile_for <command> [args...]
+select_profile_for() {
+    local command="$1"
+    shift
     case "$command" in
-    help | --help | -h | version | uninstall) ;;
-    *)
-        local short_ok=false
-        [ "$command" = run ] && short_ok=true
-        profile_extract_flag "$short_ok" "$@"
-        set -- "${PROFILE_ARGS[@]}"
-        if [ "$command" = profile ] && [ "${1:-}" = migrate ]; then
-            PROFILE_SKIP_AUTO_MIGRATE=1
-        fi
-        activate_profile "$(profile_project_hint "$command" "$@")"
+    help | --help | -h | version | uninstall)
+        PROFILE_ARGS=("$@")
+        return 0
         ;;
     esac
+    local short_ok=false
+    [ "$command" = run ] && short_ok=true
+    profile_extract_flag "$short_ok" "$@"
+    set -- "${PROFILE_ARGS[@]}"
+    if [ "$command" = profile ] && [ "${1:-}" = migrate ]; then
+        PROFILE_SKIP_AUTO_MIGRATE=1
+    fi
+    activate_profile "$(profile_project_hint "$command" "$@")"
+}
 
+# Run one wrapper command. Usage: dispatch_command <command> [args...]
+dispatch_command() {
+    local command="$1"
+    shift
     case "$command" in
     run)
         check_docker
@@ -1175,6 +1187,19 @@ main() {
         exit 1
         ;;
     esac
+}
+
+main() {
+    check_not_root
+    parse_global_options "$@"
+    set -- "${MAIN_ARGS[@]}"
+
+    local command="${1:-run}"
+    shift || true
+    command_help_requested "$command" "$@" && return 0
+    select_profile_for "$command" "$@"
+    set -- "${PROFILE_ARGS[@]}"
+    dispatch_command "$command" "$@"
 }
 
 # Run main function

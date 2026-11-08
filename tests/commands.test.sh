@@ -1,7 +1,8 @@
 #!/bin/bash
 # Behaviour of the small wrapper commands that had no dedicated test: models,
-# stats, debug, exec, uninstall, upgrade and the wrapper-level refusals (a
-# project that would shadow the image, an env file other users can read).
+# stats, debug, exec, uninstall, upgrade, install --only build and the
+# wrapper-level refusals (a project that would shadow the image, an env file
+# other users can read).
 #
 # Runs the real bin/claude-dockerized against an isolated HOME with a fake
 # `docker` first on PATH (see wrapper-dryrun.test.sh), so no Docker is needed.
@@ -164,5 +165,23 @@ printf 'setting.network=host\n' >>"$CONFIG_DIR/config"
 wrapper run "$PROJECT"
 check_not "an explicit network gets no notice" has_text "now defaults to bridge" "$OUT"
 check "an explicit host network reaches docker" argv_has host
+
+# --- install --only build -------------------------------------------------------------
+# install points the checkout at its upstream; a git stub that refuses
+# `git branch` keeps the developer's .git/config untouched.
+GIT_STUB="$TMP/git-stub"
+mkdir -p "$GIT_STUB"
+real_git="$(command -v git)"
+cat >"$GIT_STUB/git" <<EOF
+#!/bin/bash
+for arg in "\$@"; do [ "\$arg" = branch ] && exit 1; done
+exec "$real_git" "\$@"
+EOF
+chmod +x "$GIT_STUB/git"
+PATH="$GIT_STUB:$PATH" wrapper install --yes --only build
+assert_eq "$RC" 0 "install --only build exits 0"
+check "install --only build goes through the wrapper's build" has_text "Building Claude Code Docker image" "$OUT"
+check "install --only build records the Claude sha256 (claude --version run)" \
+    grep -rqx -- "--entrypoint" "$CALLS"
 
 t_summary

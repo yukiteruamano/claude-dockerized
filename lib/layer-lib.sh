@@ -466,10 +466,29 @@ ensure_claude_dockerized_config() {
 # Pure reads only; never writes. Backs `config sync --check`.
 # Usage: check_security_layer
 check_security_layer() {
-    local stale=false
-    local repo_dir
+    local stale=false repo_dir check
     repo_dir="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+    for check in _layer_check_versions _layer_check_managed _layer_check_user_settings \
+        _layer_check_rules _layer_check_mirror _layer_check_user_files _layer_check_env_file; do
+        "$check" "$repo_dir" || stale=true
+    done
 
+    # Global host integration (bin/ on PATH + rc lines): informational only.
+    # It is shell convenience, not the security layer, so declining aliases
+    # or completions never reads as drift. `claude-dockerized install`
+    # repairs it; sync never edits rc files.
+    check_global_install || config_info "Shell integration is incomplete (see above); run 'claude-dockerized install' to repair it."
+
+    if [ "$stale" = true ]; then
+        return 1
+    fi
+    return 0
+}
+
+# Installed guard hooks and policy data match the repo versions.
+# Usage: _layer_check_versions <repo_dir>
+_layer_check_versions() {
+    local stale=false repo_dir="$1"
     local repo_guard inst_guard
     repo_guard=$(grep -oE 'CLAUDE_DOCKERIZED_GUARD_VERSION=[0-9]+' "$repo_dir/hooks/claude-guard-bash.sh" 2>/dev/null | head -1)
     inst_guard=$(grep -oE 'CLAUDE_DOCKERIZED_GUARD_VERSION=[0-9]+' "$CONFIG_DIR/hooks/claude-guard-bash.sh" 2>/dev/null | head -1)
@@ -489,7 +508,13 @@ check_security_layer() {
         config_warning "policy patterns stale (repo ${src_ver:-missing} vs installed ${inst_ver:-missing})"
         stale=true
     fi
+    [ "$stale" = false ]
+}
 
+# The managed policy matches a fresh render for the current config.
+# Usage: _layer_check_managed
+_layer_check_managed() {
+    local stale=false
     # The managed policy must match a fresh render of the repo template for
     # the current wrapper config (sync rewrites it otherwise); any other
     # difference is drift or tampering.
@@ -502,7 +527,13 @@ check_security_layer() {
         stale=true
     fi
     [ -n "$rendered" ] && rm -f "$rendered"
+    [ "$stale" = false ]
+}
 
+# The user settings exist, parse and carry no policy or disableAllHooks.
+# Usage: _layer_check_user_settings
+_layer_check_user_settings() {
+    local stale=false
     # The user settings must exist, parse, and carry neither the legacy
     # wrapper policy nor disableAllHooks (T-16; sync migrates both away).
     local user_settings="$CCODE_HOME/.claude/settings.json" v=0
@@ -524,7 +555,13 @@ check_security_layer() {
             config_success "user settings.json (writable preferences)"
         fi
     fi
+    [ "$stale" = false ]
+}
 
+# The managed session rules carry the current template markers.
+# Usage: _layer_check_rules
+_layer_check_rules() {
+    local stale=false
     # Managed session rules must carry the current markers (sync regenerates
     # them with a backup when they predate the template).
     if session_rules_current "$CONFIG_DIR/CLAUDE.md"; then
@@ -533,7 +570,15 @@ check_security_layer() {
         config_warning "CLAUDE.md rules stale or missing"
         stale=true
     fi
+    [ "$stale" = false ]
+}
 
+# The read-only mirror in the generated home carries the installed layer.
+# Usage: _layer_check_mirror <repo_dir>
+_layer_check_mirror() {
+    local stale=false repo_dir="$1"
+    local inst_guard
+    inst_guard=$(grep -oE 'CLAUDE_DOCKERIZED_GUARD_VERSION=[0-9]+' "$CONFIG_DIR/hooks/claude-guard-bash.sh" 2>/dev/null | head -1)
     # The fine-grained mounts must carry the installed layer.
     local mirror_guard
     mirror_guard=$(grep -oE 'CLAUDE_DOCKERIZED_GUARD_VERSION=[0-9]+' "$CCODE_HOME/.claude/hooks-guard/claude-guard-bash.sh" 2>/dev/null | head -1)
@@ -588,7 +633,14 @@ check_security_layer() {
     else
         stale=true
     fi
+    [ "$stale" = false ]
+}
 
+# User-managed JSON (MCP, LSP) parses.
+# Usage: _layer_check_user_files
+_layer_check_user_files() {
+    local stale=false
+    local v=0
     # The user-managed MCP file is never touched by sync, but an unparsable
     # file breaks sessions: fail the check early.
     local uoc
@@ -617,7 +669,13 @@ check_security_layer() {
             fi
         fi
     fi
+    [ "$stale" = false ]
+}
 
+# The profile's secrets file exists and is private (values never read).
+# Usage: _layer_check_env_file
+_layer_check_env_file() {
+    local stale=false
     # The secrets file is never read for values here; only its permissions.
     if [ -n "${ENV_FILE:-}" ]; then
         # resolve it like build_env_file_args does
@@ -636,17 +694,7 @@ check_security_layer() {
             fi
         fi
     fi
-
-    # Global host integration (bin/ on PATH + rc lines): informational only.
-    # It is shell convenience, not the security layer, so declining aliases
-    # or completions never reads as drift. `claude-dockerized install`
-    # repairs it; sync never edits rc files.
-    check_global_install || config_info "Shell integration is incomplete (see above); run 'claude-dockerized install' to repair it."
-
-    if [ "$stale" = true ]; then
-        return 1
-    fi
-    return 0
+    [ "$stale" = false ]
 }
 
 # Print a one-line hint when the installed security layer drifts from the repo.

@@ -16,11 +16,10 @@ source "$SCRIPT_DIR/lib/assert.sh"
 
 BIN="$REPO_DIR/bin/claude-dockerized"
 
-# Commands dispatched by main(): the labels of its LAST `case "$command" in`
-# block (the dispatcher; an earlier one only routes --help), minus the help
-# aliases and the catch-all.
+# Commands dispatched by main(): the labels of the `case "$command" in` block
+# of dispatch_command, minus the help aliases and the catch-all.
 dispatched="$(
-    awk '/^main\(\) \{/ {in_main=1}
+    awk '/^dispatch_command\(\) \{/ {in_main=1}
          in_main && /case "\$command" in/ {in_case=1; delete labels; n=0; next}
          in_case && /^    esac/ {in_case=0; next}
          in_case && /^    [a-z|* -]+\)$/ {labels[n++]=$0}
