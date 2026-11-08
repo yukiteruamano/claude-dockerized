@@ -91,11 +91,19 @@ build_git_worktree_args() {
         return 0
     fi
 
+    # The same validator as every custom mount (credential stores, the
+    # wrapper's own dirs, image system paths are refused).
+    local spec
+    if ! spec=$(validate_mount_spec "$git_common_dir" "$git_common_dir" ro); then
+        config_warning "Not mounting the worktree's main git directory (see above); git will not work in the container."
+        return 0
+    fi
+
     config_info "Git worktree detected — mounting main .git directory (read-only) for git support"
     config_info "Main git directory: $git_common_dir"
 
     # Mount the main repo's .git directory at its real host path (read-only)
-    GIT_WORKTREE_ARGS+=(-v "$git_common_dir:$git_common_dir:ro")
+    GIT_WORKTREE_ARGS+=(-v "$spec")
 }
 
 # Build common Docker run arguments shared by run_claude and run_auth
@@ -229,6 +237,27 @@ home_mount_source_ok() {
     esac
 }
 
+# strict hardening: overlay read-only every existing git file the host reads
+# as config or runs as code (git_host_exec_paths: the repository's and each
+# submodule's config/config.worktree/hooks, linked worktrees'
+# config.worktree). Only existing paths are overlaid (docker would create a
+# missing source). A path docker cannot carry in a -v spec is reported.
+# Usage: append_git_readonly_overlays <project_dir>
+append_git_readonly_overlays() {
+    local project_dir="$1" path rel
+    while IFS= read -r path; do
+        [ -n "$path" ] || continue
+        rel=${path#"$project_dir"/}
+        case "$path" in
+        *:* | *,*)
+            config_warning "strict: cannot overlay $rel read-only (its path contains ':' or ','); it stays writable"
+            continue
+            ;;
+        esac
+        VOLUME_ARGS+=(-v "$path:$CONTAINER_WORKDIR/$rel:ro")
+    done < <(git_host_exec_paths "$project_dir")
+}
+
 # Build standard volume mount arguments for Claude Code directories. The
 # policy is a read-only /etc/claude-code (managed settings, highest
 # precedence); ~/.claude comes from the generated home read-write (user
@@ -254,12 +283,7 @@ build_standard_volume_args() {
         build_git_worktree_args "$project_dir"
         # strict: the git files the HOST executes are read-only overlays on
         # the read-write project (T-01); commit/branch/fetch keep working.
-        if [ "$HARDENING" = strict ] && [ -d "$project_dir/.git" ]; then
-            [ -f "$project_dir/.git/config" ] &&
-                VOLUME_ARGS+=(-v "$project_dir/.git/config:$CONTAINER_WORKDIR/.git/config:ro")
-            [ -d "$project_dir/.git/hooks" ] &&
-                VOLUME_ARGS+=(-v "$project_dir/.git/hooks:$CONTAINER_WORKDIR/.git/hooks:ro")
-        fi
+        [ "$HARDENING" = strict ] && append_git_readonly_overlays "$project_dir"
     fi
 
     local chome="$CCODE_HOME"

@@ -30,10 +30,15 @@ _integrity_walk() {
 }
 
 # Only the MCP server entries of ~/.claude.json (the rest is session state
-# Claude Code rewrites on every start). Prints one fingerprint line.
+# Claude Code rewrites on every start). Prints one fingerprint line; a link or
+# special file in its place is fingerprinted as such, never read.
 # Usage: _integrity_mcp_servers <claude.json>
 _integrity_mcp_servers() {
     local file="$1" servers=""
+    if [ -L "$file" ] || { [ -e "$file" ] && [ ! -f "$file" ]; }; then
+        _integrity_walk "$file"
+        return 0
+    fi
     [ -f "$file" ] || return 0
     if command -v jq >/dev/null 2>&1; then
         servers=$(jq -cS '[.mcpServers // {}, ((.projects // {}) | map_values(.mcpServers // {}))]' "$file" 2>/dev/null)
@@ -55,6 +60,10 @@ console.log(JSON.stringify(sort([d.mcpServers ?? {}, p])));' "$file" 2>/dev/null
 # Usage: _integrity_user_settings <settings.json>
 _integrity_user_settings() {
     local file="$1" picked=""
+    if [ -L "$file" ] || { [ -e "$file" ] && [ ! -f "$file" ]; }; then
+        _integrity_walk "$file"
+        return 0
+    fi
     [ -f "$file" ] || return 0
     if command -v jq >/dev/null 2>&1; then
         picked=$(jq -cS '{apiKeyHelper, awsAuthRefresh, awsCredentialExport, statusLine, env, hooks, permissions, enabledPlugins, enableAllProjectMcpServers, disableAllHooks}' "$file" 2>/dev/null)
@@ -69,16 +78,47 @@ console.log(JSON.stringify(sort(Object.fromEntries(keys.map((k) => [k, d[k] ?? n
     printf 'settings %s - %s#executable-keys\n' "$(printf '%s' "$picked" | sha256sum | cut -d' ' -f1)" "$file"
 }
 
+# The git files of <project> that host git reads as configuration or runs as
+# code (T-01): the repository's config, config.worktree and hooks, and the
+# same for every submodule (.git/modules/**) and linked worktree
+# (.git/worktrees/*/config.worktree). `git status` on the host recurses into
+# submodules, so a core.fsmonitor in .git/modules/<sub>/config runs there.
+# Prints the existing ones, one absolute path per line.
+# Usage: git_host_exec_paths <project_dir>
+git_host_exec_paths() {
+    local git_dir="$1/.git" f
+    [ -d "$git_dir" ] && [ ! -L "$git_dir" ] || return 0
+    for f in config config.worktree hooks; do
+        [ -e "$git_dir/$f" ] && printf '%s\n' "$git_dir/$f"
+    done
+    if [ -d "$git_dir/modules" ]; then
+        find "$git_dir/modules" \( -name hooks -type d -prune -print \) -o \
+            \( \( -name config -o -name config.worktree \) -type f -print \) 2>/dev/null | sort
+    fi
+    if [ -d "$git_dir/worktrees" ]; then
+        find "$git_dir/worktrees" -mindepth 2 -maxdepth 2 -name config.worktree -type f 2>/dev/null | sort
+    fi
+    return 0
+}
+
 # Fingerprint every watched path into <out>.
 # Usage: integrity_snapshot <project_dir> <out>
 integrity_snapshot() {
-    local project="$1" out="$2" rel
+    local project="$1" out="$2" rel path
     {
         if [ -n "$project" ]; then
             for rel in .git/config .git/hooks .claude/settings.json .claude/settings.local.json \
                 .mcp.json .envrc .vscode/tasks.json .vscode/settings.json; do
                 _integrity_walk "$project/$rel"
             done
+            # Submodule and worktree git config/hooks (deduplicated against
+            # the two repository entries walked above).
+            while IFS= read -r path; do
+                case "$path" in
+                "$project/.git/config" | "$project/.git/hooks") continue ;;
+                esac
+                _integrity_walk "$path"
+            done < <(git_host_exec_paths "$project")
         fi
         for rel in .local/bin .claude/plugins .claude/skills .claude/agents .claude/commands .claude/.lsp.json; do
             _integrity_walk "$CCODE_HOME/$rel"

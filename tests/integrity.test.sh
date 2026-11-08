@@ -70,6 +70,30 @@ edit_git_config() { printf '[core]\n\tfsmonitor = ./x\n' >"$PROJECT/.git/config"
 session edit_git_config
 check "a git config change is reported (T-01)" reported ".git/config"
 
+# Submodules and worktrees: host git reads their config and runs their hooks
+# (`git status` recurses into submodules), so they are watched like .git/config.
+mkdir -p "$PROJECT/.git/modules/sub/hooks" "$PROJECT/.git/worktrees/wt"
+printf '[core]\n' >"$PROJECT/.git/modules/sub/config"
+printf '[core]\n' >"$PROJECT/.git/worktrees/wt/config.worktree"
+submodule_fsmonitor() { printf '[core]\n\tfsmonitor = touch /tmp/x\n' >"$PROJECT/.git/modules/sub/config"; }
+session submodule_fsmonitor
+check "a submodule config change is reported (T-01)" reported ".git/modules/sub/config"
+submodule_hook() { printf '#!/bin/sh\n' >"$PROJECT/.git/modules/sub/hooks/post-checkout"; }
+session submodule_hook
+check "a hook planted in a submodule is reported (T-01)" reported ".git/modules/sub/hooks/post-checkout"
+new_submodule() { mkdir -p "$PROJECT/.git/modules/new"; printf '[core]\n' >"$PROJECT/.git/modules/new/config"; }
+session new_submodule
+check "a new submodule git dir is reported (T-01)" reported ".git/modules/new/config"
+worktree_config() { printf '[core]\n\tfsmonitor = x\n' >"$PROJECT/.git/worktrees/wt/config.worktree"; }
+session worktree_config
+check "a linked worktree's config.worktree change is reported (T-01)" reported ".git/worktrees/wt/config.worktree"
+repo_worktree_config() { printf '[core]\n\thooksPath = x\n' >"$PROJECT/.git/config.worktree"; }
+session repo_worktree_config
+check "a new .git/config.worktree is reported (T-01)" reported ".git/config.worktree"
+object_churn() { mkdir -p "$PROJECT/.git/modules/sub/objects/ab"; printf 'x' >"$PROJECT/.git/modules/sub/objects/ab/cd"; }
+session object_churn
+assert_eq "$RC" 0 "submodule object churn is not reported"
+
 project_settings() { mkdir -p "$PROJECT/.claude"; printf '{}\n' >"$PROJECT/.claude/settings.local.json"; }
 session project_settings
 check "new project Claude settings are reported (T-03)" reported ".claude/settings.local.json"

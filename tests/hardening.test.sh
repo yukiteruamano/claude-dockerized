@@ -113,6 +113,26 @@ check "strict: credentials stay writable (auth)" text "/home/coder/.claude/.cred
 check "strict: .claude.json stays writable (Claude state)" text "/home/coder/.claude.json:rw"
 check "strict keeps the rootless flags" line --cap-drop=ALL
 
+# Submodules and linked worktrees carry git config/hooks the host runs too
+# (`git status` recurses into submodules: a core.fsmonitor in
+# .git/modules/<sub>/config executes on the host). Every existing one is a
+# read-only overlay; nothing is created for a path that does not exist.
+mkdir -p "$PROJECT/.git/modules/sub/hooks" "$PROJECT/.git/modules/nested/a/b/hooks" \
+    "$PROJECT/.git/modules/nohooks" "$PROJECT/.git/worktrees/wt" "$PROJECT/.git/modules/sub/objects/ab"
+for f in modules/sub/config modules/nested/a/b/config modules/nohooks/config worktrees/wt/config.worktree config.worktree; do
+    printf '[core]\n' >"$PROJECT/.git/$f"
+done
+ARGV="$(argv_for 'setting.hardening=strict\n')"
+for rel in modules/sub/config modules/sub/hooks modules/nested/a/b/config modules/nested/a/b/hooks \
+    modules/nohooks/config worktrees/wt/config.worktree config.worktree; do
+    check "strict: .git/$rel read-only overlay" text "$PROJECT/.git/$rel:/work/proj/.git/$rel:ro"
+done
+check_not "strict: no overlay for a submodule hooks dir that does not exist" text "/.git/modules/nohooks/hooks:"
+check_not "strict: objects are never overlaid" text "/.git/modules/sub/objects"
+ARGV="$(argv_for '')"
+check_not "off adds no submodule overlay" text "/.git/modules/sub/config:/work/proj/.git/modules/sub/config:ro"
+rm -rf "$PROJECT/.git/modules" "$PROJECT/.git/worktrees" "$PROJECT/.git/config.worktree"
+
 ARGV="$(argv_for 'setting.hardening=strict\nsetting.network=host\n')"
 check "strict honors an explicit network=host" line host
 check_not "strict with explicit host adds no bridge" line bridge
