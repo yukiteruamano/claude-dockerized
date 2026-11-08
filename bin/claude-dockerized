@@ -188,6 +188,34 @@ run_docker_session() {
     return "$rc"
 }
 
+# Run a session (run_docker_session) between two integrity snapshots of the
+# persistent paths it could plant code in (setting.integrity_check, default
+# on) and report what changed. Every container that mounts the generated home
+# read-write goes through here: run, exec, mcp, plugin, debug, auth, doctor.
+# Usage: run_watched_session <project_dir|""> <docker_cmd...>
+run_watched_session() {
+    local project_dir="$1" snap_before="" snap_after="" rc=0
+    shift
+    if [ "$INTEGRITY_CHECK" = true ]; then
+        if snap_before=$(mktemp 2>/dev/null); then
+            integrity_snapshot "$project_dir" "$snap_before"
+        else
+            snap_before=""
+        fi
+    fi
+
+    run_docker_session "$@" || rc=$?
+
+    if [ -n "$snap_before" ]; then
+        if snap_after=$(mktemp 2>/dev/null); then
+            integrity_snapshot "$project_dir" "$snap_after"
+            integrity_report "$project_dir" "$snap_before" "$snap_after" || true
+        fi
+        rm -f "$snap_before" "$snap_after"
+    fi
+    return "$rc"
+}
+
 # Run a one-off Claude Code CLI command inside the container.
 # The project directory is mounted so project-level configuration applies.
 # Usage: run_cli_command <name_suffix> <project_dir> <docker_socket> <claude_args...>
@@ -245,7 +273,7 @@ run_cli_command() {
         return 0
     fi
 
-    run_docker_session "${docker_cmd[@]}"
+    run_watched_session "$project_dir" "${docker_cmd[@]}"
 }
 
 # Function to run Claude Code authentication
@@ -361,27 +389,10 @@ run_claude() {
         return 0
     fi
 
-    # Fingerprint the persistent paths the session could plant code in
-    # (setting.integrity_check, default on); compared after the session.
-    local snap_before="" snap_after=""
-    if [ "$INTEGRITY_CHECK" = true ]; then
-        if snap_before=$(mktemp 2>/dev/null); then
-            integrity_snapshot "$project_dir" "$snap_before"
-        else
-            snap_before=""
-        fi
-    fi
-
+    # Fingerprint the persistent paths the session could plant code in and
+    # report what changed (setting.integrity_check, default on).
     local rc=0
-    run_docker_session "${docker_cmd[@]}" || rc=$?
-
-    if [ -n "$snap_before" ]; then
-        if snap_after=$(mktemp 2>/dev/null); then
-            integrity_snapshot "$project_dir" "$snap_after"
-            integrity_report "$project_dir" "$snap_before" "$snap_after" || true
-        fi
-        rm -f "$snap_before" "$snap_after"
-    fi
+    run_watched_session "$project_dir" "${docker_cmd[@]}" || rc=$?
 
     # Propagate Claude Code's own exit status (130 on Ctrl-C, etc.). Ctrl-C is
     # not an error: exit quietly so the prompt returns clean.

@@ -141,6 +141,18 @@ DOCKER_STUB_PLANT="$PROJECT/.git/hooks/post-merge" wrapper run "$PROJECT"
 check_not "integrity_check=false disables the report" has_text "Session integrity" "$OUT"
 rm -f "$CONFIG_DIR/config"
 
+# Every entry point that mounts the project (or the generated home)
+# read-write is watched, not only `run`: exec runs a full agent.
+DOCKER_STUB_PLANT="$PROJECT/.git/hooks/pre-commit" wrapper exec "summarize"
+check "a hook planted during an exec session is reported" has_text ".git/hooks/pre-commit" "$OUT"
+check "the exec report is logged" grep -q 'pre-commit' "$CONFIG_DIR/audit/sessions.jsonl"
+DOCKER_STUB_PLANT="$CCODE_HOME/.local/bin/git" wrapper mcp list
+check "a binary planted during an mcp session is reported" has_text ".local/bin/git" "$OUT"
+rm -f "$CCODE_HOME/.local/bin/git"
+DOCKER_STUB_PLANT="$CCODE_HOME/.local/bin/ls" wrapper auth
+check "a binary planted during auth is reported" has_text ".local/bin/ls" "$OUT"
+rm -f "$CCODE_HOME/.local/bin/ls" "$PROJECT/.git/hooks/pre-commit"
+
 # --- other container entry points share the same rootless flags ---------------
 wrapper exec "summarize"
 check "exec runs claude -p" argv_pair claude -p
