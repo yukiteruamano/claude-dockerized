@@ -1,8 +1,8 @@
 [
   {
     "id": "dotenv-example",
-    "pattern": "(^|[\\s'\"=:(/])\\.env\\.example(?![.\\w])",
-    "reason": "Allow reading/creating .env.example templates (boundary-anchored; never applies to chained commands)"
+    "pattern": "(^|[\\s'\"=:(/])\\.env\\.example(?:\\.[\\w-]+)*(?![.\\w-])",
+    "reason": "Allow reading/creating .env.example templates (boundary-anchored; never applies to chained commands; only the matched token is exempted)"
   },
   {
     "id": "public-key-pub",

