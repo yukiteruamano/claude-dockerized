@@ -147,7 +147,8 @@ setting.profile, default.
     use NAME                    default profile (setting.profile)
     bind NAME [DIR] | unbind [DIR]   pin a project to a profile (kept outside the project)
     edit NAME [config|env]      overlay config / secrets in \$EDITOR
-    set NAME KEY VALUE [--allow-loosen] | unset NAME KEY    (KEY: a setting or mount.<name>)
+    set NAME KEY VALUE [--allow-loosen] | unset NAME KEY    (KEY: a setting or mount.<name>;
+                                mount.<name> - drops that global mount for the profile)
     rename OLD NEW | delete NAME [--yes] [--force]
     doctor [NAME|--all]         permissions, login, loosened settings, security layer
     migrate [--dry-run|--no-backup|--rollback|--prune-backups [--yes]]

@@ -552,6 +552,8 @@ _profile_mount_value_error() {
         echo "mount names use letters, digits, - and _"
         return 1
     fi
+    # `-` drops the global mount of that name for this profile.
+    [ "$spec" = - ] && return 0
     IFS=: read -r host container mode <<<"$spec"
     if ! err=$(validate_mount_spec "$host" "$container" "${mode:-ro}" 2>&1 >/dev/null); then
         echo "$err"

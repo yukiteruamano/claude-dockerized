@@ -367,6 +367,20 @@ wrapper profile set guard "mount.bad name" "$HOME/data:/x"
 check_not "an invalid mount name is refused" [ "$RC" -eq 0 ]
 wrapper profile unset guard mount.rw
 wrapper profile unset guard mount.d
+# a profile drops a global mount with `-` (tightening, no approval)
+printf 'mount.shared=%s/data:/shared:ro\n' "$HOME" >>"$CONFIG_DIR/config"
+wrapper run "$PROJECT" --profile guard
+check "baseline: the global mount reaches the session" argv_has_text ":/shared:ro"
+wrapper profile set guard mount.shared -
+assert_eq "$RC" 0 "dropping a global mount needs no approval"
+wrapper run "$PROJECT" --profile guard
+check_not "the dropped global mount is gone from this profile" argv_has_text ":/shared"
+wrapper run "$PROJECT"
+check "…and stays in the other profiles" argv_has_text ":/shared:ro"
+printf 'mount.local=-\n' >>"$CONFIG_DIR/config"
+wrapper config show
+check "a '-' mount in the global config is ignored with a warning" has_text "only works in a profile overlay" "$OUT"
+wrapper profile unset guard mount.shared
 cp "$TMP/global.bak" "$CONFIG_DIR/config"
 wrapper profile delete guard --yes
 

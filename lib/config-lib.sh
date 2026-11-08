@@ -604,6 +604,16 @@ _load_config_file() {
         case "$key" in
         mount.*)
             # keep the suffix after "mount." so save_config re-emits it unchanged
+            # `mount.<name>=-` in a profile overlay drops that global mount
+            # (removing access needs no approval).
+            if [ "$value" = - ]; then
+                if [ "$mode" = overlay ]; then
+                    _config_drop_mount "${key#mount.}"
+                else
+                    config_warning "Ignoring $key=- in $file: removing a mount only works in a profile overlay"
+                fi
+                continue
+            fi
             if [ -n "$value" ] && [ -n "${key#mount.}" ]; then
                 local replaced=false
                 # A read-write mount from a profile overlay needs approval.
@@ -638,6 +648,20 @@ _load_config_file() {
             ;;
         esac
     done <"$file"
+}
+
+# Remove every custom mount named <name>, keeping the arrays aligned.
+# Usage: _config_drop_mount <name>
+_config_drop_mount() {
+    local -a keys=() mounts=()
+    local i
+    for i in "${!CUSTOM_MOUNT_KEYS[@]}"; do
+        [ "${CUSTOM_MOUNT_KEYS[$i]}" = "$1" ] && continue
+        keys+=("${CUSTOM_MOUNT_KEYS[$i]}")
+        mounts+=("${CUSTOM_MOUNTS[$i]}")
+    done
+    CUSTOM_MOUNT_KEYS=("${keys[@]}")
+    CUSTOM_MOUNTS=("${mounts[@]}")
 }
 
 # Allocate an unused "customN" key suffix for a new entry, avoiding collisions

@@ -302,7 +302,10 @@ What counts as loosening:
 
 Read-only mounts need no approval (the overlay is a file only you edit, and
 credential directories are refused anyway), so a profile can mount an extra
-read-only directory such as its own `.gitconfig`. `share_skills=true` and
+read-only directory such as its own `.gitconfig`. A profile drops a global
+mount with `ccd profile set NAME mount.<name> -` (removing access needs no
+approval), e.g. to keep the work `.gitconfig` out of a personal profile.
+`share_skills=true` and
 `lsp_from=default` mount the default profile's skills and `.local/bin`
 read-only instead of duplicating them; `lsp_from` only helps once the default
 profile installed the binaries, and sessions of that profile can write the
