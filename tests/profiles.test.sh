@@ -367,6 +367,26 @@ wrapper profile set guard "mount.bad name" "$HOME/data:/x"
 check_not "an invalid mount name is refused" [ "$RC" -eq 0 ]
 wrapper profile unset guard mount.rw
 wrapper profile unset guard mount.d
+# profile edit checks the overlay on save the way `profile set` does
+cat >"$TMP/editor-append" <<'EOF'
+#!/bin/bash
+cat "$EDITOR_APPEND" >>"$1"
+EOF
+chmod +x "$TMP/editor-append"
+printf 'setting.model=opus\nmount.ro=%s/data:/ro-data:ro\n' "$HOME" >"$TMP/append-ok"
+EDITOR="$TMP/editor-append" EDITOR_APPEND="$TMP/append-ok" wrapper profile edit guard
+assert_eq "$RC" 0 "a clean overlay passes the edit check"
+check "…and says so" has_text "no problems" "$OUT"
+printf 'setting.memry=4g\nsetting.image_docker_cli=false\nsetting.cpus=lots\nmount.bad=%s/data:relative\nsetting.docker_socket=true\nstray line\n' "$HOME" >"$TMP/append-bad"
+EDITOR="$TMP/editor-append" EDITOR_APPEND="$TMP/append-bad" wrapper profile edit guard
+check_not "an overlay with problems fails the edit check" [ "$RC" -eq 0 ]
+check "unknown setting reported" has_text "setting.memry cannot be overridden per profile" "$OUT"
+check "global-only setting reported" has_text "setting.image_docker_cli cannot be overridden" "$OUT"
+check "invalid value reported" has_text "setting.cpus:" "$OUT"
+check "invalid mount reported" has_text "mount.bad:" "$OUT"
+check "unapproved loosening reported" has_text "docker_socket loosens the global posture without approval" "$OUT"
+check "stray line reported" has_text "unknown line 'stray line'" "$OUT"
+: >"$P/guard/config"
 # a profile drops a global mount with `-` (tightening, no approval)
 printf 'mount.shared=%s/data:/shared:ro\n' "$HOME" >>"$CONFIG_DIR/config"
 wrapper run "$PROJECT" --profile guard

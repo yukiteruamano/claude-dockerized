@@ -508,7 +508,7 @@ profile_cmd_edit() {
     config)
         target="$(profile_dir_of "$name")/config"
         [ -f "$target" ] || printf '# Overlay of profile %s: setting.* and mount.* override the global config.\n# Loosening a security setting needs: claude-dockerized profile set %s KEY VALUE --allow-loosen\n' "$name" "$name" >"$target"
-        "$editor" "$target"
+        _profile_edit_overlay "$name" "$editor" "$target"
         ;;
     env)
         target="$(profile_dir_of "$name")/env"
@@ -522,6 +522,60 @@ profile_cmd_edit() {
         return 1
         ;;
     esac
+}
+
+# Edit an overlay and check it on save the way `profile set` would; on a TTY
+# offer to reopen it while problems remain. Returns 1 when problems are left.
+# Usage: _profile_edit_overlay <name> <editor> <file>
+_profile_edit_overlay() {
+    local name="$1" editor="$2" file="$3" problems answer
+    while :; do
+        "$editor" "$file"
+        problems=$(profile_overlay_problems "$file")
+        if [ -z "$problems" ]; then
+            config_success "Profile '$name': overlay checked, no problems."
+            return 0
+        fi
+        config_warning "Profile '$name': the overlay has problems (runs ignore these lines):"
+        printf '%s\n' "$problems" | sed 's/^/  - /' >&2
+        [ -t 0 ] || return 1
+        read -r -p "Edit it again? (Y/n): " answer || answer=n
+        [[ "${answer:-y}" =~ ^[Yy]$ ]] || return 1
+    done
+}
+
+# Problems of an overlay file, one per line, as `profile set` would report
+# them: unknown lines, settings a profile cannot override, invalid values or
+# mounts, and loosenings without approval. Prints nothing when it is clean.
+# Usage: profile_overlay_problems <file>
+profile_overlay_problems() {
+    local file="$1" key value lineno=0 reason item
+    [ -f "$file" ] || return 0
+    while IFS='=' read -r key value || [ -n "$key" ]; do
+        lineno=$((lineno + 1))
+        key="${key#"${key%%[![:space:]]*}"}"
+        key="${key%"${key##*[![:space:]]}"}"
+        value="${value#"${value%%[![:space:]]*}"}"
+        value="${value%"${value##*[![:space:]]}"}"
+        case "$key" in
+        "" | \#* | allow_loosen.*) ;;
+        mount.*)
+            reason=$(_profile_mount_value_error "${key#mount.}" "$value") || echo "line $lineno: $key: $reason"
+            ;;
+        setting.*)
+            if ! profile_overlay_key_ok "${key#setting.}"; then
+                echo "line $lineno: $key cannot be overridden per profile"
+            elif ! reason=$(_profile_value_error "${key#setting.}" "$value"); then
+                echo "line $lineno: $key: $reason"
+            fi
+            ;;
+        *) echo "line $lineno: unknown line '$key' (use setting.<key>=… or mount.<name>=…)" ;;
+        esac
+    done <"$file"
+    while IFS= read -r item; do
+        [ -n "$item" ] && echo "$item loosens the global posture without approval (profile set … --allow-loosen)"
+    done < <(profile_overlay_unapproved "$file")
+    return 0
 }
 
 # Check a value the way the config loader would. Prints the reason on failure.

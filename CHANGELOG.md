@@ -11,6 +11,7 @@ Releases are signed annotated tags (`docs/security/YELLOW.md#releases`).
 ### Added
 
 - Profiles can drop a global mount: `profile set NAME mount.<name> -` (an overlay line `mount.<name>=-`). Removing access needs no approval; a `-` mount in the global config is ignored with a warning.
+- `profile edit NAME` checks the overlay on save like `profile set` does (unknown lines, settings a profile cannot override, invalid values or mounts, unapproved loosenings), offers to reopen it on a terminal, and exits 1 while problems remain.
 
 ### Security
 
