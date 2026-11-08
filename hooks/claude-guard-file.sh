@@ -233,6 +233,7 @@ esac
 # hook's cwd is).
 absolute_forms() {
     local p="$1" rest home
+    # shellcheck disable=SC2088,SC2016 # literal ~ and $HOME spellings, matched on purpose
     case "$p" in
     "~" | "~/"* | '$HOME' | '$HOME/'* | '${HOME}' | '${HOME}/'*)
         rest="${p#\~}"
