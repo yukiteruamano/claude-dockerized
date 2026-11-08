@@ -89,7 +89,10 @@ Result on the current code is in the matrix of THREAT-MODEL.md.
   credentials, netrc, docker/gh/kube/gcloud configs) via shell or file tools.
   *Tests:* corpus `*-credentials-*`, `netrc-*`, `docker-config-*`, `gh-hosts-*`.
 - **T-26 — Read `.env`, keys, `auth.json`, including through symlinks**
-  planted in the project. *Tests:* `claude-guard` read cases.
+  planted in the project, or spelled with shell globs (`.en?`, `id_e*`),
+  split quotes (`.e""nv`), brace expansion or variable concatenation.
+  *Tests:* `claude-guard` read cases; corpus `glob-*`, `quote-split-*`,
+  `brace-expansion-*`, `variable-concat-*`, `identifier-*`.
 - **T-19 — Dump the environment** (`env`, interpreter dumps, `/proc/*/environ`).
   *Tests:* `claude-guard` env-dump cases. Residual: provider keys are in the
   environment by design.

@@ -128,7 +128,7 @@ Status legend: **mitigated** (control in place, test green) · **detected**
 | T-23 | Resource exhaustion (no pids/memory limits by default) | accepted (default) · opt-in pids limit (standard/strict) | hardening `standard: pids limit` |
 | T-24 | Image supply chain (base by tag, piped installers, unpinned tools) | mitigated (TOFU for the Claude binary sha256) | `tests/supply-chain.test.sh` (base digest, NVM commit, Node/uv/Claude versions, apt key fingerprint) |
 | T-25 | Cloud metadata / link-local exfiltration | mitigated | claude-guard metadata cases |
-| T-26 | Secret file reads through tools (`.env`, keys, `auth.json`, symlink escapes) | mitigated | claude-guard read cases; corpus `grep-home-root`, `grep-filesystem-root`, `glob-home-root` (recursive search roots over secret stores are refused) |
+| T-26 | Secret file reads through tools (`.env`, keys, `auth.json`, symlink escapes) | mitigated | claude-guard read cases; corpus `grep-home-root`, `grep-filesystem-root`, `glob-home-root` (recursive search roots over secret stores are refused); corpus `glob-*`, `quote-split-*` (shell globs and split quotes over secret names); known gaps `brace-expansion-env`, `variable-concat-env` in balanced/none |
 | T-27 | Wrapper started as root on the host | mitigated | dryrun `root is refused` |
 | T-28 | Privilege escalation inside the container (capabilities, setuid) | mitigated | dryrun rootless flags; integration caps/no_new_privs |
 | T-29 | CI supply chain: mutable action tags (cf. CVE-2026-33634) | mitigated | `.github/workflows/ci.yml` SHA pins |
