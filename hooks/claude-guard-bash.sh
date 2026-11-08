@@ -16,7 +16,7 @@
 # a project's settings `env` could otherwise point at a script that exits 0
 # before this file runs. The managed policy also pins those variables empty.
 #
-# CLAUDE_DOCKERIZED_GUARD_VERSION=6
+# CLAUDE_DOCKERIZED_GUARD_VERSION=7
 #
 # Policy modes (./policy-mode, written by the wrapper next to this hook on the
 # read-only mount; CLAUDE_DOCKERIZED_POLICY is only a fallback because project
@@ -162,8 +162,12 @@ if [ "$POLICY_MODE" != "none" ]; then
 fi
 
 # --- Built-in backstops (mode-independent) ---
+# Quotes do not end a word in the shell: `.e""nv` and `id_ed"25519"` run as
+# `.env` and `id_ed25519`, so the backstops also see the quote-free form (T-26).
+UNQUOTED="$(printf '%s' "$NORM" | tr -d '"'"'")"
 T="$CMD
-$NORM"
+$NORM
+$UNQUOTED"
 match() { printf '%s' "$T" | grep -Eq "$1"; }
 
 # sudo anywhere (including prose/commit messages/grep patterns by design)
@@ -220,10 +224,51 @@ pmatchi "($LEAK)[^|;&]*\.pem([^[:alnum:]_.]|$)" && deny
 pmatchi "($LEAK)[^|;&]*\.key([^[:alnum:]_.]|$)" && deny
 pmatchi "($LEAK)[^|;&]*\.(p12|pfx|jks)([^[:alnum:]_.]|$)" && deny
 pmatch "($LEAK)[^|;&]*(\.envrc|\.(bash|zsh)_history|\.claude\.json)([^[:alnum:]_.]|$)" && deny
-pmatch "($LEAK)[^|;&]*(_key|-key|_priv)([^[:alnum:]]|$)" && deny
+# Bare code identifiers such as profile_overlay_key_ok are dropped for this
+# rule only (grepping a function name is not a key read); a path, an
+# extension, or a name that ends in _key/-key still matches, and the READV
+# rule below still covers reading such a file.
+PI="$(printf '%s' "$P" | sed -E 's#(^|[[:space:]])[A-Za-z][A-Za-z0-9]*(_[A-Za-z0-9]+)*_key_[A-Za-z0-9_]*[A-Za-z0-9]([[:space:]]|$)#\1\3#g')"
+printf '%s' "$PI" | grep -Eq "($LEAK)[^|;&]*(_key|-key|_priv)([^[:alnum:]]|$)" && deny
 pmatch "($READV)[^|;&]*[[:alnum:]._-]*key([^[:alnum:]]|$)" && deny
 pmatch '(^|[;&|][[:space:]]*)(source|\.)[[:space:]]+[^[:space:]"'"'"'|;&<>]*\.(pem|key)([^[:alnum:]_.]|$)' && deny
 pmatch '<[[:space:]]*[^[:space:]"'"'"'|;&]*\.(pem|key)([^[:alnum:]_.]|$)' && deny
+# Shell globs that spell a secret name (T-26): `.en?`, `id_e*`, `.cred*`,
+# `server.p?m`. Each globbed word is matched, as a shell pattern, against the
+# secret names and extensions; a word needs two literal characters, so `*`
+# and `*.*` stay allowed. Extglob is on inside [[ ]], so long words and words
+# with parentheses (split off below) are skipped to keep matching cheap.
+GLOB_SECRET_NAMES=(.env .envrc id_rsa id_dsa id_ecdsa id_ed25519 id_ecdsa_sk id_ed25519_sk
+    .credentials.json credentials auth.json .netrc .git-credentials .npmrc .pgpass .pypirc)
+GLOB_SECRET_EXTS=(pem key p12 pfx jks)
+glob_spells_secret() {
+    local word base ext literal name
+    local -a words=()
+    IFS=$' \t' read -r -a words <<<"$(printf '%s' "$UNQUOTED" | tr ';|&<>()`\n\r' '          ')"
+    for word in "${words[@]}"; do
+        case "$word" in *[][?*]*) ;; *) continue ;; esac
+        [ "${#word}" -le 128 ] || continue
+        base="${word##*/}"
+        literal="${base//[][?*]/}"
+        [ "${#literal}" -ge 2 ] || continue
+        for name in "${GLOB_SECRET_NAMES[@]}"; do
+            # shellcheck disable=SC2053 # the word is matched as a glob on purpose
+            [[ "$name" == $base ]] && return 0
+        done
+        case "$base" in *.*) ext="${base##*.}" ;; *) continue ;; esac
+        literal="${ext//[][?*]/}"
+        case "$ext" in *[][?*]*) ;; *) continue ;; esac
+        [ "${#literal}" -ge 2 ] || continue
+        for name in "${GLOB_SECRET_EXTS[@]}"; do
+            # shellcheck disable=SC2053 # the extension is matched as a glob on purpose
+            [[ "$name" == $ext ]] && return 0
+        done
+    done
+    return 1
+}
+if printf '%s' "$UNQUOTED" | grep -Eq "(^|[^[:alnum:]_])($LEAK)([^[:alnum:]_]|$)" && glob_spells_secret; then
+    deny
+fi
 # Writes into files the host executes or that relax the policy (T-01, T-03, T-04):
 # git hooks/config, project and user Claude settings, ~/.local/bin, skills. The
 # Edit deny rules do not cover Bash, so redirects and write verbs are matched here.

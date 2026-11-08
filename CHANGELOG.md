@@ -2,6 +2,16 @@
 
 Releases are signed annotated tags (`docs/security/YELLOW.md#releases`).
 
+## Unreleased
+
+### Security
+
+- **Guard v7** (`CLAUDE_DOCKERIZED_GUARD_VERSION=7`, all modes):
+  - Secret names spelled with shell globs (`.en?`, `.en[v]`, `id_e*`, `.cred*`, `server.p?m`) are denied when a read/copy verb is present; a globbed word needs two literal characters, so `*`, `*.*`, `src/*.ts` stay allowed.
+  - The backstops also see the command with its quotes removed, so split quotes (`.e""nv`, `id_ed"25519"`) no longer hide a secret name.
+  - Bare code identifiers containing `_key_` (e.g. `grep -n profile_overlay_key_ok`) no longer trip the key-material rule; `server_key`, `deploy-key` and reading a `*_key_*` file stay denied.
+  - Brace expansion and variable concatenation remain known gaps in `balanced`/`none` (corpus `brace-expansion-env`, `variable-concat-env`).
+
 ## 0.4.6
 
 ### Changed
