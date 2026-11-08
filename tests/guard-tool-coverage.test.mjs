@@ -53,6 +53,11 @@ for (const tool of ["MultiEdit", "NotebookEdit"]) {
 report.check("managed policy pins the policy mode", settings.env?.CLAUDE_DOCKERIZED_POLICY, "balanced");
 report.check("managed policy disables auto-updates", settings.env?.DISABLE_AUTOUPDATER, "1");
 report.check("managed policy pins the preload variable empty", settings.env?.LD_PRELOAD, "");
+// Startup variables (T-03): a project's settings `env` must not point the
+// shells and node processes Claude Code spawns at an attacker's script.
+for (const key of ["BASH_ENV", "ENV", "NODE_OPTIONS", "NODE_PATH"]) {
+  report.check(`managed policy pins ${key} empty`, settings.env?.[key], "");
+}
 report.check("managed policy disables bypass mode", settings.permissions?.disableBypassPermissionsMode, "disable");
 report.check("managed policy keeps the inert sandbox off (T-30)", settings.sandbox?.enabled, false);
 for (const key of ["hooks", "env", "sandbox", "disableAllHooks"]) {

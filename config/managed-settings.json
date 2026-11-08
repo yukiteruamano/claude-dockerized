@@ -3,6 +3,10 @@
   "env": {
     "DISABLE_AUTOUPDATER": "1",
     "LD_PRELOAD": "",
+    "BASH_ENV": "",
+    "ENV": "",
+    "NODE_OPTIONS": "",
+    "NODE_PATH": "",
     "CLAUDE_DOCKERIZED_POLICY": "balanced"
   },
   "allowManagedHooksOnly": true,
