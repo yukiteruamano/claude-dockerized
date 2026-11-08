@@ -1068,4 +1068,236 @@ check_not "…and the warning is gone" has_text "no longer exists" "$OUT"
 CLAUDE_DOCKERIZED_PROFILE=gone wrapper profiles
 check_not "an explicit unknown profile is still an error" [ "$RC" -eq 0 ]
 
+# --- NUL and control bytes: the whole file is refused, never half-read (T-34) ---------------------------------
+make_legacy
+wrapper profiles
+printf 'setting.memory=4g\nsetting.cpus=2\n' >>"$CONFIG_DIR/config"
+wrapper profile create nul
+printf 'setting.netw\0ork=host\nsetting.mem\0ory=\nsetting.cp\0us=64\nsetting.model=opus\n' >"$P/nul/config"
+wrapper run "$PROJECT" --profile nul
+check "T-34: a NUL-split network key does not reach the session" argv_pair --network bridge
+check "T-34: a NUL-split memory key does not lift the limit" argv_pair --memory 4g
+check "T-34: a NUL-split cpus key does not raise the limit" argv_pair --cpus 2
+check_not "the refused overlay applies nothing at all" argv_has opus
+check "the refusal names the file" has_text "Ignoring $P/nul/config: it contains NUL" "$OUT"
+wrapper profile doctor nul
+check_not "doctor fails on an overlay with control bytes" [ "$RC" -eq 0 ]
+check "…and says why" has_text "control bytes and is ignored" "$OUT"
+wrapper profiles
+check "list flags the refused overlay" has_text "ignored (control bytes): overlay" "$OUT"
+wrapper profile show nul
+check_not "config show marks nothing of it as [profile]" has_text "[profile]" "$OUT"
+wrapper profile set nul model haiku
+check_not "profile set refuses to rewrite an overlay with control bytes" [ "$RC" -eq 0 ]
+printf 'setting.network=bridge\001\n' >"$P/nul/config"
+EDITOR=true wrapper profile edit nul </dev/null
+check_not "profile edit flags an overlay with control bytes" [ "$RC" -eq 0 ]
+check "…saying the whole overlay is ignored" has_text "ignores the whole overlay" "$OUT"
+printf 'setting.model=opus\r\nsetting.cpus=1\r\n' >"$P/nul/config"
+wrapper run "$PROJECT" --profile nul
+check "CRLF line endings are accepted" argv_pair --model opus
+check "…with the value trimmed" argv_pair --cpus 1
+printf 'setting.model=opus\rsetting.network=host\n' >"$P/nul/config"
+wrapper run "$PROJECT" --profile nul
+check "a carriage return inside a line refuses the overlay" has_text "carriage return inside a line" "$OUT"
+check "…and nothing of it applies" argv_pair --network bridge
+: >"$P/nul/config"
+printf 'deny WebFetch\nask Bash(x\001)\n' >"$P/nul/permissions"
+wrapper run "$PROJECT" --profile nul
+check "a permissions file with control bytes is refused with an error" has_text "Ignoring $P/nul/permissions" "$OUT"
+wrapper profile doctor nul
+check_not "…and doctor fails on it" [ "$RC" -eq 0 ]
+rm -f "$P/nul/permissions"
+wrapper profile bind nul "$PROJECT"
+cp "$CONFIG_DIR/profiles.map" "$TMP/map.bak"
+printf '%s\0x\tdefault\n' "$PROJECT" >>"$CONFIG_DIR/profiles.map"
+wrapper run "$PROJECT"
+check "a profiles.map with control bytes is ignored with an error" has_text "Ignoring $CONFIG_DIR/profiles.map" "$OUT"
+check "…and no bind applies" argv_has_text "$P/default/home/"
+cp "$TMP/map.bak" "$CONFIG_DIR/profiles.map"
+wrapper profile unbind "$PROJECT"
+cp "$CONFIG_DIR/config" "$TMP/global3.bak"
+printf 'setting.security_policy=strict\nsetting.netw\0ork=host\n' >>"$CONFIG_DIR/config"
+wrapper config show
+check "a global config with control bytes is refused with an error" has_text "Ignoring $CONFIG_DIR/config: it contains NUL" "$OUT"
+check_not "…and none of it applies" has_text "Container network: host" "$OUT"
+wrapper profile use nul
+check_not "profile use refuses to rewrite it (read would drop the NUL and enable the key)" [ "$RC" -eq 0 ]
+check_not "…and the NUL-split key never becomes a live line" grep -qx 'setting.network=host' "$CONFIG_DIR/config"
+cp "$TMP/global3.bak" "$CONFIG_DIR/config"
+
+# --- the post-checks judge what the loader applied (T-34) ------------------------------------------------------
+loader_unit() ( # whatever spelling the loader accepts, the post-checks see the same value
+    source "$REPO_DIR/lib/config-lib.sh"
+    PROFILE_NAME=nul
+    printf '  setting.network   =   host  \n\tsetting.memory =\n' >"$TMP/odd-overlay"
+    config_reset_settings
+    MEMORY=4g
+    profile_apply_overlay_file "$TMP/odd-overlay" 2>/dev/null
+    echo "$NETWORK $MEMORY ${PROFILE_UNAPPROVED[*]}"
+)
+assert_eq "$(loader_unit)" "bridge 4g network memory" "T-34: odd spacing cannot slip a loosening past the post-checks"
+
+# --- the parser keeps every '=' after the first one; --profile= is an error ------------------------------------
+printf 'setting.model=opus\nmount.eq=%s/data:/eq=x:ro\n' "$HOME" >"$P/nul/config"
+mkdir -p "$HOME/data"
+wrapper run "$PROJECT" --profile nul
+check "a value keeps an '=' it ends or contains" argv_has_text ":/eq=x:ro"
+split_unit() ( source "$REPO_DIR/lib/config-lib.sh"; config_split_line '  k = v=w= '; printf '%s|%s' "$_CFG_KEY" "$_CFG_VALUE" )
+assert_eq "$(split_unit)" "k|v=w=" "config_split_line splits at the first '=' only"
+: >"$P/nul/config"
+wrapper run "$PROJECT" --profile=
+check_not "an empty --profile= after the command is an error" [ "$RC" -eq 0 ]
+check "…saying so" has_text "needs a profile name" "$OUT"
+wrapper --profile= run "$PROJECT"
+check_not "an empty global --profile= is an error" [ "$RC" -eq 0 ]
+check_not "…and no container starts" ran_container
+# an overlay value the loader rejects is not labelled [profile]
+printf 'setting.model=bad=model\nsetting.docker_socket=yes\n' >"$P/nul/config"
+wrapper profile show nul
+check_not "values the loader rejects (model, boolean) are never labelled [profile]" has_text "[profile]" "$OUT"
+: >"$P/nul/config"
+
+# --- unbind refuses a bind that comes from an ancestor; paths with backslashes --------------------------------
+wrapper profile bind nul "$PROJECT"
+wrapper_in "$SUBDIR" profile unbind
+check_not "unbind from a subdirectory is refused" [ "$RC" -eq 0 ]
+check "…naming the ancestor that carries the bind" has_text "ancestor $PROJECT" "$OUT"
+check "…and the bind stays" grep -q "nul" "$CONFIG_DIR/profiles.map"
+check_not "…and it does not claim to have removed it" has_text "Removed" "$OUT"
+wrapper profile unbind "$PROJECT"
+check_not "unbind of the bound directory itself works" grep -q "nul" "$CONFIG_DIR/profiles.map" 2>/dev/null
+BS_DIR="$HOME/work/back\\tslash\\dir"
+mkdir -p "$BS_DIR"
+wrapper profile bind nul "$BS_DIR"
+wrapper profile bind nul "$BS_DIR"
+assert_eq "$(grep -c "slash" "$CONFIG_DIR/profiles.map")" 1 "binding a path with backslashes twice keeps one entry"
+wrapper profile unbind "$BS_DIR"
+assert_eq "$RC" 0 "unbind of a path with backslashes exits 0"
+check_not "…and really removes it" grep -q "slash" "$CONFIG_DIR/profiles.map" 2>/dev/null
+wrapper profile bind nul "$BS_DIR"
+wrapper profile rename nul nul2
+check "rename repoints a path with backslashes" grep -q "slash.*nul2" "$CONFIG_DIR/profiles.map"
+wrapper profile delete nul2 --yes
+check_not "delete drops a path with backslashes" grep -q "slash" "$CONFIG_DIR/profiles.map" 2>/dev/null
+
+# --- create --from copies the restrictions, never the approvals -------------------------------------------------
+wrapper profile create src
+printf 'deny WebFetch\n' >"$P/src/permissions"
+printf 'Be careful.\n' >"$P/src/CLAUDE.md"
+printf '[{"id":"team-x","pattern":"^make x$","reason":"x"}]\n' >"$P/src/allow-patterns.json"
+wrapper profile approve src allow-patterns --yes
+wrapper profile set src docker_socket true --allow-loosen
+wrapper profile create clone --from src
+assert_eq "$RC" 0 "create --from exits 0"
+check "the clone keeps the deny/ask rules" cmp -s "$P/src/permissions" "$P/clone/permissions"
+check "the clone keeps the session rules" cmp -s "$P/src/CLAUDE.md" "$P/clone/CLAUDE.md"
+check "the clone keeps the allow rules file" cmp -s "$P/src/allow-patterns.json" "$P/clone/allow-patterns.json"
+check_not "…but not their approval" grep -q 'allow_loosen' "$P/clone/config"
+check "the user is told to approve them again" has_text "profile approve clone allow-patterns" "$OUT"
+check "…and which loosenings were not copied" has_text "docker_socket" "$OUT"
+wrapper run "$PROJECT" --profile clone
+check "the clone's deny rules are in its managed policy" grep -q '"WebFetch"' "$P/clone/home/etc/claude-code/managed-settings.json"
+check_not "the clone's allow rules stay inactive" grep -q '"team-x"' "$P/clone/home/.claude/hooks-guard/policies/allow-patterns.json"
+wrapper profile delete clone --yes
+wrapper profile delete src --yes
+
+# --- approvals that no longer match their value are dropped, and doctor reports them ----------------------------
+wrapper profile create orph
+wrapper profile set orph network host --allow-loosen
+sed -i 's/^setting.network=host$/setting.network=bridge/' "$P/orph/config"
+wrapper profile doctor orph
+check_not "doctor fails on an orphan approval" [ "$RC" -eq 0 ]
+check "…naming it" has_text "allow_loosen.network no longer matches" "$OUT"
+wrapper profile set orph model opus
+check_not "profile set drops the orphan approval" grep -q 'allow_loosen.network' "$P/orph/config"
+check "…and says so" has_text "dropped approvals" "$OUT"
+sed -i 's/^setting.network=bridge$/setting.network=host/' "$P/orph/config"
+wrapper run "$PROJECT" --profile orph
+check "T-34: going back to the old value is not re-approved silently" argv_pair --network bridge
+wrapper profile unset orph network
+wrapper profile set orph network host --allow-loosen
+printf 'setting.network=bridge\n' >"$TMP/append-net"
+sed -i '/^setting.network=/d' "$P/orph/config"
+EDITOR="$TMP/editor-append" EDITOR_APPEND="$TMP/append-net" wrapper profile edit orph
+check_not "profile edit drops the orphan approval on save" grep -q 'allow_loosen.network' "$P/orph/config"
+wrapper profile set orph network host --allow-loosen
+wrapper profile unset orph model
+check "unset of another key keeps a valid approval" grep -qx 'allow_loosen.network=host' "$P/orph/config"
+wrapper profile delete orph --yes
+
+# --- profile approve hashes exactly the content it showed ------------------------------------------------------
+wrapper profile create appr
+printf '[{"id":"shown","pattern":"^make shown$","reason":"x"}]\n' >"$P/appr/allow-patterns.json"
+approve_racing() ( # the file changes right after the copy is listed and validated
+    source "$REPO_DIR/lib/config-lib.sh"
+    node() { command node "$@"; local rc=$?; printf '[{"id":"swapped","pattern":".*","reason":"x"}]\n' >"$P/appr/allow-patterns.json"; return "$rc"; }
+    PROFILE_FLAG=appr
+    activate_profile
+    profile_cmd_approve appr allow-patterns --yes
+) 2>&1
+OUT="$(approve_racing)"
+check "the approval lists the content it hashed" has_text "shown" "$OUT"
+check "a change during the approval is reported" has_text "changed while it was being approved" "$OUT"
+wrapper run "$PROJECT" --profile appr
+check_not "T-36: the swapped content is never activated" grep -q '"swapped"' "$P/appr/home/.claude/hooks-guard/policies/allow-patterns.json"
+wrapper profile delete appr --yes
+
+# --- the migration copies a legacy env file that lives outside the config dir ----------------------------------
+make_legacy
+mv "$CONFIG_DIR/env" "$HOME/my-secrets.env"
+printf 'setting.model=sonnet\nsetting.env_file=%s\n' "$HOME/my-secrets.env" >"$CONFIG_DIR/config"
+wrapper profile migrate --dry-run
+check "dry-run says it would copy an outside env file" has_text "Would copy $HOME/my-secrets.env" "$OUT"
+wrapper profiles
+assert_eq "$RC" 0 "migration with an env file outside the config dir exits 0"
+assert_eq "$(cat "$P/default/env" 2>/dev/null)" "API_KEY=legacy" "its secrets reach the default profile"
+assert_eq "$(mode_of "$P/default/env")" 600 "…in a 0600 copy"
+check "the original stays where it was" [ -s "$HOME/my-secrets.env" ]
+check "…and the user is told" has_text "original file remains" "$OUT"
+check_not "setting.env_file is dropped from the config" grep -q env_file "$CONFIG_DIR/config"
+wrapper profile migrate --rollback
+assert_eq "$RC" 0 "rollback after a copied env file exits 0"
+check "rollback points setting.env_file at the original again" grep -qx "setting.env_file=$HOME/my-secrets.env" "$CONFIG_DIR/config"
+check_not "…and drops the identical copy" [ -e "$P/default/env" ]
+rm -f "$HOME/my-secrets.env"
+
+# --- save_config keeps what the wizard does not manage ---------------------------------------------------------
+save_unit() (
+    source "$REPO_DIR/lib/config-lib.sh"
+    load_config >/dev/null 2>&1
+    save_config >/dev/null
+)
+make_legacy
+wrapper profiles
+printf '# my own note\nsetting.claude_version=2.1.300\nsetting.share_skills=true\nsetting.lsp_from=default\nsetting.future_key=1\n' >>"$CONFIG_DIR/config"
+save_unit
+check "save_config keeps setting.claude_version" grep -qx 'setting.claude_version=2.1.300' "$CONFIG_DIR/config"
+check "save_config keeps setting.share_skills" grep -qx 'setting.share_skills=true' "$CONFIG_DIR/config"
+check "save_config keeps setting.lsp_from" grep -qx 'setting.lsp_from=default' "$CONFIG_DIR/config"
+check "save_config keeps unknown keys" grep -qx 'setting.future_key=1' "$CONFIG_DIR/config"
+check "save_config keeps the user's comments" grep -qx '# my own note' "$CONFIG_DIR/config"
+check "save_config still writes the managed settings" grep -qx 'setting.model=sonnet' "$CONFIG_DIR/config"
+cp "$CONFIG_DIR/config" "$TMP/saved-once"
+save_unit
+check "saving twice changes nothing (idempotent)" cmp -s "$TMP/saved-once" "$CONFIG_DIR/config"
+
+# --- completions: migrate/logout flags, profile names after set -------------------------------------------------
+complete_words() { # <words...>: completion of the last word
+    HOME="$TMP/comp-home" CONFIG_DIR="$TMP/comp-home/cfg" bash -c '
+        source "$1/completions/bash.sh"; shift
+        COMP_WORDS=("$@"); COMP_CWORD=$((${#COMP_WORDS[@]} - 1))
+        _claude_dockerized
+        printf "%s\n" "${COMPREPLY[@]}"' _ "$REPO_DIR" "$@"
+}
+for flag in --no-backup --prune-backups --yes; do
+    check "bash completes 'profile migrate $flag'" has_line "$flag" "$(complete_words ccd profile migrate --)"
+done
+check "bash completes profile names after 'profile set'" has_line alpha "$(complete_words ccd profile set "")"
+check "bash completes --allow-loosen after the value" has_line --allow-loosen "$(complete_words ccd profile set alpha model opus --)"
+check "bash completes 'profile logout NAME --yes'" has_line --yes "$(complete_words ccd profile logout alpha --)"
+for flag in --no-backup --prune-backups --yes; do
+    check "zsh offers 'profile migrate $flag'" grep -q "migrate) _values 'flag' .*$flag" "$REPO_DIR/completions/zsh.sh"
+done
+
 t_summary
