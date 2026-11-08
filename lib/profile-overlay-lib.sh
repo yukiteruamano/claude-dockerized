@@ -30,6 +30,7 @@ profile_key_var() {
     security_policy) echo SECURITY_POLICY ;;
     hardening) echo HARDENING ;;
     integrity_check) echo INTEGRITY_CHECK ;;
+    claude_version) echo CLAUDE_VERSION ;;
     esac
 }
 
@@ -58,8 +59,22 @@ profile_value_loosens() {
     # profile's skills, and its .local/bin (code that profile's sessions can write).
     share_skills) [ "$old" = false ] && [ "$new" = true ] ;;
     lsp_from) [ -z "$old" ] && [ "$new" = default ] ;;
+    # Another Claude Code release than the global/pinned one: an older binary
+    # may not honour every managed-policy key the wrapper relies on.
+    claude_version) [ -n "$new" ] && [ "$new" != "$(_profile_global_claude_version "$old")" ] ;;
     *) return 1 ;;
     esac
+}
+
+# The Claude Code release sessions run without a profile override: the global
+# setting.claude_version, else the pinned/Dockerfile one (when the update
+# library is loaded). Usage: _profile_global_claude_version <global_value>
+_profile_global_claude_version() {
+    if [ -n "$1" ]; then
+        printf '%s' "$1"
+    elif declare -F update_claude_effective_version >/dev/null; then
+        update_claude_effective_version
+    fi
 }
 
 # Settings a profile may override. Image build options and the default

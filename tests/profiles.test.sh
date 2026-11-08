@@ -469,9 +469,25 @@ wrapper profile approve guard allow-patterns --yes
 check_not "T-36: a global id cannot be shadowed" [ "$RC" -eq 0 ]
 rm -f "$P/guard/allow-patterns.json"
 sed -i '/^allow_loosen\.allow_patterns=/d' "$P/guard/config"
-# a profile can run its own Claude Code release in its own image
+# a profile can run its own Claude Code release in its own image; another
+# release than the pinned one is a loosening (an older binary may not honour
+# every managed key), so it needs the approval
+pinned_claude="$(sed -n 's/^ARG CLAUDE_CODE_VERSION=//p' "$REPO_DIR/Dockerfile" | head -n 1)"
+wrapper profile set guard claude_version "$pinned_claude"
+assert_eq "$RC" 0 "the pinned Claude Code release needs no approval"
 wrapper profile set guard claude_version 2.1.300
-assert_eq "$RC" 0 "claude_version can be set per profile"
+check_not "T-34: another Claude Code release needs --allow-loosen" [ "$RC" -eq 0 ]
+check "…and the refusal says so" has_text "--allow-loosen" "$OUT"
+printf 'setting.claude_version=2.0.0\n' >>"$P/guard/config"
+wrapper run "$PROJECT" --profile guard
+check_not "T-34: a hand-edited release without approval never runs" argv_has "claude-dockerized:claude-2.0.0"
+wrapper profile doctor guard
+check "doctor names the unapproved release" has_text "tries to loosen claude_version" "$OUT"
+wrapper profile set guard claude_version 2.1.300 --allow-loosen
+assert_eq "$RC" 0 "claude_version can be set per profile with approval"
+check "the approval names the release" grep -qx 'allow_loosen.claude_version=2.1.300' "$P/guard/config"
+wrapper profiles
+check "the list flags the release as a loosening" has_text "loosens: claude_version" "$OUT"
 wrapper profile set guard claude_version latest
 check_not "claude_version must be X.Y.Z" [ "$RC" -eq 0 ]
 wrapper run "$PROJECT" --profile guard
@@ -485,7 +501,7 @@ assert_eq "$RC" 0 "build --profile builds the profile's image"
 check "…tagged per version" built_with "claude-dockerized:claude-2.1.300"
 check "…with that Claude release" built_with "CLAUDE_CODE_VERSION=2.1.300"
 wrapper profile show guard
-check "profile show names the session image" has_text "Claude Code image: claude-dockerized:claude-2.1.300 [profile]" "$OUT"
+check "profile show names the session image" has_text "Claude Code image: claude-dockerized:claude-2.1.300 [profile, approved loosening]" "$OUT"
 wrapper profile unset guard claude_version
 # profile show says where each value comes from
 wrapper profile set guard model opus
