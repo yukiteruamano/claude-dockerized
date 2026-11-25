@@ -40,7 +40,7 @@ Run [Claude Code](https://code.claude.com/docs) (native binary, pinned version) 
 - **Fail-closed hooks.** Two native `PreToolUse` hooks (Bash, and every file tool) block whatever they cannot evaluate, backed by vendored pattern sets for destruction, exfiltration, secrets and Docker escapes.
 - **Configurable policy.** `setting.security_policy` selects `strict`, `balanced` (default: drops the noisy cloud/multi-tenant rules) or `none` (built-in backstops only).
 - **Remote flows keep working.** Git over SSH, remote MCP servers (`http`/`sse`), registries and APIs stay allowed in every mode.
-- **No auto-updates.** The pinned Claude Code version (`2.1.311`) runs until *you* run `claude-dockerized update`, which verifies a signed release first.
+- **No auto-updates.** The pinned Claude Code version (`2.1.332`) runs until *you* run `claude-dockerized update`, which verifies a signed release first.
 
 ### State that survives without touching your host
 
@@ -450,7 +450,7 @@ cycles **and** image rebuilds.
 - **Host-only commands.** `claude mcp add/remove` and `claude plugin install/update/remove` are disabled inside the container. `claude mcp login/logout` keep working (tokens live in read-write mounts); the wrapper's `mcp`/`plugin` commands expose what is safe.
 - **Security layer.** Generated on the host from the repo copy and mirrored on every run. The hooks are versioned (`hooks/claude-guard-*.sh`); bumping `CLAUDE_DOCKERIZED_GUARD_VERSION` refreshes installs, keeping the previous copy as `.bak`.
 - **Policy mode.** `setting.security_policy` (default `balanced`) selects what the hooks enforce: `balanced` drops cloud/multi-tenant rules and common false positives, `strict` enforces everything, `none` keeps only the built-in backstops. Local exceptions live in `hooks/policies/allow-patterns.json`.
-- **No auto-updates.** `env.DISABLE_AUTOUPDATER=1` is always set in the managed policy (check with `claude-dockerized doctor`, which also runs the native `claude doctor`). Upgrades go through `claude-dockerized update`, which rebuilds with the pinned `CLAUDE_CODE_VERSION` (`2.1.311`; override with `update --claude-version X.Y.Z`).
+- **No auto-updates.** `env.DISABLE_AUTOUPDATER=1` is always set in the managed policy (check with `claude-dockerized doctor`, which also runs the native `claude doctor`). Upgrades go through `claude-dockerized update`, which rebuilds with the pinned `CLAUDE_CODE_VERSION` (`2.1.332`; override with `update --claude-version X.Y.Z`).
 
 ### Custom Global Configuration (Optional)
 
@@ -606,10 +606,10 @@ formatters) does not belong in the image: install it with `setting.lsp` /
 
 ```dockerfile
 # Default (repo-pinned), with the checksums of that release's manifest
-ARG CLAUDE_CODE_VERSION=2.1.311
-ARG CLAUDE_CODE_MANIFEST_VERSION=2.1.311
-ARG CLAUDE_CODE_MANIFEST_SHA256_X64=86dc1fcc…
-ARG CLAUDE_CODE_MANIFEST_SHA256_ARM64=2e2496c9…
+ARG CLAUDE_CODE_VERSION=2.1.332
+ARG CLAUDE_CODE_MANIFEST_VERSION=2.1.332
+ARG CLAUDE_CODE_MANIFEST_SHA256_X64=a2df1f41…
+ARG CLAUDE_CODE_MANIFEST_SHA256_ARM64=50c305fc…
 ```
 
 Maintainers bump all four together: the values are the `linux-x64` /
@@ -759,7 +759,7 @@ They should not: agents are forwarded per session (see [Multiple concurrent sess
 
 ### Core Files
 
-- **`Dockerfile`** - Container image definition (Debian trixie-slim + Node.js/NVM + pnpm + uv + Claude Code native binary v2.1.311, no sudo, no npm)
+- **`Dockerfile`** - Container image definition (Debian trixie-slim + Node.js/NVM + pnpm + uv + Claude Code native binary v2.1.332, no sudo, no npm)
 - **`entrypoint.sh`** - Container entrypoint (resolves the workdir, sets up NVM/Node and execs the command; runs unprivileged, no UID/GID mapping)
 
 ### User Scripts
@@ -832,7 +832,7 @@ They should not: agents are forwarded per session (see [Multiple concurrent sess
 1. **Base image** — Debian Trixie slim, pinned by digest.
 2. **Docker CLI only** — no daemon; the host daemon is used through the opt-in socket, with no privileges.
 3. **Development tools** — Node.js (via NVM), Python tooling (uv), git, jq, ripgrep and the usual CLI tools, all pinned.
-4. **Claude Code** — the pinned native binary (`2.1.311`) from the official installer (`https://claude.ai/install.sh`), never npm.
+4. **Claude Code** — the pinned native binary (`2.1.332`) from the official installer (`https://claude.ai/install.sh`), never npm.
 5. **User** — a non-root `coder` user exists in the image, but the wrapper runs the container as *your* UID/GID (`--user`) and joins the `coder` group (`--group-add`), so no root process and no runtime remapping.
 6. **Entrypoint** — resolves the project workdir, loads NVM/Node and execs the command unprivileged.
 7. **Mounts** — only what is needed, with the right mode: managed files read-only, state read-write.

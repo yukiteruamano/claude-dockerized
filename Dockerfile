@@ -2,7 +2,7 @@
 # Note: We only install Docker CLI to use host's Docker daemon via mounted socket
 # Pinned by digest (T-24): a tag can be re-pointed, a digest cannot. Dependabot
 # (docker ecosystem) proposes digest bumps; `build --pull` never floats past it.
-FROM debian:trixie-slim@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4
+FROM debian:trixie-slim@sha256:8aa5a7bf5a1955bddbe7d74fcdd0b91ab30e74362a8b73af672b0481b35b44a0
 
 # Fail fast inside RUN pipelines (curl | sh, | tee, …)
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -12,17 +12,17 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # `latest` in production builds: a moving tag breaks reproducibility and
 # widens supply-chain exposure if a tag is ever mutated (T-24).
 # NVM is fetched by commit (NVM_COMMIT is the commit behind tag NVM_VERSION).
-ARG NVM_VERSION=v0.40.8
-ARG NVM_COMMIT=a885b885fef16fac4bc544188fb25e9e37ae83e8
+ARG NVM_VERSION=v0.41.0
+ARG NVM_COMMIT=4e8758a801eea9479b32a904f31093e410ddaba4
 # Node.js LTS line pinned to an exact release (was: whatever --lts resolved).
-ARG NODE_VERSION=24.22.2
+ARG NODE_VERSION=24.22.3
 # uv pinned to an exact release, installed from its GitHub release tarball and
 # checked against these sha256 (the published uv-<target>.tar.gz.sha256).
-ARG UV_VERSION=0.13.7
-ARG UV_SHA256_X86_64=c5221ff41b7892bfc223543883600125f6a47fe845093e0f5bdff4f359196d83
-ARG UV_SHA256_AARCH64=71279f8d3c67241e807b9d8db872d1bf541579fb9f08b7d1eb1682196d1e57dc
+ARG UV_VERSION=0.13.10
+ARG UV_SHA256_X86_64=bf65ac1a0af10f92c522d91ac096c7c0a39657647b155577e7836c2cbbb4526c
+ARG UV_SHA256_AARCH64=14590f644805a6234ffe071154340669e38137f38e60aa9629690119704107d2
 # pnpm pinned to an exact release (project package manager, not the agent).
-ARG PNPM_VERSION=12.16.1
+ARG PNPM_VERSION=12.23.0
 # Fingerprint of Docker's apt signing key (docs.docker.com/engine/install/debian).
 ARG DOCKER_APT_KEY_FPR=9DC858229FC7DD38854AE2D88D81803C0EBFCD88
 
@@ -58,9 +58,9 @@ ARG DOCKER_CLI=1
 # Exact apt versions from download.docker.com (debian trixie stable), so a new
 # upstream publish never changes the image silently (T-24). Bump them together:
 #   apt-cache madison docker-ce-cli docker-buildx-plugin docker-compose-plugin
-ARG DOCKER_CLI_VERSION=5:29.9.3-1~debian.13~trixie
-ARG DOCKER_BUILDX_VERSION=0.38.1-1~debian.13~trixie
-ARG DOCKER_COMPOSE_VERSION=5.7.0-1~debian.13~trixie
+ARG DOCKER_CLI_VERSION=5:29.10.1-1~debian.13~trixie
+ARG DOCKER_BUILDX_VERSION=0.39.1-1~debian.13~trixie
+ARG DOCKER_COMPOSE_VERSION=5.8.0-1~debian.13~trixie
 RUN if [ "$DOCKER_CLI" != 1 ]; then echo "Docker CLI skipped (DOCKER_CLI=$DOCKER_CLI)"; exit 0; fi && \
     install -m 0755 -d /etc/apt/keyrings && \
     curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc && \
@@ -150,10 +150,10 @@ ENV PATH="$NVM_DIR/default:/usr/local/bin:/home/coder/.local/bin:$PATH"
 # <version>/manifest.json, platforms linux-x64 / linux-arm64), so the default
 # build does not rely on first use. Bump them together with the version.
 # See: https://code.claude.com/docs/en/setup#install-a-specific-version
-ARG CLAUDE_CODE_VERSION=2.1.311
-ARG CLAUDE_CODE_MANIFEST_VERSION=2.1.311
-ARG CLAUDE_CODE_MANIFEST_SHA256_X64=86dc1fcc69498159eaf15f446613e847010f9036bfbbdffd4c49350be8489ada
-ARG CLAUDE_CODE_MANIFEST_SHA256_ARM64=2e2496c9a8065df93acb0fca2d341f59a6b8777649b2e025ab8c9bcd5eef61f3
+ARG CLAUDE_CODE_VERSION=2.1.332
+ARG CLAUDE_CODE_MANIFEST_VERSION=2.1.332
+ARG CLAUDE_CODE_MANIFEST_SHA256_X64=a2df1f41bb00250992926420d0063f89b127cb81abdd284dbefb80c50ff1d026
+ARG CLAUDE_CODE_MANIFEST_SHA256_ARM64=50c305fcb8912851ce774429131d94ed6f84edbe3d8d0ed7a59dade5d893acc0
 ARG CLAUDE_CODE_SHA256=
 ARG CLAUDE_BUILD_TIME=0
 RUN curl -fsSL https://claude.ai/install.sh | bash -s "${CLAUDE_CODE_VERSION}" && \

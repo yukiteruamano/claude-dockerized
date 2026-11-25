@@ -2,6 +2,14 @@
 
 Releases are signed annotated tags (`docs/security/YELLOW.md#releases`).
 
+## 0.5.2
+
+### Changed
+
+- Claude Code is pinned to `2.1.332` (was `2.1.311`; `latest` channel), with the manifest checksums of that release.
+- Image tools: Node.js `24.22.3`, uv `0.13.10`, pnpm `12.23.0`, NVM `v0.41.0`; Docker CLI `29.10.1`, buildx `0.39.1`, compose `5.8.0`; `debian:trixie-slim` digest refreshed.
+- Opt-in LSP/formatter pins: ruff `0.17.6`, prettier `3.10.1`, typescript-language-server `6.1.0` (typescript `7.0.2`, pyright `1.1.414` and gopls `v0.24.0` are already current).
+
 ## 0.5.1
 
 Documentation-only release on top of 0.5.0:
@@ -132,7 +140,7 @@ Supersedes `0.4.2`, whose tag was cut from a commit that does not descend from `
 - Opt-in LSP/formatter pins: ruff `0.17.3`, prettier `3.9.10`, typescript-language-server `6.0.3`, gopls `v0.24.0`.
 - `WRAPPER_VERSION` is `0.4.1`.
 
-## Unreleased
+## 0.5.2
 
 ### Security
 

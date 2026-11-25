@@ -30,7 +30,7 @@ Shell script-based Docker wrapper for running [Claude Code](https://code.claude.
 - `config/managed-settings.json`, `config/user-settings.default.json` — Managed policy template (rendered by `write_managed_settings`) and user-settings seed
 - `lib/migrate-settings.js` — Node helper for `ensure_user_settings`: strips policy keys (and `disableAllHooks`) from a legacy `settings.json`, keeping the user's own keys
 - `lib/merge-allow-patterns.js` — Node helper for `allow_patterns_render` / `profile approve`: validates a profile's guard allow rules and appends them to the global ones (T-36)
-- `Dockerfile` — Container image (Debian trixie-slim + Node.js/NVM + pnpm + uv + Claude Code native binary v2.1.311, no sudo, no npm install)
+- `Dockerfile` — Container image (Debian trixie-slim + Node.js/NVM + pnpm + uv + Claude Code native binary v2.1.332, no sudo, no npm install)
 - `entrypoint.sh` — Container entrypoint (unprivileged; resolves workdir, loads NVM, execs the command)
 - `run-simple.sh` — Simplified alternative runner (delegates to `claude-dockerized run`)
 - `hooks/claude-guard-bash.sh`, `hooks/claude-guard-file.sh` — Versioned native `PreToolUse` hooks (source of truth; copied into the user config by `lib/layer-lib.sh`)
@@ -254,7 +254,7 @@ Migration to the profile layout (`profile_migrate_legacy`): backup first (free-s
 
 - Base image: `debian:trixie-slim` (pinned, not `latest`)
 - Set `SHELL ["/bin/bash", "-o", "pipefail", "-c"]` so RUN pipelines fail fast
-- Parameterize tool versions via `ARG`: `ARG NVM_VERSION=v0.40.8`, `ARG CLAUDE_CODE_VERSION=2.1.311`, `ARG CLAUDE_BUILD_TIME=0` (cache-bust only for `update`)
+- Parameterize tool versions via `ARG`: `ARG NVM_VERSION=v0.41.0`, `ARG CLAUDE_CODE_VERSION=2.1.332`, `ARG CLAUDE_BUILD_TIME=0` (cache-bust only for `update`)
 - Install Claude Code only via the native installer (`curl -fsSL https://claude.ai/install.sh | bash -s "${CLAUDE_CODE_VERSION}"`); never via npm (no official npm support). Bump `CLAUDE_CODE_MANIFEST_VERSION` and `CLAUDE_CODE_MANIFEST_SHA256_{X64,ARM64}` (the release manifest's `linux-*` checksums) together with `CLAUDE_CODE_VERSION`
 - uv comes from its GitHub release tarball checked against `UV_SHA256_{X86_64,AARCH64}` (bump them with `UV_VERSION`); no piped installer
 - Do NOT bake LSP servers or formatters into the image; they live in the generated home (`ensure_lsp_formatters`)

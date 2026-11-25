@@ -4,10 +4,10 @@
 # saving). Not executable directly; no `set -e`: callers own error handling.
 
 # Pinned LSP/formatter releases (T-14). Bump deliberately, like any other pin.
-LSP_NPM_TS="typescript-language-server@6.0.3 typescript@7.0.2"
+LSP_NPM_TS="typescript-language-server@6.1.0 typescript@7.0.2"
 LSP_NPM_PYRIGHT="pyright@1.1.414"
-FMT_NPM_PRETTIER="prettier@3.9.10"
-FMT_RUFF_VERSION="0.17.3"
+FMT_NPM_PRETTIER="prettier@3.10.1"
+FMT_RUFF_VERSION="0.17.6"
 LSP_GOPLS_VERSION="v0.24.0"
 
 # A generated-home binary counts as installed only when it resolves to an

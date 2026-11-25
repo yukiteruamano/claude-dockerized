@@ -72,7 +72,7 @@ build) [ "${DOCKER_STUB_FAIL_BUILD:-}" = 1 ] && exit 1 ;;
 run)
     case " $* " in
     *" sha256sum "*) printf '%s  /usr/local/bin/claude\n' "${DOCKER_STUB_CLAUDE_SHA:-$(printf 'a%.0s' {1..64})}" ;;
-    *) printf '%s (Claude Code)\n' "${DOCKER_STUB_CLAUDE_VERSION:-2.1.311}" ;;
+    *) printf '%s (Claude Code)\n' "${DOCKER_STUB_CLAUDE_VERSION:-2.1.332}" ;;
     esac
     ;;
 esac
